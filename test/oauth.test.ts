@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { createOAuthSession } from "../src/oauth"
+import { Effect } from "effect"
+import { createOAuthSession, readOAuthCodeFromCallbackUrl } from "../src/oauth"
 
 describe("createOAuthSession", () => {
   test("builds a Linear OAuth PKCE authorization URL", () => {
@@ -23,5 +24,39 @@ describe("createOAuthSession", () => {
     expect(url.searchParams.get("code_challenge_method")).toBe("S256")
     expect(url.searchParams.get("state")).toBe(session.state)
     expect(url.searchParams.get("code_challenge")).toBe(session.codeChallenge)
+  })
+})
+
+describe("readOAuthCodeFromCallbackUrl", () => {
+  const input = {
+    callbackPath: "/oauth/callback",
+    expectedState: "state1"
+  }
+
+  test("extracts code from a pasted callback URL", async () => {
+    const code = await Effect.runPromise(readOAuthCodeFromCallbackUrl(
+      "http://127.0.0.1:14582/oauth/callback?code=code1&state=state1",
+      input
+    ))
+
+    expect(code).toBe("code1")
+  })
+
+  test("rejects stale callback URLs with the wrong state", async () => {
+    const exit = await Effect.runPromiseExit(readOAuthCodeFromCallbackUrl(
+      "http://127.0.0.1:14582/oauth/callback?code=code1&state=old",
+      input
+    ))
+
+    expect(exit._tag).toBe("Failure")
+  })
+
+  test("rejects Linear authorization errors", async () => {
+    const exit = await Effect.runPromiseExit(readOAuthCodeFromCallbackUrl(
+      "http://127.0.0.1:14582/oauth/callback?error=access_denied&state=state1",
+      input
+    ))
+
+    expect(exit._tag).toBe("Failure")
   })
 })

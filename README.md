@@ -37,6 +37,7 @@ bun src/main.ts auth login --notify
 ```
 
 That opens Linear OAuth consent, lets you choose the workspace in Linear, and saves the token to the repo-local `.env`.
+If the browser redirects to `127.0.0.1` and says the site cannot be reached, paste the full callback URL into the still-running CLI and press Enter.
 
 Linear OAuth has two phases:
 

@@ -123,6 +123,7 @@ export const connectOAuth = (input: OAuthConnectInput): Effect.Effect<OutputValu
     })
 
     process.stderr.write(`Open this Linear OAuth URL:\n${session.authorizeUrl}\n`)
+    process.stderr.write("If the browser cannot reach localhost after approval, paste the full callback URL here and press Enter.\n")
 
     if (input.notify) {
       yield* notifyBender(session.authorizeUrl, `Authorize Linear OAuth for linear-axi: ${session.authorizeUrl}`)
@@ -215,20 +216,44 @@ const waitForOAuthCode = (input: {
     const host = redirectUrl.hostname
     const callbackPath = redirectUrl.pathname
     let settled = false
+    let manualBuffer = ""
+    const cleanup = () => {
+      clearTimeout(timer)
+      process.stdin.off("data", onManualCallback)
+      process.stdin.pause()
+      server.closeAllConnections()
+      server.close()
+    }
+    const settle = (effect: Effect.Effect<string, LinearApiError>) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      resume(effect)
+    }
+    const onManualCallback = (chunk: Buffer | string) => {
+      manualBuffer += chunk.toString()
+      let newlineIndex = manualBuffer.search(/\r?\n/)
+      while (newlineIndex !== -1) {
+        const line = manualBuffer.slice(0, newlineIndex).trim()
+        manualBuffer = manualBuffer.slice(newlineIndex + (manualBuffer[newlineIndex] === "\r" && manualBuffer[newlineIndex + 1] === "\n" ? 2 : 1))
+        if (line.length > 0) {
+          const effect = readOAuthCodeFromCallbackUrl(line, {
+            callbackPath,
+            expectedState: input.state
+          })
+          settle(effect)
+          return
+        }
+        newlineIndex = manualBuffer.search(/\r?\n/)
+      }
+    }
     const server = createServer((request, response) => {
       handleCallbackRequest(request, response, {
         callbackPath,
         expectedState: input.state,
-        settle: (effect) => {
-          if (settled) {
-            return
-          }
-          settled = true
-          clearTimeout(timer)
-          server.closeAllConnections()
-          server.close()
-          resume(effect)
-        }
+        settle
       })
     })
 
@@ -237,8 +262,7 @@ const waitForOAuthCode = (input: {
         return
       }
       settled = true
-      server.closeAllConnections()
-      server.close()
+      cleanup()
       resume(Effect.fail(new LinearApiError({
         message: "Timed out waiting for Linear OAuth callback",
         help: "Rerun `linear-axi auth oauth connect` and complete the browser authorization before the timeout."
@@ -250,19 +274,18 @@ const waitForOAuthCode = (input: {
         return
       }
       settled = true
-      clearTimeout(timer)
-      server.closeAllConnections()
+      cleanup()
       resume(Effect.fail(new LinearApiError({
         message: readableError(cause),
         help: "Check that the redirect URI port is available, then rerun auth."
       })))
     })
 
+    process.stdin.on("data", onManualCallback)
+    process.stdin.resume()
     server.listen(port, host)
     return Effect.sync(() => {
-      clearTimeout(timer)
-      server.closeAllConnections()
-      server.close()
+      cleanup()
     })
   })
 
@@ -310,6 +333,57 @@ const handleCallbackRequest = (
   response.writeHead(200, { "content-type": "text/plain" })
   response.end("Linear authorization complete. You can close this tab.")
   input.settle(Effect.succeed(code))
+}
+
+export const readOAuthCodeFromCallbackUrl = (
+  callbackUrl: string,
+  input: {
+    callbackPath: string
+    expectedState: string
+  }
+): Effect.Effect<string, LinearApiError> => {
+  let requestUrl: URL
+  try {
+    requestUrl = new URL(callbackUrl)
+  } catch {
+    return Effect.fail(new LinearApiError({
+      message: "Pasted OAuth callback URL is not a valid URL",
+      help: "Paste the full callback URL from the browser address bar."
+    }))
+  }
+
+  if (requestUrl.pathname !== input.callbackPath) {
+    return Effect.fail(new LinearApiError({
+      message: "Pasted OAuth callback URL path did not match the configured redirect URI",
+      help: "Paste the full callback URL that starts with the configured OAuth redirect URI."
+    }))
+  }
+
+  const state = requestUrl.searchParams.get("state") ?? ""
+  if (state !== input.expectedState) {
+    return Effect.fail(new LinearApiError({
+      message: "Pasted OAuth callback URL had an invalid state",
+      help: "Restart `linear-axi auth login`; OAuth callback URLs are tied to one active login attempt."
+    }))
+  }
+
+  const error = requestUrl.searchParams.get("error")
+  if (error) {
+    return Effect.fail(new LinearApiError({
+      message: `Linear OAuth returned ${error}`,
+      help: "Retry after approving the requested Linear access."
+    }))
+  }
+
+  const code = requestUrl.searchParams.get("code")
+  if (!code) {
+    return Effect.fail(new LinearApiError({
+      message: "Pasted OAuth callback URL did not include an authorization code",
+      help: "Paste the full callback URL from the browser address bar after approving Linear access."
+    }))
+  }
+
+  return Effect.succeed(code)
 }
 
 const exchangeCodeForToken = (input: {
