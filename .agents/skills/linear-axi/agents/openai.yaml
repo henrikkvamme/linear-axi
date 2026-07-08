@@ -1,0 +1,4 @@
+interface:
+  display_name: "Linear AXI"
+  short_description: "Operate Linear through the AXI CLI"
+  default_prompt: "Use $linear-axi to inspect or update Linear issues."

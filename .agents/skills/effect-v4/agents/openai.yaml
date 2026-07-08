@@ -1,0 +1,4 @@
+interface:
+  display_name: "Effect v4"
+  short_description: "Build with Effect v4 beta"
+  default_prompt: "Use $effect-v4 to implement this Effect v4 beta change."
