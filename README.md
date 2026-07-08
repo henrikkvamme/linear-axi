@@ -30,12 +30,20 @@ LINEAR_TEAM=BEN
 
 ## OAuth Setup
 
+For normal repo setup, run:
+
+```sh
+bun src/main.ts auth login --notify
+```
+
+That opens Linear OAuth consent, lets you choose the workspace in Linear, and saves the token to the repo-local `.env`.
+
 Linear OAuth has two phases:
 
 1. Register an OAuth application to get a Client ID.
 2. Authorize a workspace through the consent screen.
 
-Linear's hosted MCP flow already has a Linear-owned OAuth client, so it can go straight to consent. This local CLI needs a repo-local Client ID first. To get the registration values:
+Linear's hosted MCP flow already has a Linear-owned OAuth client, so it can go straight to consent. `linear-axi` includes the public `axi-cli` OAuth Client ID for the same smooth path. To register a different OAuth client, get the registration values:
 
 ```sh
 bun src/main.ts auth oauth setup --notify
@@ -47,7 +55,7 @@ Create a Linear OAuth application with a redirect callback that matches the CLI 
 http://127.0.0.1:14582/oauth/callback
 ```
 
-Enable Public if you want the same OAuth client to connect workspaces beyond the workspace where the app is created. Leave webhooks disabled for this CLI login flow. After Linear shows the Client ID, store it in the untracked repo `.env`:
+Enable Public if you want the same OAuth client to connect workspaces beyond the workspace where the app is created. Leave webhooks disabled for this CLI login flow. After Linear shows the Client ID, optionally store it in the untracked repo `.env` to override the built-in public client:
 
 ```dotenv
 LINEAR_OAUTH_CLIENT_ID=...
@@ -72,6 +80,7 @@ The command uses PKCE, validates OAuth `state`, exchanges the callback code for 
 ```sh
 bun src/main.ts
 bun src/main.ts auth status
+bun src/main.ts auth login --notify
 bun src/main.ts auth oauth setup --notify
 bun src/main.ts auth oauth connect --client-id <id> --write-env
 bun src/main.ts teams list --limit 50

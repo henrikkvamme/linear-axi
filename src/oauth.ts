@@ -12,6 +12,7 @@ const authorizeEndpoint = "https://linear.app/oauth/authorize"
 const tokenEndpoint = "https://api.linear.app/oauth/token"
 const defaultRedirectUri = "http://127.0.0.1:14582/oauth/callback"
 const registerEndpoint = "https://linear.app/settings/api/applications/new"
+const defaultClientId = "ccca1dd4294ba5c02db81a5db629ba17"
 
 export interface OAuthConnectInput {
   env: Env
@@ -93,7 +94,7 @@ export const setupOAuth = (input: OAuthSetupInput): Effect.Effect<OutputValue, U
 
 export const connectOAuth = (input: OAuthConnectInput): Effect.Effect<OutputValue, UsageError | LinearApiError> =>
   Effect.gen(function*() {
-    const clientId = input.clientId ?? input.env.LINEAR_OAUTH_CLIENT_ID
+    const clientId = input.clientId ?? input.env.LINEAR_OAUTH_CLIENT_ID ?? defaultClientId
     if (!clientId) {
       return yield* Effect.fail(new UsageError({
         message: "Linear OAuth client id is not configured",

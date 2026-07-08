@@ -61,6 +61,20 @@ describe("parseArgs", () => {
     expect(parsed.flags.get("notify")).toBe(true)
   })
 
+  test("parses auth login flags", () => {
+    const parsed = parseArgs([
+      "auth",
+      "login",
+      "--notify",
+      "--timeout",
+      "300"
+    ], commandSpecs)
+
+    expect(parsed.command).toEqual(["auth", "login"])
+    expect(parsed.flags.get("notify")).toBe(true)
+    expect(parsed.flags.get("timeout")).toBe("300")
+  })
+
   test("parses oauth setup flags", () => {
     const parsed = parseArgs([
       "auth",

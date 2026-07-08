@@ -108,11 +108,11 @@ describe("runCommand", () => {
     })
   })
 
-  test("oauth connect without a client id points to setup", async () => {
-    const parsed = parseArgs(["auth", "oauth", "connect"], commandSpecs)
+  test("auth login rejects invalid timeout before listening", async () => {
+    const parsed = parseArgs(["auth", "login", "--timeout", "5"], commandSpecs)
     const error = await Effect.runPromise(Effect.flip(runCommand(parsed, fakeGateway(""), "/repo/src/main.ts", {})))
 
-    expect(error.help).toContain("auth oauth setup")
+    expect(error.help).toContain("auth login")
   })
 
   test("oauth connect rejects non-loopback redirect hosts before listening", async () => {

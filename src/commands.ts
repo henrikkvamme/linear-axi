@@ -27,9 +27,11 @@ export const runCommand = (
       return gateway.authStatus().pipe(
         Effect.map((auth) => ({
           auth,
-          help: auth.authenticated ? [] : ["Set LINEAR_API_KEY or LINEAR_ACCESS_TOKEN.", "Run `linear-axi auth oauth setup --notify` if this repo needs OAuth setup."]
+          help: auth.authenticated ? [] : ["Set LINEAR_API_KEY or LINEAR_ACCESS_TOKEN.", "Run `linear-axi auth login --notify` to connect this repo via OAuth."]
         }))
       )
+    case "auth login":
+      return authOAuthConnect(parsed, env, { promptConsent: true, writeEnv: true })
     case "auth oauth setup":
       return authOAuthSetup(parsed, env)
     case "auth oauth connect":
@@ -91,13 +93,17 @@ const teamsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   )
 }
 
-const authOAuthConnect = (parsed: ParsedArgs, env: Env) => {
+const authOAuthConnect = (
+  parsed: ParsedArgs,
+  env: Env,
+  defaults: { promptConsent?: boolean; writeEnv?: boolean } = {}
+) => {
   const timeout = readStringFlag(parsed.flags, "timeout")
   if (timeout !== undefined && (!/^[0-9]+$/.test(timeout) || Number(timeout) < 30 || Number(timeout) > 3600)) {
     return Effect.fail(
       new UsageError({
         message: "--timeout must be an integer between 30 and 3600 seconds",
-        help: "Usage: linear-axi auth oauth connect --client-id <id> [--timeout 300]"
+        help: "Usage: linear-axi auth login [--timeout 300]"
       })
     )
   }
@@ -109,9 +115,9 @@ const authOAuthConnect = (parsed: ParsedArgs, env: Env) => {
     redirectUri: readStringFlag(parsed.flags, "redirect-uri"),
     scope: readStringFlag(parsed.flags, "scope"),
     actor: readStringFlag(parsed.flags, "actor"),
-    promptConsent: readBooleanFlag(parsed.flags, "prompt-consent"),
+    promptConsent: readBooleanFlag(parsed.flags, "prompt-consent") || defaults.promptConsent === true,
     notify: readBooleanFlag(parsed.flags, "notify"),
-    writeEnv: readBooleanFlag(parsed.flags, "write-env"),
+    writeEnv: readBooleanFlag(parsed.flags, "write-env") || defaults.writeEnv === true,
     envFile: readStringFlag(parsed.flags, "env-file"),
     timeoutSeconds: timeout === undefined ? undefined : Number(timeout)
   })
@@ -208,6 +214,12 @@ const helpFor = (path: string): string => {
       return topLevelHelp
     case "auth status":
       return "Usage: linear-axi auth status\nExample: linear-axi auth status"
+    case "auth login":
+      return [
+        "Usage: linear-axi auth login [--notify] [--timeout 300]",
+        "Example: linear-axi auth login --notify",
+        "Opens Linear OAuth consent with workspace selection and saves the token to .env."
+      ].join("\n")
     case "auth oauth setup":
       return [
         "Usage: linear-axi auth oauth setup [--redirect-uri <url>] [--scope read,write] [--actor user|app] [--notify]",
@@ -216,7 +228,7 @@ const helpFor = (path: string): string => {
       ].join("\n")
     case "auth oauth connect":
       return [
-        "Usage: linear-axi auth oauth connect --client-id <id> [--redirect-uri <url>] [--scope read,write] [--actor user|app] [--prompt-consent] [--write-env] [--notify]",
+        "Usage: linear-axi auth oauth connect [--client-id <id>] [--redirect-uri <url>] [--scope read,write] [--actor user|app] [--prompt-consent] [--write-env] [--notify]",
         "Example: linear-axi auth oauth connect --client-id lin_oauth_app_123 --write-env --prompt-consent",
         "Example: linear-axi auth oauth connect --client-id lin_oauth_app_123 --redirect-uri http://127.0.0.1:14582/oauth/callback --notify --write-env"
       ].join("\n")
