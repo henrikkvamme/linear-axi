@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtempSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 
-const runCli = (...args: ReadonlyArray<string>) =>
-  Bun.spawnSync({
-    cmd: ["bun", "src/main.ts", ...args],
-    cwd: process.cwd(),
+const repoRoot = process.cwd()
+
+const runCli = (...args: ReadonlyArray<string>) => {
+  const cwd = mkdtempSync(join(tmpdir(), "linear-axi-cli-test-"))
+  return Bun.spawnSync({
+    cmd: ["bun", join(repoRoot, "src/main.ts"), ...args],
+    cwd,
     env: {
       PATH: process.env.PATH ?? "",
       HOME: process.env.HOME ?? ""
@@ -11,6 +17,7 @@ const runCli = (...args: ReadonlyArray<string>) =>
     stdout: "pipe",
     stderr: "pipe"
   })
+}
 
 const stdoutText = (result: ReturnType<typeof runCli>) => new TextDecoder().decode(result.stdout)
 
