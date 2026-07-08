@@ -5,22 +5,22 @@ description: Linear AXI CLI workflow. Use when agents need to inspect or mutate 
 
 # Linear AXI
 
-Use `linear-axi` as the Linear interface for agents in this repo. It prints TOON on stdout and uses AXI exits: `0` success, `1` runtime/auth/API failure, `2` usage error.
+Use `linear-axi` as the Linear interface for agents. It prints TOON on stdout and uses AXI exits: `0` success, `1` runtime/auth/API failure, `2` usage error.
+
+Invoke it as `linear-axi <command>` when the binary is on PATH. If you are working inside the source checkout before installing a binary, use `bun src/main.ts <command>`.
 
 ## Commands
 
-Run through Bun from the repo unless a packaged binary is on PATH:
-
 ```sh
-bun src/main.ts
-bun src/main.ts auth status
-bun src/main.ts auth login --notify
-bun src/main.ts teams list --limit 50
-bun src/main.ts issues list --assignee me --limit 20
-bun src/main.ts issues list --team <key-or-id> --limit 20
-bun src/main.ts issues view --id <issue-id-or-key>
-bun src/main.ts issues create --team <key-or-id> --title "..." --description "..."
-bun src/main.ts comments create --issue <issue-id-or-key> --body "..."
+linear-axi
+linear-axi auth status
+linear-axi auth login --notify
+linear-axi teams list --limit 50
+linear-axi issues list --assignee me --limit 20
+linear-axi issues list --team <key-or-id> --limit 20
+linear-axi issues view --id <issue-id-or-key>
+linear-axi issues create --team <key-or-id> --title "..." --description "..."
+linear-axi comments create --issue <issue-id-or-key> --body "..."
 ```
 
 ## Rules
