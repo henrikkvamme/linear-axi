@@ -1,9 +1,13 @@
 ---
 name: effect-v4
 description: Effect v4 beta workflow for this repo. Use when writing, reviewing, migrating, or debugging Effect code, configuring Effect tooling, or deciding how agents should use the vendored Effect source.
+metadata:
+  internal: true
 ---
 
 # Effect v4
+
+This is an internal project-maintenance skill. It is not published as an installable skill from this repository.
 
 Use Bun and the project-local Effect source. Do not use a global Effect clone.
 

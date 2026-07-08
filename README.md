@@ -1,92 +1,48 @@
 # linear-axi
 
-`linear-axi` is a Bun TypeScript CLI for agent-facing Linear operations. It uses Effect v4 beta for command workflows, `@linear/sdk` for Linear access, and TOON output for compact structured stdout.
+![linear-axi banner](assets/linear-axi-banner.png)
 
-## Setup
+Agent-friendly Linear from your shell.
+
+`linear-axi` is a Bun CLI for Linear workspaces. It is built for agents: compact [AXI](https://axi.md/) output, strict exit codes, self-correcting errors, and safe OAuth login through a repo-local `.env`.
+
+## Install
 
 ```sh
+git clone https://github.com/henrikkvamme/linear-axi.git
+cd linear-axi
 bun install
-bun run check
 ```
 
-Configure one Linear credential outside the transcript:
+## Login
 
 ```sh
-export LINEAR_API_KEY=...
-# or
-export LINEAR_ACCESS_TOKEN=...
+bun src/main.ts auth login --notify
 ```
 
-`LINEAR_API_KEY` takes precedence when both are set.
+The command opens Linear OAuth, lets you choose a workspace, and writes the token to `.env` only when `.env` is gitignored.
 
-The CLI also loads an untracked repo-local `.env` file before reading credentials from the environment:
+If your browser lands on `127.0.0.1` and says the site cannot be reached, paste the full callback URL into the still-running CLI.
+
+You can also set credentials yourself:
 
 ```dotenv
-LINEAR_API_KEY=...
+# Choose one:
+LINEAR_API_KEY=lin_api_...
+LINEAR_ACCESS_TOKEN=...
+
+# Optional:
 LINEAR_TEAM=BEN
 ```
 
-`.env` is gitignored. Keep committed files to non-secret defaults such as `.env.example`.
+`LINEAR_API_KEY` takes precedence over `LINEAR_ACCESS_TOKEN`.
 
-## OAuth Setup
-
-For normal repo setup, run:
+## Use
 
 ```sh
-bun src/main.ts auth login --notify
-```
-
-That opens Linear OAuth consent, lets you choose the workspace in Linear, and saves the token to the repo-local `.env`.
-If the browser redirects to `127.0.0.1` and says the site cannot be reached, paste the full callback URL into the still-running CLI and press Enter.
-
-Linear OAuth has two phases:
-
-1. Register an OAuth application to get a Client ID.
-2. Authorize a workspace through the consent screen.
-
-Linear's hosted MCP flow already has a Linear-owned OAuth client, so it can go straight to consent. `linear-axi` includes the public `axi-cli` OAuth Client ID for the same smooth path. To register a different OAuth client, get the registration values:
-
-```sh
-bun src/main.ts auth oauth setup --notify
-```
-
-Create a Linear OAuth application with a redirect callback that matches the CLI listener, for example:
-
-```text
-http://127.0.0.1:14582/oauth/callback
-```
-
-Enable Public if you want the same OAuth client to connect workspaces beyond the workspace where the app is created. Leave webhooks disabled for this CLI login flow. After Linear shows the Client ID, optionally store it in the untracked repo `.env` to override the built-in public client:
-
-```dotenv
-LINEAR_OAUTH_CLIENT_ID=...
-```
-
-Then authorize the current repo:
-
-```sh
-bun src/main.ts auth oauth connect --write-env --prompt-consent
-```
-
-Use `--notify` to request a Bender browser handoff for the Linear sign-in or consent step:
-
-```sh
-bun src/main.ts auth oauth connect --client-id <linear-oauth-client-id> --write-env --prompt-consent --notify
-```
-
-The command uses PKCE, validates OAuth `state`, exchanges the callback code for tokens, and writes the resulting token fields to `.env` only when `.env` is gitignored.
-
-## Usage
-
-```sh
-bun src/main.ts
 bun src/main.ts auth status
-bun src/main.ts auth login --notify
-bun src/main.ts auth oauth setup --notify
-bun src/main.ts auth oauth connect --client-id <id> --write-env
 bun src/main.ts teams list --limit 50
 bun src/main.ts issues list --assignee me --limit 20
-bun src/main.ts issues list --team <key-or-id> --limit 20
 bun src/main.ts issues view --id <issue-id-or-key>
 bun src/main.ts issues create --team <key-or-id> --title "..." --description "..."
 bun src/main.ts comments create --issue <issue-id-or-key> --body "..."
@@ -94,15 +50,24 @@ bun src/main.ts comments create --issue <issue-id-or-key> --body "..."
 
 Exit codes:
 
-- `0`: success
-- `1`: runtime, auth, or Linear API failure
-- `2`: usage error
+- `0` success
+- `1` runtime, auth, or Linear API failure
+- `2` usage error
 
-## Agent Context
+## Agent Skill
 
-Effect v4 source is vendored under `repos/effect` as read-only reference material. Application code imports from package dependencies, never from `repos/effect`.
+Install the public skill with Vercel's `skills` CLI:
 
-Local skills:
+```sh
+npx skills add henrikkvamme/linear-axi --skill linear-axi
+```
 
-- `$effect-v4`: Effect v4 beta workflow and subtree rules
-- `$linear-axi`: Linear CLI usage and mutation safety
+Only `linear-axi` is intended to be installable from this repo.
+
+## Develop
+
+```sh
+bun run check
+```
+
+Effect source is vendored under `repos/effect` as read-only reference material. Application code imports package dependencies, not the vendored source.

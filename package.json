@@ -1,10 +1,38 @@
 {
   "name": "linear-axi",
   "version": "0.1.0",
-  "private": true,
+  "description": "AXI-friendly Linear CLI for agents",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "linear-axi": "./src/main.ts"
+  },
+  "files": [
+    "src",
+    ".agents/skills/linear-axi",
+    "assets/linear-axi-banner.png",
+    ".env.example",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/henrikkvamme/linear-axi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/henrikkvamme/linear-axi/issues"
+  },
+  "homepage": "https://github.com/henrikkvamme/linear-axi#readme",
+  "keywords": [
+    "linear",
+    "axi",
+    "cli",
+    "agent-skills"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
   },
   "scripts": {
     "check": "bun run typecheck && bun run test",
