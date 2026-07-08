@@ -4,7 +4,6 @@ This project builds `linear-axi`, a Bun TypeScript CLI for agent-facing Linear o
 
 Use `$effect-v4` when writing Effect code in this repository.
 Use `$linear-axi` when operating the CLI or updating its agent-facing behavior.
-Use `$dependency-grounding` when unfamiliar or version-sensitive third-party API behavior needs a source-of-truth decision.
 
 ## Vendored Repositories
 
