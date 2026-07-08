@@ -41,4 +41,38 @@ describe("parseArgs", () => {
   test("rejects help values", () => {
     expect(() => parseArgs(["--help", "auth"], commandSpecs)).toThrow(UsageError)
   })
+
+  test("parses oauth connect flags", () => {
+    const parsed = parseArgs([
+      "auth",
+      "oauth",
+      "connect",
+      "--client-id",
+      "client1",
+      "--write-env",
+      "--prompt-consent",
+      "--notify"
+    ], commandSpecs)
+
+    expect(parsed.command).toEqual(["auth", "oauth", "connect"])
+    expect(parsed.flags.get("client-id")).toBe("client1")
+    expect(parsed.flags.get("write-env")).toBe(true)
+    expect(parsed.flags.get("prompt-consent")).toBe(true)
+    expect(parsed.flags.get("notify")).toBe(true)
+  })
+
+  test("parses oauth setup flags", () => {
+    const parsed = parseArgs([
+      "auth",
+      "oauth",
+      "setup",
+      "--notify",
+      "--redirect-uri",
+      "http://127.0.0.1:14582/oauth/callback"
+    ], commandSpecs)
+
+    expect(parsed.command).toEqual(["auth", "oauth", "setup"])
+    expect(parsed.flags.get("notify")).toBe(true)
+    expect(parsed.flags.get("redirect-uri")).toBe("http://127.0.0.1:14582/oauth/callback")
+  })
 })

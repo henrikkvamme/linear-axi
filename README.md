@@ -19,11 +19,61 @@ export LINEAR_ACCESS_TOKEN=...
 
 `LINEAR_API_KEY` takes precedence when both are set.
 
+The CLI also loads an untracked repo-local `.env` file before reading credentials from the environment:
+
+```dotenv
+LINEAR_API_KEY=...
+LINEAR_TEAM=BEN
+```
+
+`.env` is gitignored. Keep committed files to non-secret defaults such as `.env.example`.
+
+## OAuth Setup
+
+Linear OAuth has two phases:
+
+1. Register an OAuth application to get a Client ID.
+2. Authorize a workspace through the consent screen.
+
+Linear's hosted MCP flow already has a Linear-owned OAuth client, so it can go straight to consent. This local CLI needs a repo-local Client ID first. To get the registration values:
+
+```sh
+bun src/main.ts auth oauth setup --notify
+```
+
+Create a Linear OAuth application with a redirect callback that matches the CLI listener, for example:
+
+```text
+http://127.0.0.1:14582/oauth/callback
+```
+
+Enable Public if you want the same OAuth client to connect workspaces beyond the workspace where the app is created. Leave webhooks disabled for this CLI login flow. After Linear shows the Client ID, store it in the untracked repo `.env`:
+
+```dotenv
+LINEAR_OAUTH_CLIENT_ID=...
+```
+
+Then authorize the current repo:
+
+```sh
+bun src/main.ts auth oauth connect --write-env --prompt-consent
+```
+
+Use `--notify` to request a Bender browser handoff for the Linear sign-in or consent step:
+
+```sh
+bun src/main.ts auth oauth connect --client-id <linear-oauth-client-id> --write-env --prompt-consent --notify
+```
+
+The command uses PKCE, validates OAuth `state`, exchanges the callback code for tokens, and writes the resulting token fields to `.env` only when `.env` is gitignored.
+
 ## Usage
 
 ```sh
 bun src/main.ts
 bun src/main.ts auth status
+bun src/main.ts auth oauth setup --notify
+bun src/main.ts auth oauth connect --client-id <id> --write-env
 bun src/main.ts teams list --limit 50
 bun src/main.ts issues list --assignee me --limit 20
 bun src/main.ts issues list --team <key-or-id> --limit 20

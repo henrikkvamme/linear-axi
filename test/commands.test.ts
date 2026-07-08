@@ -85,4 +85,63 @@ describe("runCommand", () => {
 
     expect(exit._tag).toBe("Failure")
   })
+
+  test("oauth connect rejects unsupported actors before listening", async () => {
+    const parsed = parseArgs(["auth", "oauth", "connect", "--client-id", "client1", "--actor", "robot"], commandSpecs)
+    const exit = await Effect.runPromiseExit(runCommand(parsed, fakeGateway(""), "/repo/src/main.ts"))
+
+    expect(exit._tag).toBe("Failure")
+  })
+
+  test("oauth setup returns registration values", async () => {
+    const parsed = parseArgs(["auth", "oauth", "setup"], commandSpecs)
+    const output = await Effect.runPromise(runCommand(parsed, fakeGateway(""), "/repo/src/main.ts", {}))
+
+    expect(output.oauthSetup).toEqual({
+      phase: "register-client",
+      registerUrl: "https://linear.app/settings/api/applications/new",
+      redirectUri: "http://127.0.0.1:14582/oauth/callback",
+      scope: "read,write",
+      actor: "user",
+      installableByOtherWorkspaces: true,
+      webhooks: false
+    })
+  })
+
+  test("oauth connect without a client id points to setup", async () => {
+    const parsed = parseArgs(["auth", "oauth", "connect"], commandSpecs)
+    const error = await Effect.runPromise(Effect.flip(runCommand(parsed, fakeGateway(""), "/repo/src/main.ts", {})))
+
+    expect(error.help).toContain("auth oauth setup")
+  })
+
+  test("oauth connect rejects non-loopback redirect hosts before listening", async () => {
+    const parsed = parseArgs([
+      "auth",
+      "oauth",
+      "connect",
+      "--client-id",
+      "client1",
+      "--redirect-uri",
+      "http://0.0.0.0:14582/oauth/callback"
+    ], commandSpecs)
+    const exit = await Effect.runPromiseExit(runCommand(parsed, fakeGateway(""), "/repo/src/main.ts"))
+
+    expect(exit._tag).toBe("Failure")
+  })
+
+  test("oauth connect rejects redirect URIs without explicit ports", async () => {
+    const parsed = parseArgs([
+      "auth",
+      "oauth",
+      "connect",
+      "--client-id",
+      "client1",
+      "--redirect-uri",
+      "http://127.0.0.1/oauth/callback"
+    ], commandSpecs)
+    const exit = await Effect.runPromiseExit(runCommand(parsed, fakeGateway(""), "/repo/src/main.ts"))
+
+    expect(exit._tag).toBe("Failure")
+  })
 })

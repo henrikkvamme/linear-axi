@@ -2,12 +2,15 @@ import { Effect } from "effect"
 import { type ParsedArgs, readBooleanFlag, readLimitFlag, readStringFlag, topLevelHelp } from "./args"
 import { UsageError, type CliError } from "./errors"
 import type { LinearGateway } from "./linear"
+import { connectOAuth, setupOAuth } from "./oauth"
 import { truncateText, type OutputValue } from "./output"
+import type { Env } from "./env"
 
 export const runCommand = (
   parsed: ParsedArgs,
   gateway: LinearGateway,
-  binPath: string
+  binPath: string,
+  env: Env = process.env
 ): Effect.Effect<OutputValue, CliError> => {
   const path = parsed.command.join(" ")
 
@@ -24,9 +27,13 @@ export const runCommand = (
       return gateway.authStatus().pipe(
         Effect.map((auth) => ({
           auth,
-          help: auth.authenticated ? [] : ["Set LINEAR_API_KEY or LINEAR_ACCESS_TOKEN."]
+          help: auth.authenticated ? [] : ["Set LINEAR_API_KEY or LINEAR_ACCESS_TOKEN.", "Run `linear-axi auth oauth setup --notify` if this repo needs OAuth setup."]
         }))
       )
+    case "auth oauth setup":
+      return authOAuthSetup(parsed, env)
+    case "auth oauth connect":
+      return authOAuthConnect(parsed, env)
     case "teams list":
       return teamsList(parsed, gateway)
     case "issues list":
@@ -83,6 +90,41 @@ const teamsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
     }))
   )
 }
+
+const authOAuthConnect = (parsed: ParsedArgs, env: Env) => {
+  const timeout = readStringFlag(parsed.flags, "timeout")
+  if (timeout !== undefined && (!/^[0-9]+$/.test(timeout) || Number(timeout) < 30 || Number(timeout) > 3600)) {
+    return Effect.fail(
+      new UsageError({
+        message: "--timeout must be an integer between 30 and 3600 seconds",
+        help: "Usage: linear-axi auth oauth connect --client-id <id> [--timeout 300]"
+      })
+    )
+  }
+
+  return connectOAuth({
+    env,
+    cwd: process.cwd(),
+    clientId: readStringFlag(parsed.flags, "client-id"),
+    redirectUri: readStringFlag(parsed.flags, "redirect-uri"),
+    scope: readStringFlag(parsed.flags, "scope"),
+    actor: readStringFlag(parsed.flags, "actor"),
+    promptConsent: readBooleanFlag(parsed.flags, "prompt-consent"),
+    notify: readBooleanFlag(parsed.flags, "notify"),
+    writeEnv: readBooleanFlag(parsed.flags, "write-env"),
+    envFile: readStringFlag(parsed.flags, "env-file"),
+    timeoutSeconds: timeout === undefined ? undefined : Number(timeout)
+  })
+}
+
+const authOAuthSetup = (parsed: ParsedArgs, env: Env) =>
+  setupOAuth({
+    env,
+    redirectUri: readStringFlag(parsed.flags, "redirect-uri"),
+    scope: readStringFlag(parsed.flags, "scope"),
+    actor: readStringFlag(parsed.flags, "actor"),
+    notify: readBooleanFlag(parsed.flags, "notify")
+  })
 
 const issuesList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const limit = readLimitFlag(parsed.flags, 20)
@@ -166,6 +208,18 @@ const helpFor = (path: string): string => {
       return topLevelHelp
     case "auth status":
       return "Usage: linear-axi auth status\nExample: linear-axi auth status"
+    case "auth oauth setup":
+      return [
+        "Usage: linear-axi auth oauth setup [--redirect-uri <url>] [--scope read,write] [--actor user|app] [--notify]",
+        "Example: linear-axi auth oauth setup --notify",
+        "Example: linear-axi auth oauth setup --redirect-uri http://127.0.0.1:14582/oauth/callback"
+      ].join("\n")
+    case "auth oauth connect":
+      return [
+        "Usage: linear-axi auth oauth connect --client-id <id> [--redirect-uri <url>] [--scope read,write] [--actor user|app] [--prompt-consent] [--write-env] [--notify]",
+        "Example: linear-axi auth oauth connect --client-id lin_oauth_app_123 --write-env --prompt-consent",
+        "Example: linear-axi auth oauth connect --client-id lin_oauth_app_123 --redirect-uri http://127.0.0.1:14582/oauth/callback --notify --write-env"
+      ].join("\n")
     case "teams list":
       return "Usage: linear-axi teams list [--limit 50]\nExample: linear-axi teams list --limit 25"
     case "issues list":

@@ -150,6 +150,8 @@ export const topLevelHelp = [
   "Commands:",
   "  linear-axi",
   "  linear-axi auth status",
+  "  linear-axi auth oauth setup [--notify]",
+  "  linear-axi auth oauth connect --client-id <id> [--write-env] [--notify]",
   "  linear-axi teams list [--limit 50]",
   "  linear-axi issues list [--assignee me] [--team <key-or-id>] [--limit 20]",
   "  linear-axi issues view --id <issue-id-or-key> [--full]",
@@ -167,6 +169,29 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
     path: ["auth", "status"],
     flags: new Set(["help"]),
     help: "Usage: linear-axi auth status"
+  },
+  {
+    path: ["auth", "oauth", "setup"],
+    flags: new Set(["help", "notify", "redirect-uri", "scope", "actor"]),
+    valueFlags: new Set(["redirect-uri", "scope", "actor"]),
+    help: "Usage: linear-axi auth oauth setup [--notify]"
+  },
+  {
+    path: ["auth", "oauth", "connect"],
+    flags: new Set([
+      "help",
+      "client-id",
+      "redirect-uri",
+      "scope",
+      "actor",
+      "prompt-consent",
+      "notify",
+      "write-env",
+      "env-file",
+      "timeout"
+    ]),
+    valueFlags: new Set(["client-id", "redirect-uri", "scope", "actor", "env-file", "timeout"]),
+    help: "Usage: linear-axi auth oauth connect --client-id <id> [--redirect-uri <url>] [--write-env] [--notify]"
   },
   {
     path: ["teams", "list"],

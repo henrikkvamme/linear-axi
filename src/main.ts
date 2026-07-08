@@ -2,6 +2,7 @@
 import { Cause, Effect, Exit, Result } from "effect"
 import { commandSpecs, parseArgs } from "./args"
 import { AuthError, type CliError, LinearApiError, UsageError } from "./errors"
+import { loadEnv } from "./env"
 import { makeLinearGateway } from "./linear"
 import { errorOutput, writeToon } from "./output"
 import { runCommand } from "./commands"
@@ -19,8 +20,9 @@ const parseProgramArgs = Effect.try({
 
 const main: Effect.Effect<Record<string, unknown>, CliError> = Effect.gen(function*() {
   const parsed = yield* parseProgramArgs
-  const gateway = makeLinearGateway(process.env)
-  return yield* runCommand(parsed, gateway, Bun.argv[1] ?? "linear-axi")
+  const env = loadEnv(process.cwd(), process.env)
+  const gateway = makeLinearGateway(env)
+  return yield* runCommand(parsed, gateway, Bun.argv[1] ?? "linear-axi", env)
 })
 
 const exitCodeFor = (error: unknown): number => {
