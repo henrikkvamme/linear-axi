@@ -337,12 +337,23 @@ const updateIssueDescription = async (
   }
 
   const payload = await client.updateIssue(issue.id, { description: desiredDescription })
-  await requirePayload(payload.success, payload.issue, "update the issue description")
+  const accepted = await requirePayload(payload.success, payload.issue, "update the issue description")
+  const acceptedDescription = accepted.description ?? ""
+  const acceptedUpdatedAt = accepted.updatedAt.toISOString()
   const verified = await issueDetail(await resolveIssue(client, issue.id))
-  if (verified.description !== desiredDescription || verified.updatedAt === current.updatedAt) {
+  if (verified.description !== acceptedDescription || verified.updatedAt !== acceptedUpdatedAt) {
     throw conflict(
       `${current.identifier} description update could not be verified`,
       "Refetch and merge before retrying. Linear does not provide atomic compare-and-swap for descriptions."
+    )
+  }
+  if (acceptedDescription === current.description && acceptedUpdatedAt === current.updatedAt) {
+    return unchanged(verified, "description already matches after Linear normalization (no-op)")
+  }
+  if (acceptedUpdatedAt === current.updatedAt) {
+    throw conflict(
+      `${current.identifier} description changed without a verifiable timestamp advance`,
+      "Refetch and merge before retrying."
     )
   }
   return changed(verified, "description updated and verified")

@@ -109,13 +109,45 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(result.value.description).toBe("line one\nline two")
   })
 
-  test("post-write mismatch is a conflict", async () => {
+  test("description verification follows Linear's server-canonical Markdown", async () => {
     const before = issue()
-    const after = issue({ description: "other", updatedAt: new Date("2026-07-13T12:01:00.000Z") })
+    const after = issue({ description: "[decision](<https://example.com>)", updatedAt: new Date("2026-07-13T12:01:00.000Z") })
     let reads = 0
     const client = clientWithIssues([], {
       issues: async () => page([reads++ === 0 ? before : after]),
       updateIssue: async () => ({ success: true, issue: Promise.resolve(after) })
+    })
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).updateIssueDescription({
+      id: "BEN-1",
+      description: "[decision](https://example.com)\n",
+      ifUpdatedAt: "2026-07-13T12:00:00.000Z"
+    }))
+    expect(result.changed).toBe(true)
+    expect(result.value.description).toBe("[decision](<https://example.com>)")
+  })
+
+  test("server-normalized equivalent description is a no-op", async () => {
+    const current = issue({ description: "[decision](<https://example.com>)" })
+    const client = clientWithIssues([current], {
+      updateIssue: async () => ({ success: true, issue: Promise.resolve(current) })
+    })
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).updateIssueDescription({
+      id: "BEN-1",
+      description: "[decision](https://example.com)\n",
+      ifUpdatedAt: "2026-07-13T12:00:00.000Z"
+    }))
+    expect(result.changed).toBe(false)
+    expect(result.result).toContain("Linear normalization")
+  })
+
+  test("post-write mismatch is a conflict", async () => {
+    const before = issue()
+    const accepted = issue({ description: "replacement", updatedAt: new Date("2026-07-13T12:01:00.000Z") })
+    const after = issue({ description: "other", updatedAt: new Date("2026-07-13T12:02:00.000Z") })
+    let reads = 0
+    const client = clientWithIssues([], {
+      issues: async () => page([reads++ === 0 ? before : after]),
+      updateIssue: async () => ({ success: true, issue: Promise.resolve(accepted) })
     })
     const exit = await Effect.runPromiseExit(makeLinearGateway({}, { client }).updateIssueDescription({
       id: "BEN-1",
