@@ -7,7 +7,8 @@ import {
   type Issue,
   type IssueLabel,
   type IssueRelation,
-  type Team
+  type Team,
+  type WorkflowState
 } from "@linear/sdk"
 import { Effect } from "effect"
 import { AuthError, LinearApiError, LinearDomainError } from "./errors"
@@ -45,11 +46,11 @@ import { fetchAllPages, type ConnectionLike } from "./linear-pagination"
 import {
   completedStates,
   findIssueByUuid,
-  findLabelsInScope,
+  findLabelByIdInScope,
+  findLabelByNameInScope,
   resolveIssue,
   resolveLabelForTeam,
   resolveLabelGlobally,
-  resolveLabelInScope,
   resolveTeam,
   resolveUser,
   resolveWorkflowState
@@ -184,7 +185,7 @@ const createIssue = async (
     const detail = await issueDetail(existing)
     const matches = detail.teamId === team.id &&
       detail.title === input.title &&
-      descriptionsEqual(detail.description, input.description ?? "") &&
+      richTextEqual(detail.description, input.description ?? "") &&
       detail.parentId === (parent?.id ?? null) &&
       (label === undefined || detail.labels.some((existingLabel) => existingLabel.id === label.id))
     if (!matches) {
@@ -290,23 +291,31 @@ const closeIssue = async (
     return unchanged(await issueSummary(issue), "already closed (no-op)")
   }
 
-  let target
+  let target: WorkflowState
   if (input.state) {
     target = await resolveWorkflowState(client, input.state, teamId)
     if (target.type !== "completed") {
       throw conflict(`workflow state ${target.name} is not completed`, "Pass a completed workflow-state UUID.")
     }
   } else {
-    const states = [...await completedStates(client, teamId)].sort(
-      (left, right) => left.position - right.position || left.id.localeCompare(right.id)
-    )
-    target = states[0]
-    if (!target) {
+    const states = await completedStates(client, teamId)
+    if (states.length === 0) {
       throw new LinearDomainError({
         message: `No completed workflow state exists for ${issue.identifier}'s team`,
         help: "Create a completed state in Linear or pass its UUID with `--state`."
       })
     }
+    if (states.length > 1) {
+      const candidates = [...states]
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .map((state) => `${state.id} (${state.name})`)
+        .join(", ")
+      throw conflict(
+        `Ambiguous completed workflow state for ${issue.identifier}; matched ${candidates}`,
+        "Pass `--state <completed-state-uuid>` to choose the intended completed state."
+      )
+    }
+    target = states[0]!
   }
 
   const payload = await client.updateIssue(issue.id, { stateId: target.id })
@@ -332,7 +341,7 @@ const updateIssueDescription = async (
       `Refetch with \`linear-axi issues view --id ${current.identifier} --full\`, merge the current description, and retry with its updatedAt.`
     )
   }
-  if (descriptionsEqual(current.description, desiredDescription)) {
+  if (richTextEqual(current.description, desiredDescription)) {
     return unchanged(
       current,
       current.description === desiredDescription
@@ -346,7 +355,11 @@ const updateIssueDescription = async (
   const acceptedDescription = accepted.description ?? ""
   const acceptedUpdatedAt = accepted.updatedAt.toISOString()
   const verified = await issueDetail(await resolveIssue(client, issue.id))
-  if (verified.description !== acceptedDescription || verified.updatedAt !== acceptedUpdatedAt) {
+  if (
+    verified.description !== acceptedDescription ||
+    verified.updatedAt !== acceptedUpdatedAt ||
+    !richTextEqual(verified.description, desiredDescription)
+  ) {
     throw conflict(
       `${current.identifier} description update could not be verified`,
       "Refetch and merge before retrying. Linear does not provide atomic compare-and-swap for descriptions."
@@ -365,6 +378,7 @@ const updateIssueDescription = async (
 }
 
 const listLabels = async (client: LinearClient, input: ListLabelsInput): Promise<PageResult<LabelSummary>> => {
+  const localOffset = input.issue && input.name ? parseLocalCursor(input.after, "label") : 0
   if (input.issue) {
     const issue = await resolveIssue(client, input.issue)
     if (input.name) {
@@ -372,9 +386,8 @@ const listLabels = async (client: LinearClient, input: ListLabelsInput): Promise
       const matches = labels
         .filter((label) => label.name.toLowerCase() === input.name!.toLowerCase())
         .sort((left, right) => left.id.localeCompare(right.id))
-      const offset = parseLocalCursor(input.after, "label")
-      const selected = matches.slice(offset, offset + input.limit)
-      const nextOffset = offset + selected.length
+      const selected = matches.slice(localOffset, localOffset + input.limit)
+      const nextOffset = localOffset + selected.length
       return {
         items: await Promise.all(selected.map((label) => labelSummary(label))),
         page: {
@@ -413,20 +426,56 @@ const createLabel = async (
       summary.description !== (input.description ?? "")
     ) {
       throw conflict(
-        `label ${summary.name} already exists with different color or description`,
+        `label ${summary.name} already exists with a different name, color, or description`,
         "Choose a different name or make the requested properties match the existing label."
       )
     }
     return unchanged(summary, "matching label already exists (no-op)")
   }
 
-  if (input.ifAbsent || input.id) {
-    const lookup = input.id ?? input.name
-    const matches = await findLabelsInScope(client, lookup, teamId)
-    if (matches.length > 0) {
-      const existing = await resolveLabelInScope(client, lookup, teamId)
-      return classify(existing)
+  const classifyExisting = async (): Promise<MutationResult<LabelSummary> | undefined> => {
+    if (input.id && input.ifAbsent) {
+      const [nameMatch, idMatch] = await Promise.all([
+        findLabelByNameInScope(client, input.name, teamId),
+        findLabelByIdInScope(client, input.id, teamId)
+      ])
+      if (!nameMatch && !idMatch) {
+        return undefined
+      }
+      if (!nameMatch) {
+        throw conflict(
+          `label caller UUID ${input.id} conflicts with requested name ${input.name}; it belongs to ${idMatch!.name}`,
+          "Use a new caller-retained UUID or make both identities refer to the same scoped label."
+        )
+      }
+      if (!idMatch) {
+        throw conflict(
+          `label name ${input.name} conflicts with caller UUID ${input.id}; it belongs to ${nameMatch.id}`,
+          "Use a new label name or make both identities refer to the same scoped label."
+        )
+      }
+      if (nameMatch.id !== idMatch.id) {
+        throw conflict(
+          `label name ${input.name} and caller UUID ${input.id} conflict with different scoped labels`,
+          "Use a name and caller-retained UUID that refer to the same scoped label."
+        )
+      }
+      return classify(idMatch)
     }
+
+    const lookup = input.id ?? (input.ifAbsent ? input.name : undefined)
+    if (!lookup) {
+      return undefined
+    }
+    const found = input.id
+      ? await findLabelByIdInScope(client, input.id, teamId)
+      : await findLabelByNameInScope(client, lookup, teamId)
+    return found ? classify(found) : undefined
+  }
+
+  const existing = await classifyExisting()
+  if (existing) {
+    return existing
   }
 
   try {
@@ -440,12 +489,9 @@ const createLabel = async (
     const label = await requirePayload(payload.success, payload.issueLabel, "create the label")
     return changed(await labelSummary(label, team?.key), "label created")
   } catch (cause) {
-    if (input.ifAbsent || input.id) {
-      const lookup = input.id ?? input.name
-      const matches = await findLabelsInScope(client, lookup, teamId)
-      if (matches.length > 0) {
-        return classify(await resolveLabelInScope(client, lookup, teamId))
-      }
+    const concurrent = await classifyExisting()
+    if (concurrent) {
+      return concurrent
     }
     throw cause
   }
@@ -482,6 +528,7 @@ const listRelations = async (
   client: LinearClient,
   input: ListRelationsInput
 ): Promise<PageResult<RelationSummary>> => {
+  const offset = parseLocalCursor(input.after, "relation")
   const issue = await resolveIssue(client, input.issue)
   const outgoing = input.direction === "incoming"
     ? []
@@ -497,7 +544,6 @@ const listRelations = async (
     .sort(({ relation: left, direction: leftDirection }, { relation: right, direction: rightDirection }) =>
       left.id.localeCompare(right.id) || leftDirection.localeCompare(rightDirection)
     )
-  const offset = parseLocalCursor(input.after, "relation")
   const selected = rows.slice(offset, offset + input.limit)
   const items = await Promise.all(selected.map(({ relation, direction }) => relationSummary(relation, direction)))
   const nextOffset = offset + items.length
@@ -560,7 +606,7 @@ const createComment = async (
 ): Promise<MutationResult<CommentSummary>> => {
   const issue = await resolveIssue(client, input.issue)
   const classify = async (comment: Comment): Promise<MutationResult<CommentSummary>> => {
-    if (comment.issueId !== issue.id || comment.body !== input.body) {
+    if (comment.issueId !== issue.id || !richTextEqual(comment.body, input.body)) {
       throw conflict(`comment UUID ${input.id} already exists with different issue or body`, "Use a new caller-retained UUID for a different comment.")
     }
     return unchanged(await commentSummary(comment, issue.id), "matching comment already exists (no-op)")
@@ -793,8 +839,8 @@ const readableError = (cause: unknown): string => {
 const normalizeDescription = (description: string): string =>
   description.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replace(/\n+$/, "")
 
-const canonicalDescription = (description: string): string =>
-  normalizeDescription(description).replace(/\]\(<(https?:\/\/[^>\n]+)>\)/g, "]($1)")
+const canonicalRichText = (text: string): string =>
+  normalizeDescription(text).replace(/\]\(<(https?:\/\/[^>\n]+)>\)/g, "]($1)")
 
-const descriptionsEqual = (left: string, right: string): boolean =>
-  canonicalDescription(left) === canonicalDescription(right)
+const richTextEqual = (left: string, right: string): boolean =>
+  canonicalRichText(left) === canonicalRichText(right)

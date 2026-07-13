@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { Issue, LinearClient } from "@linear/sdk"
+import type { Comment, Issue, IssueLabel, LinearClient } from "@linear/sdk"
 import { Effect } from "effect"
 import { makeLinearGateway } from "../src/linear"
 import type { ConnectionLike } from "../src/linear-pagination"
@@ -45,6 +45,28 @@ const team = {
   key: "BEN",
   name: "Bender"
 }
+
+const comment = (overrides: Record<string, unknown> = {}): Comment => ({
+  id: "44444444-4444-4444-8444-444444444444",
+  issueId: issue().id,
+  body: "initial",
+  createdAt: new Date("2026-07-13T12:00:00.000Z"),
+  updatedAt: new Date("2026-07-13T12:00:00.000Z"),
+  user: Promise.resolve({ id: "33333333-3333-4333-8333-333333333333", name: "Henrik" }),
+  url: "https://linear.app/acme/issue/BEN-1#comment",
+  ...overrides
+} as unknown as Comment)
+
+const issueLabel = (overrides: Record<string, unknown> = {}): IssueLabel => ({
+  id: "55555555-5555-4555-8555-555555555555",
+  name: "wayfinder:task",
+  teamId: team.id,
+  color: "#123456",
+  description: "Task",
+  isGroup: false,
+  archivedAt: undefined,
+  ...overrides
+} as unknown as IssueLabel)
 
 describe("SDK LinearGateway conflict contracts", () => {
   test("resolves human issue identifiers by exact team key and issue number", async () => {
@@ -214,6 +236,57 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(updates).toBe(0)
   })
 
+  test("description verification rejects a material server transformation", async () => {
+    const before = issue()
+    const transformed = issue({ description: "server rewrite", updatedAt: new Date("2026-07-13T12:01:00.000Z") })
+    let reads = 0
+    const client = clientWithIssues([], {
+      issues: async () => page([reads++ === 0 ? before : transformed]),
+      updateIssue: async () => ({ success: true, issue: Promise.resolve(transformed) })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client }).updateIssueDescription({
+        id: "BEN-1",
+        description: "requested replacement",
+        ifUpdatedAt: "2026-07-13T12:00:00.000Z"
+      })
+    ))
+
+    expect(error.message).toContain("could not be verified")
+  })
+
+  test("caller-UUID comment retry accepts server-canonical Markdown and newlines", async () => {
+    const existing = comment({ body: "[decision](<https://example.com>)" })
+    let creates = 0
+    const client = clientWithIssues([issue()], {
+      comments: async () => page([existing]),
+      createComment: async () => { creates += 1; return { success: true, comment: Promise.resolve(existing) } }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).createComment({
+      issue: "BEN-1",
+      body: "[decision](https://example.com)\r\n",
+      id: existing.id
+    }))
+
+    expect(result.changed).toBe(false)
+    expect(creates).toBe(0)
+  })
+
+  test("caller-UUID comment retry rejects materially different Markdown", async () => {
+    const existing = comment({ body: "[decision](<https://example.com>)" })
+    const client = clientWithIssues([issue()], { comments: async () => page([existing]) })
+
+    const exit = await Effect.runPromiseExit(makeLinearGateway({}, { client }).createComment({
+      issue: "BEN-1",
+      body: "[other](https://example.com)\n",
+      id: existing.id
+    }))
+
+    expect(exit._tag).toBe("Failure")
+  })
+
   test("post-write mismatch is a conflict", async () => {
     const before = issue()
     const accepted = issue({ description: "replacement", updatedAt: new Date("2026-07-13T12:01:00.000Z") })
@@ -269,24 +342,202 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(updates).toBe(0)
   })
 
-  test("close selects the stable lowest position and UUID completed state", async () => {
-    const firstState = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Done B", type: "completed", position: 2 }
-    const selectedState = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Done A", type: "completed", position: 1 }
+  test("close without state selects the only completed state", async () => {
+    const selectedState = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Done", type: "completed", position: 1 }
     const before = issue()
     const after = issue({ state: Promise.resolve(selectedState) })
     let reads = 0
     let selected: string | undefined
     const client = clientWithIssues([], {
       issues: async () => page([reads++ === 0 ? before : after]),
-      workflowStates: async () => page([firstState, selectedState]),
+      workflowStates: async () => page([selectedState]),
       updateIssue: async (_id: string, input: { stateId?: string }) => {
         selected = input.stateId
         return { success: true, issue: Promise.resolve(after) }
       }
     })
+
     const result = await Effect.runPromise(makeLinearGateway({}, { client }).closeIssue({ id: "BEN-1" }))
+
     expect(result.changed).toBe(true)
     expect(selected).toBe(selectedState.id)
+  })
+
+  test("close without state rejects multiple completed states", async () => {
+    const firstState = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Done A", type: "completed", position: 1 }
+    const secondState = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Done B", type: "completed", position: 2 }
+    let updates = 0
+    const client = clientWithIssues([issue()], {
+      workflowStates: async () => page([firstState, secondState]),
+      updateIssue: async () => { updates += 1; return { success: true } }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client }).closeIssue({ id: "BEN-1" })
+    ))
+
+    expect(error.message).toContain("Ambiguous completed workflow state")
+    expect(error.message).toContain(`${firstState.id} (${firstState.name})`)
+    expect(error.message).toContain(`${secondState.id} (${secondState.name})`)
+    expect(error.help).toContain("--state")
+    expect(updates).toBe(0)
+  })
+
+  test("close with an explicit state remains unambiguous", async () => {
+    const selectedState = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Done A", type: "completed", position: 1 }
+    const otherState = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Done B", type: "completed", position: 2 }
+    const before = issue()
+    const after = issue({ state: Promise.resolve(selectedState) })
+    let reads = 0
+    let selected: string | undefined
+    const client = clientWithIssues([], {
+      issues: async () => page([reads++ === 0 ? before : after]),
+      workflowStates: async () => page([selectedState, otherState]),
+      updateIssue: async (_id: string, input: { stateId?: string }) => {
+        selected = input.stateId
+        return { success: true, issue: Promise.resolve(after) }
+      }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).closeIssue({
+      id: "BEN-1",
+      state: selectedState.id
+    }))
+
+    expect(result.changed).toBe(true)
+    expect(selected).toBe(selectedState.id)
+  })
+
+  test("label create with caller UUID and if-absent creates when both identities are absent", async () => {
+    const id = "55555555-5555-4555-8555-555555555555"
+    const created = issueLabel({ id })
+    let sent: Record<string, unknown> | undefined
+    const filters: unknown[] = []
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async (variables: { filter: unknown }) => {
+        filters.push(variables.filter)
+        return page([])
+      },
+      createIssueLabel: async (input: Record<string, unknown>) => {
+        sent = input
+        return { success: true, issueLabel: Promise.resolve(created) }
+      }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).createLabel({
+      name: created.name,
+      color: created.color,
+      description: created.description ?? undefined,
+      workspace: false,
+      team: "BEN",
+      id,
+      ifAbsent: true
+    }))
+
+    expect(result.changed).toBe(true)
+    expect(sent).toMatchObject({ id, name: created.name })
+    expect(filters).toEqual([
+      { name: { eqIgnoreCase: created.name }, team: { id: { eq: team.id } } },
+      { id: { eq: id }, team: { id: { eq: team.id } } }
+    ])
+  })
+
+  test("label create with caller UUID and if-absent is a no-op when both identities match", async () => {
+    const existing = issueLabel()
+    let creates = 0
+    const filters: unknown[] = []
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async (variables: { filter: unknown }) => {
+        filters.push(variables.filter)
+        return page([existing])
+      },
+      createIssueLabel: async () => { creates += 1; return { success: true } }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).createLabel({
+      name: existing.name,
+      color: existing.color,
+      description: existing.description ?? undefined,
+      workspace: false,
+      team: "BEN",
+      id: existing.id,
+      ifAbsent: true
+    }))
+
+    expect(result.changed).toBe(false)
+    expect(creates).toBe(0)
+    expect(filters).toHaveLength(2)
+  })
+
+  test("label create rechecks both identities after a concurrent create", async () => {
+    const existing = issueLabel()
+    let labelReads = 0
+    let creates = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async () => page(labelReads++ < 2 ? [] : [existing]),
+      createIssueLabel: async () => {
+        creates += 1
+        throw new Error("name already exists")
+      }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).createLabel({
+      name: existing.name,
+      color: existing.color,
+      description: existing.description ?? undefined,
+      workspace: false,
+      team: "BEN",
+      id: existing.id,
+      ifAbsent: true
+    }))
+
+    expect(result.changed).toBe(false)
+    expect(labelReads).toBe(4)
+    expect(creates).toBe(1)
+  })
+
+  test.each([
+    {
+      name: "name belongs to another UUID",
+      byName: issueLabel({ id: "66666666-6666-4666-8666-666666666666" }),
+      byId: undefined
+    },
+    {
+      name: "UUID belongs to another name",
+      byName: undefined,
+      byId: issueLabel({ name: "wayfinder:other" })
+    },
+    {
+      name: "name and UUID resolve to different labels",
+      byName: issueLabel({ id: "66666666-6666-4666-8666-666666666666" }),
+      byId: issueLabel({ name: "wayfinder:other" })
+    }
+  ])("label create conflicts when $name", async ({ byName, byId }) => {
+    let creates = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async (variables: { filter: { id?: { eq: string } } }) =>
+        page(variables.filter.id ? (byId ? [byId] : []) : (byName ? [byName] : [])),
+      createIssueLabel: async () => { creates += 1; return { success: true } }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client }).createLabel({
+        name: "wayfinder:task",
+        color: "#123456",
+        description: "Task",
+        workspace: false,
+        team: "BEN",
+        id: "55555555-5555-4555-8555-555555555555",
+        ifAbsent: true
+      })
+    ))
+
+    expect(error.message).toMatch(/conflict/)
+    expect(creates).toBe(0)
   })
 
   test("issue summaries fetch truthful label names across every page", async () => {
@@ -353,6 +604,31 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(result.items.map((item) => item.id)).toEqual(["a"])
     expect(result.page).toEqual({ hasNext: true, endCursor: "relation:1" })
     expect(counterpartReads).toBe(1)
+  })
+
+  test("invalid local cursors fail before Linear access", async () => {
+    let issueReads = 0
+    const client = clientWithIssues([], {
+      issues: async () => { issueReads += 1; return page([]) }
+    })
+    const gateway = makeLinearGateway({}, { client })
+
+    const relationError = await Effect.runPromise(Effect.flip(gateway.listRelations({
+      issue: "BEN-1",
+      direction: "both",
+      after: "invalid",
+      limit: 20
+    })))
+    const labelError = await Effect.runPromise(Effect.flip(gateway.listLabels({
+      issue: "BEN-1",
+      name: "wayfinder:task",
+      after: "invalid",
+      limit: 20
+    })))
+
+    expect(relationError.message).toBe("invalid relation cursor")
+    expect(labelError.message).toBe("invalid label cursor")
+    expect(issueReads).toBe(0)
   })
 
   test("rate-limit errors remain structured API failures", async () => {

@@ -124,23 +124,56 @@ export const resolveLabelInScope = async (
   return exactlyOne(`label ${idOrName}`, labels, labelCandidate)
 }
 
-export const findLabelsInScope = async (
+export const findLabelByIdInScope = (
+  client: LinearClient,
+  id: string,
+  teamId: string | null
+): Promise<IssueLabel | undefined> => findOneLabelInScope(client, id, teamId, "id")
+
+export const findLabelByNameInScope = (
+  client: LinearClient,
+  name: string,
+  teamId: string | null
+): Promise<IssueLabel | undefined> => findOneLabelInScope(client, name, teamId, "name")
+
+export const findLabelsInScope = (
   client: LinearClient,
   idOrName: string,
   teamId: string | null
+): Promise<ReadonlyArray<IssueLabel>> =>
+  findLabelsInScopeByIdentity(client, idOrName, teamId, isUuid(idOrName) ? "id" : "name")
+
+const findOneLabelInScope = async (
+  client: LinearClient,
+  value: string,
+  teamId: string | null,
+  identity: "id" | "name"
+): Promise<IssueLabel | undefined> => {
+  const labels = await findLabelsInScopeByIdentity(client, value, teamId, identity)
+  if (labels.length > 1) {
+    throw ambiguity(`label ${value}`, labels, labelCandidate)
+  }
+  return labels[0]
+}
+
+const findLabelsInScopeByIdentity = async (
+  client: LinearClient,
+  value: string,
+  teamId: string | null,
+  identity: "id" | "name"
 ): Promise<ReadonlyArray<IssueLabel>> => {
   const labels = await fetchAllPages(
     await client.issueLabels({
       first: 50,
       filter: {
-        ...(isUuid(idOrName) ? { id: { eq: idOrName } } : { name: { eqIgnoreCase: idOrName } }),
+        ...(identity === "id" ? { id: { eq: value } } : { name: { eqIgnoreCase: value } }),
         team: teamId === null ? { null: true } : { id: { eq: teamId } }
       }
     })
   )
-  const normalized = idOrName.toLowerCase()
+  const normalized = value.toLowerCase()
   return labels.filter((label) =>
-    (isUuid(idOrName) ? label.id === idOrName : label.name.toLowerCase() === normalized) &&
+    (identity === "id" ? label.id === value : label.name.toLowerCase() === normalized) &&
     (teamId === null ? label.teamId === undefined : label.teamId === teamId)
   )
 }
