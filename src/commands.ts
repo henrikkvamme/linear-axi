@@ -1,7 +1,11 @@
 import { Effect } from "effect"
 import {
   commandSpecs,
+  DEFAULT_ISSUE_FIELDS,
+  DEFAULT_LABEL_FIELDS,
   findSpec,
+  ISSUE_FIELDS,
+  LABEL_FIELDS,
   type ParsedArgs,
   readBooleanFlag,
   readLimitFlag,
@@ -21,12 +25,8 @@ import { DESCRIPTION_CONCURRENCY_WARNING } from "./linear"
 import { connectOAuth, setupOAuth } from "./oauth"
 import { truncateText, type OutputValue } from "./output"
 
-const ISSUE_FIELDS = new Set([
-  "id", "identifier", "title", "state", "assignee", "parent", "labels", "updatedAt", "url", "subIssueSortOrder"
-])
-const DEFAULT_ISSUE_FIELDS = ["id", "identifier", "title", "state"]
-const LABEL_FIELDS = new Set(["id", "name", "scope", "color", "description", "isGroup", "archivedAt"])
-const DEFAULT_LABEL_FIELDS = ["id", "name", "scope"]
+const ISSUE_FIELD_SET: ReadonlySet<string> = new Set(ISSUE_FIELDS)
+const LABEL_FIELD_SET: ReadonlySet<string> = new Set(LABEL_FIELDS)
 const RELATION_TYPES = new Set<RelationType>(["blocks", "related", "duplicate", "similar"])
 const RELATION_DIRECTIONS = new Set(["outgoing", "incoming", "both"])
 
@@ -100,7 +100,7 @@ const home = (gateway: LinearGateway, binPath: string) =>
         })
       }
 
-      return gateway.listIssues({ assignee: "me", limit: 10 }).pipe(
+      return gateway.listIssues({ assignee: "me", limit: 10, fields: DEFAULT_ISSUE_FIELDS }).pipe(
         Effect.map((result) => ({
           bin: collapseHome(binPath),
           description: "Operate Linear through a Bun, Effect, AXI-oriented CLI.",
@@ -132,7 +132,7 @@ const issuesList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   if (state !== undefined && state !== "open" && state !== "closed") {
     return usage("--state must be `open` or `closed`", parsed.command)
   }
-  const fields = readFields(parsed, "fields", ISSUE_FIELDS, DEFAULT_ISSUE_FIELDS)
+  const fields = readFields(parsed, "fields", ISSUE_FIELD_SET, DEFAULT_ISSUE_FIELDS)
   return gateway.listIssues({
     limit: readLimitFlag(parsed.flags, 20),
     after: readStringFlag(parsed.flags, "after"),
@@ -140,7 +140,8 @@ const issuesList = (parsed: ParsedArgs, gateway: LinearGateway) => {
     team: readStringFlag(parsed.flags, "team"),
     label: readStringFlag(parsed.flags, "label"),
     parent: readStringFlag(parsed.flags, "parent"),
-    state
+    state,
+    fields
   }).pipe(
     Effect.map((result) => {
       const parent = readStringFlag(parsed.flags, "parent")
@@ -265,7 +266,7 @@ const labelsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   if (issue && (workspace || team)) {
     return usage("--issue cannot be combined with --workspace or --team", parsed.command)
   }
-  const fields = readFields(parsed, "fields", LABEL_FIELDS, DEFAULT_LABEL_FIELDS)
+  const fields = readFields(parsed, "fields", LABEL_FIELD_SET, DEFAULT_LABEL_FIELDS)
   return gateway.listLabels({
     limit: readLimitFlag(parsed.flags, 100),
     after: readStringFlag(parsed.flags, "after"),
@@ -515,7 +516,7 @@ const projectIssue = (issue: IssueSummary, fields: ReadonlyArray<string>): Recor
 
 const issueField = (issue: IssueSummary, field: string): unknown => {
   switch (field) {
-    case "labels": return issue.labels.map((label) => label.name).join(",")
+    case "labels": return issue.labels.map((label) => label.name)
     case "assignee": return issue.assignee
     case "parent": return issue.parent
     default: return issue[field as keyof IssueSummary]

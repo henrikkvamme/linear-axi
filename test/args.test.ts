@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { commandSpecs, parseArgs } from "../src/args"
+import { commandSpecs, ISSUE_FIELDS, LABEL_FIELDS, parseArgs } from "../src/args"
 import { UsageError } from "../src/errors"
 
 describe("parseArgs", () => {
@@ -123,6 +123,14 @@ describe("parseArgs", () => {
         expect(spec.help).toContain(`--${flag}`)
       }
     }
+  })
+
+  test("list help derives every accepted field from shared metadata", () => {
+    const issueHelp = commandSpecs.find((spec) => spec.path.join(" ") === "issues list")?.help
+    const labelHelp = commandSpecs.find((spec) => spec.path.join(" ") === "labels list")?.help
+
+    expect(issueHelp).toContain(`<${ISSUE_FIELDS.join(",")}>`)
+    expect(labelHelp).toContain(`<${LABEL_FIELDS.join(",")}>`)
   })
 
   test("auth login help includes all credential and OAuth controls", () => {

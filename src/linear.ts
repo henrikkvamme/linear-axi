@@ -132,6 +132,7 @@ export interface ListIssuesInput {
   readonly label?: string
   readonly parent?: string
   readonly state?: "open" | "closed"
+  readonly fields: ReadonlyArray<string>
 }
 
 export interface CreateIssueInput {

@@ -89,7 +89,8 @@ describe("runCommand", () => {
           team: "ENG",
           label: "wayfinder:task",
           parent: "ENG-100",
-          state: "open"
+          state: "open",
+          fields: ["identifier", "title", "parent"]
         })
         return Effect.succeed(page([baseIssue], true))
       }
@@ -97,6 +98,25 @@ describe("runCommand", () => {
     const output = await run(["issues", "list", "--team", "ENG", "--label", "wayfinder:task", "--parent", "ENG-100", "--assignee", "none", "--state", "open", "--after", "cursor-1", "--limit", "5", "--fields", "identifier,title,parent"], gateway)
     expect(output.issues).toEqual([{ identifier: "ENG-123", title: "Fix auth bug", parent: null }])
     expect((output.help as string[])[0]).toContain("--after \"next-cursor\"")
+  })
+
+  test("issues list preserves structured label names including commas", async () => {
+    const labeled = {
+      ...baseIssue,
+      labels: [
+        { id: "label-1", name: "backend,urgent" },
+        { id: "label-2", name: "wayfinder:task" }
+      ]
+    }
+    const output = await run(
+      ["issues", "list", "--fields", "identifier,labels"],
+      fakeGateway({ listIssues: () => Effect.succeed(page([labeled])) })
+    )
+
+    expect(output.issues).toEqual([{
+      identifier: "ENG-123",
+      labels: ["backend,urgent", "wayfinder:task"]
+    }])
   })
 
   test("issues list emits a definitive child empty state", async () => {

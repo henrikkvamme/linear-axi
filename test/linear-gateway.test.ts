@@ -100,6 +100,110 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(missing.message).toContain("No Linear issue BEN-404 matched")
   })
 
+  test("exact archived issue and caller-UUID probes include archived entities", async () => {
+    const archivedIssue = issue({ archivedAt: new Date("2026-07-13T13:00:00.000Z") })
+    const archivedComment = comment({ archivedAt: new Date("2026-07-13T13:00:00.000Z") })
+    const archivedLabel = issueLabel({ archivedAt: new Date("2026-07-13T13:00:00.000Z") })
+    const issueQueries: Array<Record<string, unknown>> = []
+    const commentQueries: Array<Record<string, unknown>> = []
+    const labelQueries: Array<Record<string, unknown>> = []
+    const client = clientWithIssues([], {
+      issues: async (variables: Record<string, unknown>) => {
+        issueQueries.push(variables)
+        return page([archivedIssue])
+      },
+      teams: async () => page([team]),
+      comments: async (variables: Record<string, unknown>) => {
+        commentQueries.push(variables)
+        return page([archivedComment])
+      },
+      issueLabels: async (variables: Record<string, unknown>) => {
+        labelQueries.push(variables)
+        return page([archivedLabel])
+      }
+    })
+    const gateway = makeLinearGateway({}, { client })
+
+    expect((await Effect.runPromise(gateway.viewIssue("BEN-1"))).identifier).toBe("BEN-1")
+    expect((await Effect.runPromise(gateway.createIssue({
+      team: "BEN",
+      title: archivedIssue.title,
+      description: archivedIssue.description ?? "",
+      id: archivedIssue.id
+    }))).changed).toBe(false)
+    expect((await Effect.runPromise(gateway.createComment({
+      issue: "BEN-1",
+      body: archivedComment.body,
+      id: archivedComment.id
+    }))).changed).toBe(false)
+    expect((await Effect.runPromise(gateway.createLabel({
+      name: archivedLabel.name,
+      color: archivedLabel.color,
+      description: archivedLabel.description ?? undefined,
+      workspace: false,
+      team: "BEN",
+      id: archivedLabel.id,
+      ifAbsent: false
+    }))).changed).toBe(false)
+
+    expect(issueQueries).not.toHaveLength(0)
+    expect(issueQueries.every((variables) => variables.includeArchived === true)).toBe(true)
+    expect(commentQueries).toHaveLength(1)
+    expect(commentQueries[0]?.includeArchived).toBe(true)
+    expect(labelQueries).toHaveLength(1)
+    expect(labelQueries[0]?.includeArchived).toBe(true)
+  })
+
+  test("parent-scoped issue labels avoid unrelated team ambiguity", async () => {
+    const filters: unknown[] = []
+    const parent = issue()
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter?: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":1}') ? [parent] : []),
+      issueLabels: async (variables: { filter: unknown }) => {
+        filters.push(variables.filter)
+        return page([issueLabel()])
+      }
+    })
+
+    await Effect.runPromise(makeLinearGateway({}, { client }).listIssues({
+      parent: "BEN-1",
+      label: "wayfinder:task",
+      limit: 20,
+      fields: ["state"]
+    }))
+
+    expect(filters).toEqual([{
+      name: { eqIgnoreCase: "wayfinder:task" },
+      or: [{ team: { null: true } }, { team: { id: { eq: team.id } } }]
+    }])
+  })
+
+  test("issue create rejects a parent-team conflict before label lookup or mutation", async () => {
+    const otherTeam = { ...team, id: "99999999-9999-4999-8999-999999999999", key: "OTHER" }
+    const parent = issue({ teamId: otherTeam.id, team: Promise.resolve(otherTeam) })
+    let labelReads = 0
+    let creates = 0
+    const client = clientWithIssues([parent], {
+      teams: async () => page([team]),
+      issueLabels: async () => { labelReads += 1; return page([]) },
+      createIssue: async () => { creates += 1; return { success: true } }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client }).createIssue({
+        team: "BEN",
+        title: "Child",
+        parent: "BEN-1",
+        label: "wayfinder:task"
+      })
+    ))
+
+    expect(error.message).toContain("belongs to another team")
+    expect(labelReads).toBe(0)
+    expect(creates).toBe(0)
+  })
+
   test("stale description rejects before mutation", async () => {
     let updates = 0
     const client = clientWithIssues([issue()], {
@@ -540,6 +644,55 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(creates).toBe(0)
   })
 
+  test("issue list fetches only requested relations", async () => {
+    const accesses: string[] = []
+    const listed = issue()
+    Object.defineProperties(listed, {
+      state: { configurable: true, get: () => { accesses.push("state"); return Promise.resolve(undefined) } },
+      assignee: { configurable: true, get: () => { accesses.push("assignee"); return Promise.resolve(undefined) } },
+      parent: { configurable: true, get: () => { accesses.push("parent"); return Promise.resolve(undefined) } }
+    })
+    listed.labels = (async () => { accesses.push("labels"); return page([]) }) as unknown as Issue["labels"]
+
+    await Effect.runPromise(makeLinearGateway({}, { client: clientWithIssues([listed]) }).listIssues({
+      limit: 20,
+      fields: ["id", "title"]
+    }))
+
+    expect(accesses).toEqual([])
+  })
+
+  test("issue list starts requested relation reads in parallel", async () => {
+    const accesses: string[] = []
+    const releases: Array<() => void> = []
+    const pendingValue = <Value>(value: Value): Promise<Value> => new Promise((resolve) => {
+      releases.push(() => resolve(value))
+    })
+    const listed = issue()
+    Object.defineProperties(listed, {
+      state: { configurable: true, get: () => { accesses.push("state"); return pendingValue(undefined) } },
+      assignee: { configurable: true, get: () => { accesses.push("assignee"); return pendingValue(undefined) } },
+      parent: { configurable: true, get: () => { accesses.push("parent"); return pendingValue(undefined) } }
+    })
+    listed.labels = (() => {
+      accesses.push("labels")
+      return pendingValue(page([]))
+    }) as unknown as Issue["labels"]
+
+    const result = Effect.runPromise(
+      makeLinearGateway({}, { client: clientWithIssues([listed]) }).listIssues({
+        limit: 20,
+        fields: ["state", "assignee", "parent", "labels"]
+      })
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(accesses).toEqual(["state", "assignee", "parent", "labels"])
+    for (const release of releases) release()
+    await result
+  })
+
   test("issue summaries fetch truthful label names across every page", async () => {
     let labelPages = 0
     const secondPage = page([
@@ -558,7 +711,9 @@ describe("SDK LinearGateway conflict contracts", () => {
       labelIds: ["label-1", "label-2"],
       labels: async () => firstPage
     })
-    const result = await Effect.runPromise(makeLinearGateway({}, { client: clientWithIssues([labeled]) }).listIssues({ limit: 20 }))
+    const result = await Effect.runPromise(
+      makeLinearGateway({}, { client: clientWithIssues([labeled]) }).listIssues({ limit: 20, fields: ["labels"] })
+    )
 
     expect(result.items[0]?.labels).toEqual([
       { id: "label-1", name: "wayfinder:map" },

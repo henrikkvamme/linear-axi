@@ -138,9 +138,13 @@ export const makeSdkLinearGateway = (
 const listIssues = async (client: LinearClient, input: ListIssuesInput): Promise<PageResult<IssueSummary>> => {
   const team = input.team ? await resolveTeam(client, input.team) : undefined
   const parent = input.parent ? await resolveIssue(client, input.parent) : undefined
+  if (team && parent && parent.teamId !== team.id) {
+    throw conflict(`parent ${parent.identifier} belongs to another team`, "Use the parent's team when listing child issues.")
+  }
+  const labelTeamId = team?.id ?? (parent ? requireTeamId(parent) : undefined)
   const label = input.label
-    ? team
-      ? await resolveLabelForTeam(client, input.label, team.id)
+    ? labelTeamId
+      ? await resolveLabelForTeam(client, input.label, labelTeamId)
       : await resolveLabelGlobally(client, input.label)
     : undefined
   const assignee = input.assignee && input.assignee !== "none"
@@ -167,7 +171,11 @@ const listIssues = async (client: LinearClient, input: ListIssuesInput): Promise
           : {})
     }
   })
-  return pageResult(connection, await Promise.all(connection.nodes.map((issue) => issueSummary(issue))))
+  const summaryFields = new Set(input.fields)
+  return pageResult(
+    connection,
+    await Promise.all(connection.nodes.map((issue) => issueSummary(issue, summaryFields)))
+  )
 }
 
 const createIssue = async (
@@ -176,10 +184,10 @@ const createIssue = async (
 ): Promise<MutationResult<IssueSummary>> => {
   const team = await resolveTeam(client, input.team)
   const parent = input.parent ? await resolveIssue(client, input.parent) : undefined
-  const label = input.label ? await resolveLabelForTeam(client, input.label, team.id) : undefined
   if (parent && parent.teamId !== team.id) {
     throw conflict(`parent ${parent.identifier} belongs to another team`, "Use the parent's team when creating a child issue.")
   }
+  const label = input.label ? await resolveLabelForTeam(client, input.label, team.id) : undefined
 
   const classifyExisting = async (existing: Issue): Promise<MutationResult<IssueSummary>> => {
     const detail = await issueDetail(existing)
@@ -678,7 +686,9 @@ const frontier = async (client: LinearClient, mapId: string, limit: number): Pro
 }
 
 const findCommentByUuid = async (client: LinearClient, id: string): Promise<Comment | undefined> => {
-  const comments = await fetchAllPages(await client.comments({ first: 50, filter: { id: { eq: id } } }))
+  const comments = await fetchAllPages(
+    await client.comments({ first: 50, includeArchived: true, filter: { id: { eq: id } } })
+  )
   const matches = comments.filter((comment) => comment.id === id)
   if (matches.length > 1) {
     throw new LinearDomainError({ message: `Ambiguous Linear comment ${id}`, help: "Retry with an exact unique UUID." })
@@ -686,12 +696,20 @@ const findCommentByUuid = async (client: LinearClient, id: string): Promise<Comm
   return matches[0]
 }
 
-const issueSummary = async (issue: Issue): Promise<IssueSummary> => {
-  const state = await issue.state
-  const assignee = await issue.assignee
-  const parent = await issue.parent
-  const labels = (await fetchAllPages(await issue.labels({ first: 100 })))
+const issueSummary = async (
+  issue: Issue,
+  fields?: ReadonlySet<string>
+): Promise<IssueSummary> => {
+  const requested = (field: string): boolean => fields === undefined || fields.has(field)
+  const [state, assignee, parent, labels] = await Promise.all([
+    requested("state") ? issue.state : undefined,
+    requested("assignee") ? issue.assignee : undefined,
+    requested("parent") ? issue.parent : undefined,
+    requested("labels") ? loadIssueLabels(issue) : []
+  ])
+  const labelRefs = labels
     .map((label) => ({ id: label.id, name: label.name }))
+    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
   return {
     id: issue.id,
     identifier: issue.identifier,
@@ -702,13 +720,16 @@ const issueSummary = async (issue: Issue): Promise<IssueSummary> => {
     assigneeId: issue.assigneeId ?? null,
     parent: parent?.identifier ?? null,
     parentId: issue.parentId ?? null,
-    labels,
+    labels: labelRefs,
     updatedAt: issue.updatedAt.toISOString(),
     createdAt: issue.createdAt.toISOString(),
     url: issue.url,
     subIssueSortOrder: issue.subIssueSortOrder ?? null
   }
 }
+
+const loadIssueLabels = async (issue: Issue): Promise<ReadonlyArray<IssueLabel>> =>
+  fetchAllPages(await issue.labels({ first: 100, includeArchived: true }))
 
 const issueDetail = async (issue: Issue): Promise<IssueDetail> => {
   const summary = await issueSummary(issue)

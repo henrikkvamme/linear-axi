@@ -10,8 +10,16 @@ export interface CommandSpec {
   flags: ReadonlySet<string>
   valueFlags?: ReadonlySet<string>
   required?: ReadonlySet<string>
+  fields?: ReadonlyArray<string>
   help: string
 }
+
+export const ISSUE_FIELDS = [
+  "id", "identifier", "title", "state", "assignee", "parent", "labels", "updatedAt", "url", "subIssueSortOrder"
+] as const
+export const DEFAULT_ISSUE_FIELDS: ReadonlyArray<string> = ["id", "identifier", "title", "state"]
+export const LABEL_FIELDS = ["id", "name", "scope", "color", "description", "isGroup", "archivedAt"] as const
+export const DEFAULT_LABEL_FIELDS: ReadonlyArray<string> = ["id", "name", "scope"]
 
 const isFlag = (value: string): boolean => value.startsWith("--")
 
@@ -234,7 +242,8 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
     path: ["issues", "list"],
     flags: new Set(["help", "assignee", "team", "label", "parent", "state", "after", "limit", "fields"]),
     valueFlags: new Set(["assignee", "team", "label", "parent", "state", "after", "limit", "fields"]),
-    help: "Usage: linear-axi issues list [--team <key-or-id>] [--label <id-or-name>] [--parent <issue-id-or-key>] [--assignee me|none|<user-uuid>] [--state open|closed] [--after <cursor>] [--limit 20] [--fields id,identifier,title,state]"
+    fields: ISSUE_FIELDS,
+    help: "Usage: linear-axi issues list [--team <key-or-id>] [--label <id-or-name>] [--parent <issue-id-or-key>] [--assignee me|none|<user-uuid>] [--state open|closed] [--after <cursor>] [--limit 20] [--fields <fields>]"
   },
   {
     path: ["issues", "view"],
@@ -282,7 +291,8 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
     path: ["labels", "list"],
     flags: new Set(["help", "workspace", "team", "name", "issue", "after", "limit", "fields"]),
     valueFlags: new Set(["team", "name", "issue", "after", "limit", "fields"]),
-    help: "Usage: linear-axi labels list [--workspace | --team <key-or-id>] [--name <exact-name>] [--issue <issue-id-or-key>] [--after <cursor>] [--limit 100] [--fields id,name,scope]"
+    fields: LABEL_FIELDS,
+    help: "Usage: linear-axi labels list [--workspace | --team <key-or-id>] [--name <exact-name>] [--issue <issue-id-or-key>] [--after <cursor>] [--limit 100] [--fields <fields>]"
   },
   {
     path: ["labels", "create"],
@@ -395,7 +405,10 @@ const completeHelp = (spec: CommandSpec): CommandSpec => {
     return spec
   }
   const options = [...spec.flags].map((flag) => {
-    const value = spec.valueFlags?.has(flag) ? ` ${optionValues[flag] ?? "<value>"}` : ""
+    const optionValue = flag === "fields" && spec.fields
+      ? `<${spec.fields.join(",")}>`
+      : (optionValues[flag] ?? "<value>")
+    const value = spec.valueFlags?.has(flag) ? ` ${optionValue}` : ""
     const required = spec.required?.has(flag) ? " (required)" : ""
     return `  --${flag}${value}${required}`
   })

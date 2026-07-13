@@ -21,7 +21,7 @@ export const resolveIssue = async (client: LinearClient, idOrKey: string): Promi
   const normalized = idOrKey.toLowerCase()
   if (isUuid(idOrKey)) {
     const issues = await fetchAllPages(
-      await client.issues({ first: 50, filter: { id: { eq: idOrKey } } })
+      await client.issues({ first: 50, includeArchived: true, filter: { id: { eq: idOrKey } } })
     )
     return exactlyOne(
       `issue ${idOrKey}`,
@@ -35,6 +35,7 @@ export const resolveIssue = async (client: LinearClient, idOrKey: string): Promi
     ? await fetchAllPages(
         await client.issues({
           first: 50,
+          includeArchived: true,
           filter: {
             number: { eq: Number(identifier[2]) },
             team: { key: { eqIgnoreCase: identifier[1] } }
@@ -50,7 +51,9 @@ export const resolveIssue = async (client: LinearClient, idOrKey: string): Promi
 }
 
 export const findIssueByUuid = async (client: LinearClient, id: string): Promise<Issue | undefined> => {
-  const issues = await fetchAllPages(await client.issues({ first: 50, filter: { id: { eq: id } } }))
+  const issues = await fetchAllPages(
+    await client.issues({ first: 50, includeArchived: true, filter: { id: { eq: id } } })
+  )
   const matches = issues.filter((issue) => issue.id === id)
   if (matches.length > 1) {
     throw ambiguity(`issue ${id}`, matches, (issue) => `${issue.id} (${issue.identifier})`)
@@ -81,6 +84,7 @@ export const resolveLabelForTeam = async (
   const labels = await fetchAllPages(
     await client.issueLabels({
       first: 50,
+      includeArchived: true,
       filter: isUuid(idOrName)
         ? { id: { eq: idOrName } }
         : {
@@ -103,6 +107,7 @@ export const resolveLabelGlobally = async (client: LinearClient, idOrName: strin
   const labels = await fetchAllPages(
     await client.issueLabels({
       first: 50,
+      includeArchived: true,
       filter: isUuid(idOrName)
         ? { id: { eq: idOrName } }
         : { name: { eqIgnoreCase: idOrName } }
@@ -165,6 +170,7 @@ const findLabelsInScopeByIdentity = async (
   const labels = await fetchAllPages(
     await client.issueLabels({
       first: 50,
+      includeArchived: true,
       filter: {
         ...(identity === "id" ? { id: { eq: value } } : { name: { eqIgnoreCase: value } }),
         team: teamId === null ? { null: true } : { id: { eq: teamId } }
