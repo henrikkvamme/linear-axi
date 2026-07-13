@@ -400,7 +400,7 @@ const listLabels = async (client: LinearClient, input: ListLabelsInput): Promise
   if (input.issue) {
     const issue = await resolveIssue(client, input.issue)
     if (input.name) {
-      const labels = await fetchAllPages(await issue.labels({ first: 100 }))
+      const labels = await fetchAllPages(await issue.labels({ first: 100, includeArchived: input.includeArchived }))
       const matches = labels
         .filter((label) => label.name.toLowerCase() === input.name!.toLowerCase())
         .sort((left, right) => compareText(left.id, right.id))
@@ -414,7 +414,11 @@ const listLabels = async (client: LinearClient, input: ListLabelsInput): Promise
         }
       }
     }
-    const connection = await issue.labels({ first: input.limit, after: input.after })
+    const connection = await issue.labels({
+      first: input.limit,
+      after: input.after,
+      includeArchived: input.includeArchived
+    })
     return pageResult(connection, await Promise.all(connection.nodes.map((label) => labelSummary(label))))
   }
 
@@ -422,6 +426,7 @@ const listLabels = async (client: LinearClient, input: ListLabelsInput): Promise
   const connection = await client.issueLabels({
     first: input.limit,
     after: input.after,
+    includeArchived: input.includeArchived,
     filter: {
       ...(input.name ? { name: { eqIgnoreCase: input.name } } : {}),
       ...(input.workspace ? { team: { null: true } } : team ? { team: { id: { eq: team.id } } } : {})
@@ -917,13 +922,15 @@ const parseLocalCursor = (cursor: string | undefined, kind: string): number => {
     return 0
   }
   const match = new RegExp(`^${kind}:([0-9]+)$`).exec(cursor)
-  if (!match) {
+  const encodedOffset = match?.[1]
+  const offset = encodedOffset === undefined ? Number.NaN : Number(encodedOffset)
+  if (encodedOffset === undefined || !Number.isSafeInteger(offset) || String(offset) !== encodedOffset) {
     throw new LinearDomainError({
       message: `invalid ${kind} cursor`,
       help: `Use the exact page.endCursor returned by the previous ${kind} list command.`
     })
   }
-  return Number(match[1])
+  return offset
 }
 
 const readableError = (cause: unknown): string => {

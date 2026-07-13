@@ -171,7 +171,7 @@ export const topLevelHelp = [
   "  linear-axi issues unassign --id <issue> [--if-assignee me|<user-uuid>]",
   "  linear-axi issues close --id <issue> [--state <state-uuid>]",
   "  linear-axi issues update --id <issue> --description-file <path|-> --if-updated-at <RFC3339>",
-  "  linear-axi labels list [--workspace | --team <team>] [--name <exact-name>] [--issue <issue>] [--after <cursor>] [--limit 100] [--fields <fields>]",
+  "  linear-axi labels list [--workspace | --team <team>] [--name <exact-name>] [--issue <issue>] [--include-archived] [--after <cursor>] [--limit 100] [--fields <fields>]",
   "  linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <team>) [--description \"...\"] [--id <uuid-v4>] [--if-absent]",
   "  linear-axi labels apply --issue <issue> --label <id-or-name>",
   "  linear-axi relations list --issue <issue> [--type <type>] [--direction outgoing|incoming|both] [--after <cursor>] [--limit 100]",
@@ -289,10 +289,10 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
   },
   {
     path: ["labels", "list"],
-    flags: new Set(["help", "workspace", "team", "name", "issue", "after", "limit", "fields"]),
+    flags: new Set(["help", "workspace", "team", "name", "issue", "include-archived", "after", "limit", "fields"]),
     valueFlags: new Set(["team", "name", "issue", "after", "limit", "fields"]),
     fields: LABEL_FIELDS,
-    help: "Usage: linear-axi labels list [--workspace | --team <key-or-id>] [--name <exact-name>] [--issue <issue-id-or-key>] [--after <cursor>] [--limit 100] [--fields <fields>]"
+    help: "Usage: linear-axi labels list [--workspace | --team <key-or-id>] [--name <exact-name>] [--issue <issue-id-or-key>] [--include-archived] [--after <cursor>] [--limit 100] [--fields <fields>]"
   },
   {
     path: ["labels", "create"],
@@ -358,7 +358,7 @@ const commandExamples: Readonly<Record<string, ReadonlyArray<string>>> = {
   "issues unassign": ["linear-axi issues unassign --id ENG-123 --if-assignee me"],
   "issues close": ["linear-axi issues close --id ENG-123"],
   "issues update": ["linear-axi issues update --id ENG-123 --description-file issue.md --if-updated-at 2026-07-13T12:00:00Z"],
-  "labels list": ["linear-axi labels list --team ENG --name wayfinder:task"],
+  "labels list": ["linear-axi labels list --team ENG --name wayfinder:task", "linear-axi labels list --workspace --include-archived --fields id,name,archivedAt"],
   "labels create": ["linear-axi labels create --team ENG --name wayfinder:task --color '#123456'"],
   "labels apply": ["linear-axi labels apply --issue ENG-123 --label wayfinder:task"],
   "relations list": ["linear-axi relations list --issue ENG-123 --type blocks --direction outgoing"],

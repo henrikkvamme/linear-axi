@@ -73,6 +73,7 @@ linear-axi issues unassign --id <issue> --if-assignee me
 linear-axi issues close --id <issue>
 linear-axi issues update --id <issue> --description-file <path> --if-updated-at <RFC3339>
 linear-axi labels list --workspace --name <exact-name>
+linear-axi labels list --workspace --include-archived --fields id,name,archivedAt
 linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
 linear-axi labels apply --issue <issue> --label <label>
 linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks
@@ -81,6 +82,8 @@ linear-axi comments list --issue <issue> --limit 50
 linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
 linear-axi wayfinder frontier --map <map-issue> --first 20
 ```
+
+Label lists return active labels by default. Pass `--include-archived` to include archived labels and request `archivedAt` with `--fields` when needed.
 
 For `relations create --type blocks`, `--issue` is the blocker and `--related-issue` is the blocked issue.
 

@@ -140,6 +140,14 @@ describe("parseArgs", () => {
     }
   })
 
+  test("labels list exposes explicit archived-label discovery", () => {
+    const parsed = parseArgs(["labels", "list", "--include-archived"], commandSpecs)
+    const help = commandSpecs.find((spec) => spec.path.join(" ") === "labels list")?.help
+
+    expect(parsed.flags.get("include-archived")).toBe(true)
+    expect(help).toContain("--include-archived")
+  })
+
   const newCommands: ReadonlyArray<ReadonlyArray<string>> = [
     ["issues", "assign"],
     ["issues", "unassign"],

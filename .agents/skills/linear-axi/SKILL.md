@@ -28,6 +28,7 @@ linear-axi issues unassign --id <issue-id-or-key> --if-assignee me
 linear-axi issues close --id <issue-id-or-key>
 linear-axi issues update --id <issue-id-or-key> --description-file <path> --if-updated-at <RFC3339>
 linear-axi labels list --workspace --name <exact-name>
+linear-axi labels list --workspace --include-archived --fields id,name,archivedAt
 linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
 linear-axi labels apply --issue <issue> --label <label>
 linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks

@@ -173,6 +173,7 @@ export interface ListLabelsInput {
   readonly team?: string
   readonly name?: string
   readonly issue?: string
+  readonly includeArchived: boolean
 }
 
 export interface CreateLabelInput {

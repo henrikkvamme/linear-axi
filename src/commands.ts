@@ -274,7 +274,8 @@ const labelsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
     workspace,
     team,
     name: readStringFlag(parsed.flags, "name"),
-    issue
+    issue,
+    includeArchived: readBooleanFlag(parsed.flags, "include-archived")
   }).pipe(Effect.map((result) => ({
     count: `${result.items.length} labels shown`,
     page: result.page,
@@ -379,7 +380,7 @@ const commentsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
       }
     })
     const help = [
-      ...(truncated ? [`Run \`linear-axi comments list --issue ${readStringFlag(parsed.flags, "issue")} --full\` for complete bodies.`] : []),
+      ...(truncated ? [`Run \`${replayCommand("comments list", parsed, { full: true })}\` for complete bodies.`] : []),
       ...(result.page.hasNext && result.page.endCursor ? [continuationCommand("comments list", parsed, result.page.endCursor)] : [])
     ]
     return {
@@ -552,11 +553,26 @@ const issueMutationOutput = (result: { value: IssueSummary; changed: boolean; re
   result: result.result
 })
 
-const continuationCommand = (command: string, parsed: ParsedArgs, cursor: string): string => {
-  const flags = [...parsed.flags.entries()]
-    .filter(([name]) => name !== "after" && name !== "help")
+const continuationCommand = (command: string, parsed: ParsedArgs, cursor: string): string =>
+  `Run \`${replayCommand(command, parsed, { after: cursor })}\` for the next page.`
+
+const replayCommand = (
+  command: string,
+  parsed: ParsedArgs,
+  overrides: Readonly<Record<string, string | boolean | undefined>> = {}
+): string => {
+  const replayed = new Map(parsed.flags)
+  replayed.delete("help")
+  for (const [name, value] of Object.entries(overrides)) {
+    if (value === undefined) {
+      replayed.delete(name)
+    } else {
+      replayed.set(name, value)
+    }
+  }
+  const flags = [...replayed.entries()]
     .map(([name, value]) => value === true ? `--${name}` : `--${name} ${shellQuote(String(value))}`)
-  return `Run \`linear-axi ${command}${flags.length ? ` ${flags.join(" ")}` : ""} --after ${shellQuote(cursor)}\` for the next page.`
+  return `linear-axi ${command}${flags.length ? ` ${flags.join(" ")}` : ""}`
 }
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`

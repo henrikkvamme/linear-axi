@@ -1,4 +1,4 @@
-import type { Issue, IssueLabel, IssueRelation, LinearClient, Team, User, WorkflowState } from "@linear/sdk"
+import { LinearError, type Issue, type IssueLabel, type IssueRelation, type LinearClient, type Team, type User, type WorkflowState } from "@linear/sdk"
 import { LinearDomainError } from "./errors"
 import { fetchAllPages } from "./linear-pagination"
 
@@ -203,15 +203,36 @@ const findLabelsInScopeByIdentity = async (
 
 export const findRelationByUuid = async (client: LinearClient, id: string): Promise<IssueRelation | undefined> => {
   const identity = normalizeUuid(id)
-  const relations = await fetchAllPages(
-    await client.issueRelations({ first: 100, includeArchived: true })
-  )
+  let relation: IssueRelation
+  try {
+    relation = await client.issueRelation(identity)
+  } catch (cause) {
+    if (isMissingIssueRelation(cause)) {
+      return undefined
+    }
+    throw cause
+  }
+  if (!uuidEqual(relation.id, identity)) {
+    throw new LinearDomainError({
+      message: `Linear issue relation lookup for ${id} returned a different identity`,
+      help: "Retry with the exact caller-retained relation UUID."
+    })
+  }
   return findOneActive(
     `issue relation ${id}`,
-    relations.filter((relation) => uuidEqual(relation.id, identity)),
-    (relation) => relation.id,
-    (relation) => relation.archivedAt
+    [relation],
+    (match) => match.id,
+    (match) => match.archivedAt
   )
+}
+
+const isMissingIssueRelation = (cause: unknown): boolean => {
+  if (cause instanceof LinearError) {
+    return cause.errors?.some((error) =>
+      error.path?.includes("issueRelation") === true && /not found/i.test(error.message)
+    ) === true
+  }
+  return cause instanceof Error && /^Entity not found: IssueRelation$/i.test(cause.message.trim())
 }
 
 export const resolveWorkflowState = async (

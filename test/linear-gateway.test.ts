@@ -783,6 +783,49 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(labelPages).toBe(1)
   })
 
+  test("label lists are active-only by default and include archived labels on every path when requested", async () => {
+    const archived = issueLabel({
+      teamId: undefined,
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    const globalOptions: Array<boolean | undefined> = []
+    const issueOptions: Array<boolean | undefined> = []
+    const labeledIssue = issue({
+      labels: async (variables: { includeArchived?: boolean }) => {
+        issueOptions.push(variables.includeArchived)
+        return page(variables.includeArchived ? [archived] : [])
+      }
+    })
+    const client = clientWithIssues([labeledIssue], {
+      issueLabels: async (variables: { includeArchived?: boolean }) => {
+        globalOptions.push(variables.includeArchived)
+        return page(variables.includeArchived ? [archived] : [])
+      }
+    })
+    const gateway = makeLinearGateway({}, { client })
+
+    const activeOnly = await Effect.runPromise(gateway.listLabels({ limit: 20, includeArchived: false }))
+    const globalArchived = await Effect.runPromise(gateway.listLabels({ limit: 20, includeArchived: true }))
+    const issueArchived = await Effect.runPromise(gateway.listLabels({
+      issue: "BEN-1",
+      limit: 20,
+      includeArchived: true
+    }))
+    const issueNameArchived = await Effect.runPromise(gateway.listLabels({
+      issue: "BEN-1",
+      name: archived.name,
+      limit: 20,
+      includeArchived: true
+    }))
+
+    expect(activeOnly.items).toEqual([])
+    expect(globalArchived.items[0]?.archivedAt).toBe("2026-07-13T13:00:00.000Z")
+    expect(issueArchived.items[0]?.archivedAt).toBe("2026-07-13T13:00:00.000Z")
+    expect(issueNameArchived.items[0]?.archivedAt).toBe("2026-07-13T13:00:00.000Z")
+    expect(globalOptions).toEqual([false, true])
+    expect(issueOptions).toEqual([true, true])
+  })
+
   test("label summaries use locale-independent ordering", async () => {
     const labeled = issue({
       labels: async () => page([
@@ -836,9 +879,11 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(counterpartReads).toBe(1)
   })
 
-  test("caller relation UUID probes return no-op, conflict, and archived conflict", async () => {
+  test("caller relation UUID probes use singular lookup for no-op, conflict, and archived conflict", async () => {
     const relationId = "88888888-8888-4888-8888-888888888888"
     const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
+    const singularLookups: string[] = []
+    let connectionReads = 0
     const makeRelation = (overrides: Record<string, unknown> = {}) => ({
       id: relationId,
       type: "blocks",
@@ -853,7 +898,14 @@ describe("SDK LinearGateway conflict contracts", () => {
       const client = clientWithIssues([], {
         issues: async (variables: { filter: unknown }) =>
           page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source]),
-        issueRelations: async () => page([exact]),
+        issueRelation: async (id: string) => {
+          singularLookups.push(id)
+          return exact
+        },
+        issueRelations: async () => {
+          connectionReads += 1
+          return page([])
+        },
         createIssueRelation: async () => { throw new Error("must not create") }
       })
       return makeLinearGateway({}, { client }).createRelation({
@@ -873,6 +925,51 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(noOp.changed).toBe(false)
     expect(reused.message).toContain("conflict")
     expect(archived.message.toLowerCase()).toContain("archived")
+    expect(singularLookups).toEqual([relationId, relationId, relationId])
+    expect(connectionReads).toBe(0)
+  })
+
+  test("missing caller relation UUID is rechecked singularly after create failure", async () => {
+    const relationId = "88888888-8888-4888-8888-888888888888"
+    const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
+    const existing = {
+      id: relationId,
+      type: "blocks",
+      issueId: issue().id,
+      relatedIssueId: target.id,
+      relatedIssue: Promise.resolve(target),
+      archivedAt: undefined
+    }
+    const source = issue({ relations: async () => page([]) })
+    let identityReads = 0
+    let connectionReads = 0
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source]),
+      issueRelation: async () => {
+        identityReads += 1
+        if (identityReads === 1) {
+          throw new Error("Entity not found: IssueRelation")
+        }
+        return existing
+      },
+      issueRelations: async () => {
+        connectionReads += 1
+        return page([])
+      },
+      createIssueRelation: async () => { throw new Error("concurrent create") }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).createRelation({
+      issue: "BEN-1",
+      relatedIssue: "BEN-2",
+      type: "blocks",
+      id: relationId
+    }))
+
+    expect(result.changed).toBe(false)
+    expect(identityReads).toBe(2)
+    expect(connectionReads).toBe(0)
   })
 
   test("invalid local cursors fail before Linear access", async () => {
@@ -882,18 +979,25 @@ describe("SDK LinearGateway conflict contracts", () => {
     })
     const gateway = makeLinearGateway({}, { client })
 
-    const relationError = await Effect.runPromise(Effect.flip(gateway.listRelations({
-      issue: "BEN-1",
-      direction: "both",
-      after: "invalid",
-      limit: 20
-    })))
-    const labelError = await Effect.runPromise(Effect.flip(gateway.listLabels({
-      issue: "BEN-1",
-      name: "wayfinder:task",
-      after: "invalid",
-      limit: 20
-    })))
+    for (const cursor of ["invalid", "relation:01", "relation:9007199254740992", `relation:${"9".repeat(400)}`]) {
+      const error = await Effect.runPromise(Effect.flip(gateway.listRelations({
+        issue: "BEN-1",
+        direction: "both",
+        after: cursor,
+        limit: 20
+      })))
+      expect(error.message).toBe("invalid relation cursor")
+    }
+    for (const cursor of ["invalid", "label:01", "label:9007199254740992", `label:${"9".repeat(400)}`]) {
+      const error = await Effect.runPromise(Effect.flip(gateway.listLabels({
+        issue: "BEN-1",
+        name: "wayfinder:task",
+        after: cursor,
+        limit: 20,
+        includeArchived: false
+      })))
+      expect(error.message).toBe("invalid label cursor")
+    }
     const frontierError = await Effect.runPromise(Effect.flip(gateway.frontier({
       map: "BEN-1",
       first: 20,
@@ -904,8 +1008,6 @@ describe("SDK LinearGateway conflict contracts", () => {
       first: 101
     })))
 
-    expect(relationError.message).toBe("invalid relation cursor")
-    expect(labelError.message).toBe("invalid label cursor")
     expect(frontierError.message).toBe("invalid frontier cursor")
     expect(frontierSizeError.message).toBe("invalid frontier page size")
     expect(issueReads).toBe(0)

@@ -184,8 +184,14 @@ describe("runCommand", () => {
   })
 
   test("labels commands preserve scope, exact fields, and idempotent status", async () => {
+    const gateway = fakeGateway({
+      listLabels: (input) => {
+        expect(input.includeArchived).toBe(true)
+        return Effect.succeed(page([{ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }]))
+      }
+    })
     const created = await run(["labels", "create", "--workspace", "--name", "wayfinder:task", "--color", "#123456", "--if-absent"])
-    const listed = await run(["labels", "list", "--workspace", "--fields", "id,name,color"])
+    const listed = await run(["labels", "list", "--workspace", "--include-archived", "--fields", "id,name,color"], gateway)
     const applied = await run(["labels", "apply", "--issue", "ENG-123", "--label", "wayfinder:task"])
     expect(created.changed).toBe(true)
     expect(listed.labels).toEqual([{ id: "label-id", name: "wayfinder:task", color: "#123456" }])
@@ -218,6 +224,32 @@ describe("runCommand", () => {
     const listed = await run(["comments", "list", "--issue", "ENG-123"], gateway)
     expect((listed.comments as Array<{ body: string }>)[0]!.body).toContain("600 chars total")
     await run(["comments", "create", "--issue", "ENG-123", "--body-file", file, "--id", id], gateway)
+  })
+
+  test("complete-comment-body help safely replays the displayed page", async () => {
+    const issueId = "ENG-$(echo injected)'`$HOME"
+    const gateway = fakeGateway({
+      listComments: (input) => {
+        expect(input).toEqual({ issue: issueId, after: "cursor-1", limit: 7 })
+        return Effect.succeed(page([{
+          id: "comment-id",
+          issueId: baseIssue.id,
+          body: "x".repeat(600),
+          createdAt: baseIssue.createdAt,
+          updatedAt: baseIssue.updatedAt,
+          author: "Henrik",
+          url: baseIssue.url
+        }]))
+      }
+    })
+
+    const output = await run([
+      "comments", "list", "--issue", issueId, "--after", "cursor-1", "--limit", "7"
+    ], gateway)
+    const help = (output.help as string[])[0]!
+
+    expect(help).toContain("comments list --issue 'ENG-$(echo injected)'\"'\"'`$HOME' --after 'cursor-1' --limit '7' --full")
+    expect(help).not.toContain('"$(echo injected)')
   })
 
   test("frontier emits paginated claim guidance and definitive empty pages", async () => {
