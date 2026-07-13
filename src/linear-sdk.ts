@@ -325,20 +325,21 @@ const updateIssueDescription = async (
 ): Promise<MutationResult<IssueDetail>> => {
   const issue = await resolveIssue(client, input.id)
   const current = await issueDetail(issue)
+  const desiredDescription = normalizeDescription(input.description)
   if (Date.parse(current.updatedAt) !== Date.parse(input.ifUpdatedAt)) {
     throw conflict(
       `${current.identifier} changed since --if-updated-at; description was not updated (current updatedAt: ${current.updatedAt})`,
       `Refetch with \`linear-axi issues view --id ${current.identifier} --full\`, merge the current description, and retry with its updatedAt.`
     )
   }
-  if (current.description === input.description) {
+  if (current.description === desiredDescription) {
     return unchanged(current, "description already matches (no-op)")
   }
 
-  const payload = await client.updateIssue(issue.id, { description: input.description })
+  const payload = await client.updateIssue(issue.id, { description: desiredDescription })
   await requirePayload(payload.success, payload.issue, "update the issue description")
   const verified = await issueDetail(await resolveIssue(client, issue.id))
-  if (verified.description !== input.description || verified.updatedAt === current.updatedAt) {
+  if (verified.description !== desiredDescription || verified.updatedAt === current.updatedAt) {
     throw conflict(
       `${current.identifier} description update could not be verified`,
       "Refetch and merge before retrying. Linear does not provide atomic compare-and-swap for descriptions."
@@ -770,3 +771,6 @@ const readableError = (cause: unknown): string => {
   }
   return "Linear request failed"
 }
+
+const normalizeDescription = (description: string): string =>
+  description.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replace(/\n+$/, "")

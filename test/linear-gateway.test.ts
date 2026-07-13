@@ -88,6 +88,27 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(reads).toBe(2)
   })
 
+  test("description update canonicalizes CRLF and terminal newlines before mutation", async () => {
+    const before = issue()
+    const after = issue({ description: "line one\nline two", updatedAt: new Date("2026-07-13T12:01:00.000Z") })
+    let reads = 0
+    let sent: string | null | undefined
+    const client = clientWithIssues([], {
+      issues: async () => page([reads++ === 0 ? before : after]),
+      updateIssue: async (_id: string, input: { description?: string | null }) => {
+        sent = input.description
+        return { success: true, issue: Promise.resolve(after) }
+      }
+    })
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).updateIssueDescription({
+      id: "BEN-1",
+      description: "line one\r\nline two\r\n",
+      ifUpdatedAt: "2026-07-13T12:00:00.000Z"
+    }))
+    expect(sent).toBe("line one\nline two")
+    expect(result.value.description).toBe("line one\nline two")
+  })
+
   test("post-write mismatch is a conflict", async () => {
     const before = issue()
     const after = issue({ description: "other", updatedAt: new Date("2026-07-13T12:01:00.000Z") })
