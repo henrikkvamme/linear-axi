@@ -22,6 +22,7 @@ import type {
   RelationType
 } from "./linear"
 import { DESCRIPTION_CONCURRENCY_WARNING } from "./linear"
+import { decodeLocalCursorOffset } from "./linear-pagination"
 import { connectOAuth, setupOAuth } from "./oauth"
 import { truncateText, type OutputValue } from "./output"
 import { validateFrontierCursor } from "./wayfinder"
@@ -267,10 +268,14 @@ const labelsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   if (issue && (workspace || team)) {
     return usage("--issue cannot be combined with --workspace or --team", parsed.command)
   }
+  const after = readStringFlag(parsed.flags, "after")
+  if (issue && readStringFlag(parsed.flags, "name") && after !== undefined && decodeLocalCursorOffset(after, "label") === undefined) {
+    return usage("invalid label cursor", parsed.command)
+  }
   const fields = readFields(parsed, "fields", LABEL_FIELD_SET, DEFAULT_LABEL_FIELDS)
   return gateway.listLabels({
     limit: readLimitFlag(parsed.flags, 100),
-    after: readStringFlag(parsed.flags, "after"),
+    after,
     workspace,
     team,
     name: readStringFlag(parsed.flags, "name"),
@@ -328,11 +333,15 @@ const relationsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   if (!RELATION_DIRECTIONS.has(direction)) {
     return usage("--direction must be outgoing, incoming, or both", parsed.command)
   }
+  const after = readStringFlag(parsed.flags, "after")
+  if (after !== undefined && decodeLocalCursorOffset(after, "relation") === undefined) {
+    return usage("invalid relation cursor", parsed.command)
+  }
   return gateway.listRelations({
     issue: readStringFlag(parsed.flags, "issue")!,
     type,
     direction: direction as RelationDirection | "both",
-    after: readStringFlag(parsed.flags, "after"),
+    after,
     limit: readLimitFlag(parsed.flags, 100)
   }).pipe(Effect.map((result) => ({
     count: `${result.items.length} relations shown`,

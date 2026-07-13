@@ -547,6 +547,80 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(selected).toBe(selectedState.id)
   })
 
+  test("explicit close transitions canceled and differently completed issues", async () => {
+    const selectedState = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Released", type: "completed", position: 1 }
+
+    for (const currentState of [
+      { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Canceled", type: "canceled" },
+      { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", name: "Done", type: "completed" }
+    ]) {
+      const before = issue({ state: Promise.resolve(currentState) })
+      const after = issue({ state: Promise.resolve(selectedState) })
+      let reads = 0
+      let updates = 0
+      const client = clientWithIssues([], {
+        issues: async () => page([reads++ === 0 ? before : after]),
+        workflowStates: async () => page([selectedState]),
+        updateIssue: async (_id: string, input: { stateId?: string }) => {
+          updates += 1
+          expect(input.stateId).toBe(selectedState.id)
+          return { success: true, issue: Promise.resolve(after) }
+        }
+      })
+
+      const result = await Effect.runPromise(makeLinearGateway({}, { client }).closeIssue({
+        id: "BEN-1",
+        state: selectedState.id
+      }))
+
+      expect(result.changed).toBe(true)
+      expect(updates).toBe(1)
+    }
+  })
+
+  test("explicit close validates the requested state before terminal no-op", async () => {
+    const currentState = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Canceled", type: "canceled" }
+    const activeState = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "In Progress", type: "started" }
+    let updates = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([issue({ state: Promise.resolve(currentState) })], {
+        workflowStates: async (variables: { filter: { id: { eq: string } } }) =>
+          page(variables.filter.id.eq === activeState.id ? [activeState] : []),
+        updateIssue: async () => { updates += 1; return { success: true } }
+      })
+    })
+
+    const missing = await Effect.runPromise(Effect.flip(gateway.closeIssue({
+      id: "BEN-1",
+      state: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    })))
+    const nonCompleted = await Effect.runPromise(Effect.flip(gateway.closeIssue({
+      id: "BEN-1",
+      state: activeState.id
+    })))
+
+    expect(missing.message).toContain("No Linear workflow state")
+    expect(nonCompleted.message).toContain("is not completed")
+    expect(updates).toBe(0)
+  })
+
+  test("explicit close is a no-op only at the exact target state", async () => {
+    const selectedState = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Released", type: "completed", position: 1 }
+    let updates = 0
+    const client = clientWithIssues([issue({ state: Promise.resolve(selectedState) })], {
+      workflowStates: async () => page([selectedState]),
+      updateIssue: async () => { updates += 1; return { success: true } }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).closeIssue({
+      id: "BEN-1",
+      state: selectedState.id
+    }))
+
+    expect(result.changed).toBe(false)
+    expect(updates).toBe(0)
+  })
+
   test("label create with caller UUID and if-absent creates when both identities are absent", async () => {
     const id = "55555555-5555-4555-8555-555555555555"
     const created = issueLabel({ id })

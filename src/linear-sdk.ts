@@ -42,7 +42,7 @@ import type {
   UnassignIssueInput,
   UpdateIssueDescriptionInput
 } from "./linear"
-import { fetchAllPages, type ConnectionLike } from "./linear-pagination"
+import { decodeLocalCursorOffset, fetchAllPages, type ConnectionLike, type LocalCursorKind } from "./linear-pagination"
 import {
   completedStates,
   findIssueByUuid,
@@ -304,18 +304,21 @@ const closeIssue = async (
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.id)
   const teamId = requireTeamId(issue)
-  const currentState = await issue.state
-  if (currentState && TERMINAL_STATE_TYPES.includes(currentState.type)) {
-    return unchanged(await issueSummary(issue), "already closed (no-op)")
-  }
-
   let target: WorkflowState
   if (input.state) {
     target = await resolveWorkflowState(client, input.state, teamId)
     if (target.type !== "completed") {
       throw conflict(`workflow state ${target.name} is not completed`, "Pass a completed workflow-state UUID.")
     }
+    const currentState = await issue.state
+    if (currentState && uuidEqual(currentState.id, target.id)) {
+      return unchanged(await issueSummary(issue), "already in the requested completed state (no-op)")
+    }
   } else {
+    const currentState = await issue.state
+    if (currentState && TERMINAL_STATE_TYPES.includes(currentState.type)) {
+      return unchanged(await issueSummary(issue), "already closed (no-op)")
+    }
     const states = await completedStates(client, teamId)
     if (states.length === 0) {
       throw new LinearDomainError({
@@ -917,14 +920,12 @@ const unchanged = <Value>(value: Value, result: string): MutationResult<Value> =
 
 const conflict = (message: string, help: string): LinearDomainError => new LinearDomainError({ message, help })
 
-const parseLocalCursor = (cursor: string | undefined, kind: string): number => {
-  if (!cursor) {
+const parseLocalCursor = (cursor: string | undefined, kind: LocalCursorKind): number => {
+  if (cursor === undefined) {
     return 0
   }
-  const match = new RegExp(`^${kind}:([0-9]+)$`).exec(cursor)
-  const encodedOffset = match?.[1]
-  const offset = encodedOffset === undefined ? Number.NaN : Number(encodedOffset)
-  if (encodedOffset === undefined || !Number.isSafeInteger(offset) || String(offset) !== encodedOffset) {
+  const offset = decodeLocalCursorOffset(cursor, kind)
+  if (offset === undefined) {
     throw new LinearDomainError({
       message: `invalid ${kind} cursor`,
       help: `Use the exact page.endCursor returned by the previous ${kind} list command.`

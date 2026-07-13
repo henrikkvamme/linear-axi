@@ -298,6 +298,8 @@ describe("runCommand", () => {
     const gateway = fakeGateway({
       createComment: () => { calls += 1; return Effect.succeed(mutation({ id: "x", issueId: "x", body: "x", createdAt: "x", updatedAt: "x", author: "x", url: "x" })) },
       updateIssueDescription: () => { calls += 1; return Effect.succeed(mutation(detail())) },
+      listLabels: () => { calls += 1; return Effect.succeed(page([])) },
+      listRelations: () => { calls += 1; return Effect.succeed(page([])) },
       frontier: () => {
         calls += 1
         return Effect.succeed({
@@ -312,6 +314,8 @@ describe("runCommand", () => {
       ["comments", "create", "--issue", "ENG-123", "--body", "a", "--body-file", "b"],
       ["issues", "update", "--id", "ENG-100", "--description-file", "x", "--if-updated-at", "yesterday"],
       ["labels", "create", "--workspace", "--team", "ENG", "--name", "x", "--color", "red"],
+      ["labels", "list", "--issue", "ENG-123", "--name", "x", "--after", "label:01"],
+      ["relations", "list", "--issue", "ENG-123", "--after", "invalid"],
       ["wayfinder", "frontier", "--map", "ENG-100", "--after", "invalid"]
     ]) {
       const parsed = parseArgs(argv, commandSpecs)

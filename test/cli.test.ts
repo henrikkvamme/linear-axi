@@ -127,6 +127,21 @@ describe("linear-axi process", () => {
     expect(stdoutText(result)).toContain("--limit must be an integer")
   })
 
+  test("invalid local cursors exit as usage errors before authentication", () => {
+    for (const args of [
+      ["labels", "list", "--issue", "ENG-123", "--name", "fixture", "--after", "label:01"],
+      ["relations", "list", "--issue", "ENG-123", "--after", "invalid"],
+      ["relations", "list", "--issue", "ENG-123", "--after="]
+    ]) {
+      const result = runCli(...args)
+
+      expect(result.exitCode).toBe(2)
+      expect(stderrText(result)).toBe("")
+      expect(stdoutText(result)).toContain("invalid")
+      expect(stdoutText(result)).not.toContain("Linear credentials are not configured")
+    }
+  })
+
   test("help with a value exits as a usage error", () => {
     const result = runCli("--help", "auth")
 
