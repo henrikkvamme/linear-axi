@@ -48,14 +48,23 @@ import {
   findIssueByUuid,
   findLabelByIdInScope,
   findLabelByNameInScope,
+  findRelationByUuid,
+  normalizeUuid,
   resolveIssue,
   resolveLabelForTeam,
   resolveLabelGlobally,
   resolveTeam,
   resolveUser,
-  resolveWorkflowState
+  resolveWorkflowState,
+  uuidEqual
 } from "./linear-resolve"
-import { projectFrontier, resolveWayfinderPrefix, WAYFINDER_TYPES, type WayfinderType } from "./wayfinder"
+import {
+  paginateFrontier,
+  resolveWayfinderPrefix,
+  validateFrontierCursor,
+  WAYFINDER_TYPES,
+  type WayfinderType
+} from "./wayfinder"
 
 const TERMINAL_STATE_TYPES = ["completed", "canceled", "duplicate"]
 
@@ -131,14 +140,14 @@ export const makeSdkLinearGateway = (
     createRelation: (input) => call("relations create", (client) => createRelation(client, input)),
     listComments: (input) => call("comments list", (client) => listComments(client, input)),
     createComment: (input) => call("comments create", (client) => createComment(client, input)),
-    frontier: (input) => call("wayfinder frontier", (client) => frontier(client, input.map, input.limit))
+    frontier: (input) => call("wayfinder frontier", (client) => frontier(client, input.map, input.first, input.after))
   }
 }
 
 const listIssues = async (client: LinearClient, input: ListIssuesInput): Promise<PageResult<IssueSummary>> => {
   const team = input.team ? await resolveTeam(client, input.team) : undefined
   const parent = input.parent ? await resolveIssue(client, input.parent) : undefined
-  if (team && parent && parent.teamId !== team.id) {
+  if (team && parent && (parent.teamId === undefined || !uuidEqual(parent.teamId, team.id))) {
     throw conflict(`parent ${parent.identifier} belongs to another team`, "Use the parent's team when listing child issues.")
   }
   const labelTeamId = team?.id ?? (parent ? requireTeamId(parent) : undefined)
@@ -182,28 +191,29 @@ const createIssue = async (
   client: LinearClient,
   input: CreateIssueInput
 ): Promise<MutationResult<IssueSummary>> => {
+  const callerId = input.id ? normalizeUuid(input.id) : undefined
   const team = await resolveTeam(client, input.team)
   const parent = input.parent ? await resolveIssue(client, input.parent) : undefined
-  if (parent && parent.teamId !== team.id) {
+  if (parent && (parent.teamId === undefined || !uuidEqual(parent.teamId, team.id))) {
     throw conflict(`parent ${parent.identifier} belongs to another team`, "Use the parent's team when creating a child issue.")
   }
   const label = input.label ? await resolveLabelForTeam(client, input.label, team.id) : undefined
 
   const classifyExisting = async (existing: Issue): Promise<MutationResult<IssueSummary>> => {
     const detail = await issueDetail(existing)
-    const matches = detail.teamId === team.id &&
+    const matches = uuidEqual(detail.teamId, team.id) &&
       detail.title === input.title &&
       richTextEqual(detail.description, input.description ?? "") &&
-      detail.parentId === (parent?.id ?? null) &&
-      (label === undefined || detail.labels.some((existingLabel) => existingLabel.id === label.id))
+      nullableUuidEqual(detail.parentId, parent?.id ?? null) &&
+      (label === undefined || detail.labels.some((existingLabel) => uuidEqual(existingLabel.id, label.id)))
     if (!matches) {
-      throw conflict(`issue UUID ${input.id} already exists with different content`, "Use a new caller-retained UUID for a different issue.")
+      throw conflict(`issue UUID ${callerId} already exists with different content`, "Use a new caller-retained UUID for a different issue.")
     }
     return unchanged(detail, "matching issue already exists (no-op)")
   }
 
-  if (input.id) {
-    const existing = await findIssueByUuid(client, input.id)
+  if (callerId) {
+    const existing = await findIssueByUuid(client, callerId)
     if (existing) {
       return classifyExisting(existing)
     }
@@ -216,13 +226,13 @@ const createIssue = async (
       description: input.description,
       parentId: parent?.id,
       labelIds: label ? [label.id] : undefined,
-      id: input.id
+      id: callerId
     })
     const issue = await requirePayload(payload.success, payload.issue, "create the issue")
     return changed(await issueSummary(issue), "issue created")
   } catch (cause) {
-    if (input.id) {
-      const existing = await findIssueByUuid(client, input.id)
+    if (callerId) {
+      const existing = await findIssueByUuid(client, callerId)
       if (existing) {
         return classifyExisting(existing)
       }
@@ -237,7 +247,7 @@ const assignIssue = async (
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.id)
   const assignee = await resolveUser(client, input.assignee)
-  if (issue.assigneeId === assignee.id) {
+  if (issue.assigneeId !== undefined && uuidEqual(issue.assigneeId, assignee.id)) {
     return unchanged(await issueSummary(issue), "already assigned to requested user (no-op)")
   }
   if (issue.assigneeId && !input.replace) {
@@ -251,7 +261,7 @@ const assignIssue = async (
   const payload = await client.updateIssue(issue.id, { assigneeId: assignee.id })
   await requirePayload(payload.success, payload.issue, "assign the issue")
   const verified = await resolveIssue(client, issue.id)
-  if (verified.assigneeId !== assignee.id) {
+  if (verified.assigneeId === undefined || !uuidEqual(verified.assigneeId, assignee.id)) {
     throw conflict(
       `${issue.identifier} assignment could not be verified after update`,
       "Refetch the issue before attempting another claim. Assignment is not atomic."
@@ -270,7 +280,7 @@ const unassignIssue = async (
   }
   if (input.ifAssignee) {
     const expected = await resolveUser(client, input.ifAssignee)
-    if (issue.assigneeId !== expected.id) {
+    if (!uuidEqual(issue.assigneeId, expected.id)) {
       const current = await issue.assignee
       throw conflict(
         `${issue.identifier} is assigned to ${current?.name ?? issue.assigneeId}, not the expected assignee`,
@@ -315,7 +325,7 @@ const closeIssue = async (
     }
     if (states.length > 1) {
       const candidates = [...states]
-        .sort((left, right) => left.id.localeCompare(right.id))
+        .sort((left, right) => compareText(left.id, right.id))
         .map((state) => `${state.id} (${state.name})`)
         .join(", ")
       throw conflict(
@@ -330,7 +340,7 @@ const closeIssue = async (
   await requirePayload(payload.success, payload.issue, "close the issue")
   const verified = await resolveIssue(client, issue.id)
   const verifiedState = await verified.state
-  if (verifiedState?.id !== target.id) {
+  if (!verifiedState || !uuidEqual(verifiedState.id, target.id)) {
     throw conflict(`${issue.identifier} state transition could not be verified`, "Refetch the issue before retrying.")
   }
   return changed(await issueSummary(verified), "issue closed")
@@ -393,7 +403,7 @@ const listLabels = async (client: LinearClient, input: ListLabelsInput): Promise
       const labels = await fetchAllPages(await issue.labels({ first: 100 }))
       const matches = labels
         .filter((label) => label.name.toLowerCase() === input.name!.toLowerCase())
-        .sort((left, right) => left.id.localeCompare(right.id))
+        .sort((left, right) => compareText(left.id, right.id))
       const selected = matches.slice(localOffset, localOffset + input.limit)
       const nextOffset = localOffset + selected.length
       return {
@@ -424,6 +434,7 @@ const createLabel = async (
   client: LinearClient,
   input: CreateLabelInput
 ): Promise<MutationResult<LabelSummary>> => {
+  const callerId = input.id ? normalizeUuid(input.id) : undefined
   const team = input.team ? await resolveTeam(client, input.team) : undefined
   const teamId = team?.id ?? null
   const classify = async (label: IssueLabel): Promise<MutationResult<LabelSummary>> => {
@@ -442,41 +453,41 @@ const createLabel = async (
   }
 
   const classifyExisting = async (): Promise<MutationResult<LabelSummary> | undefined> => {
-    if (input.id && input.ifAbsent) {
+    if (callerId && input.ifAbsent) {
       const [nameMatch, idMatch] = await Promise.all([
         findLabelByNameInScope(client, input.name, teamId),
-        findLabelByIdInScope(client, input.id, teamId)
+        findLabelByIdInScope(client, callerId, teamId)
       ])
       if (!nameMatch && !idMatch) {
         return undefined
       }
       if (!nameMatch) {
         throw conflict(
-          `label caller UUID ${input.id} conflicts with requested name ${input.name}; it belongs to ${idMatch!.name}`,
+          `label caller UUID ${callerId} conflicts with requested name ${input.name}; it belongs to ${idMatch!.name}`,
           "Use a new caller-retained UUID or make both identities refer to the same scoped label."
         )
       }
       if (!idMatch) {
         throw conflict(
-          `label name ${input.name} conflicts with caller UUID ${input.id}; it belongs to ${nameMatch.id}`,
+          `label name ${input.name} conflicts with caller UUID ${callerId}; it belongs to ${nameMatch.id}`,
           "Use a new label name or make both identities refer to the same scoped label."
         )
       }
-      if (nameMatch.id !== idMatch.id) {
+      if (!uuidEqual(nameMatch.id, idMatch.id)) {
         throw conflict(
-          `label name ${input.name} and caller UUID ${input.id} conflict with different scoped labels`,
+          `label name ${input.name} and caller UUID ${callerId} conflict with different scoped labels`,
           "Use a name and caller-retained UUID that refer to the same scoped label."
         )
       }
       return classify(idMatch)
     }
 
-    const lookup = input.id ?? (input.ifAbsent ? input.name : undefined)
+    const lookup = callerId ?? (input.ifAbsent ? input.name : undefined)
     if (!lookup) {
       return undefined
     }
-    const found = input.id
-      ? await findLabelByIdInScope(client, input.id, teamId)
+    const found = callerId
+      ? await findLabelByIdInScope(client, callerId, teamId)
       : await findLabelByNameInScope(client, lookup, teamId)
     return found ? classify(found) : undefined
   }
@@ -492,7 +503,7 @@ const createLabel = async (
       color: input.color,
       description: input.description,
       teamId: team?.id,
-      id: input.id
+      id: callerId
     })
     const label = await requirePayload(payload.success, payload.issueLabel, "create the label")
     return changed(await labelSummary(label, team?.key), "label created")
@@ -511,7 +522,7 @@ const applyLabel = async (
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.issue)
   const label = await resolveLabelForTeam(client, input.label, requireTeamId(issue))
-  if (issue.labelIds.includes(label.id)) {
+  if (issue.labelIds.some((id) => uuidEqual(id, label.id))) {
     return unchanged(await issueSummary(issue), "label already applied (no-op)")
   }
 
@@ -520,13 +531,13 @@ const applyLabel = async (
     await requirePayload(payload.success, payload.issue, "apply the label")
   } catch (cause) {
     const concurrent = await resolveIssue(client, issue.id)
-    if (!concurrent.labelIds.includes(label.id)) {
+    if (!concurrent.labelIds.some((id) => uuidEqual(id, label.id))) {
       throw cause
     }
     return unchanged(await issueSummary(concurrent), "label already applied (no-op)")
   }
   const verified = await resolveIssue(client, issue.id)
-  if (!verified.labelIds.includes(label.id)) {
+  if (!verified.labelIds.some((id) => uuidEqual(id, label.id))) {
     throw conflict(`${label.name} was not present after apply`, "Refetch the issue before retrying.")
   }
   return changed(await issueSummary(verified), "label applied")
@@ -550,7 +561,7 @@ const listRelations = async (
   ]
     .filter(({ relation }) => !input.type || relation.type === input.type)
     .sort(({ relation: left, direction: leftDirection }, { relation: right, direction: rightDirection }) =>
-      left.id.localeCompare(right.id) || leftDirection.localeCompare(rightDirection)
+      compareText(left.id, right.id) || compareText(leftDirection, rightDirection)
     )
   const selected = rows.slice(offset, offset + input.limit)
   const items = await Promise.all(selected.map(({ relation, direction }) => relationSummary(relation, direction)))
@@ -568,14 +579,48 @@ const createRelation = async (
   client: LinearClient,
   input: CreateRelationInput
 ): Promise<MutationResult<RelationSummary>> => {
+  const callerId = input.id ? normalizeUuid(input.id) : undefined
   const source = await resolveIssue(client, input.issue)
   const target = await resolveIssue(client, input.relatedIssue)
-  const relations = await fetchAllPages(await source.relations({ first: 100, includeArchived: false }))
-  const existing = relations.find(
-    (relation) => relation.relatedIssueId === target.id && relation.type === input.type
-  )
+
+  const classifyExisting = async (): Promise<MutationResult<RelationSummary> | undefined> => {
+    const [relations, idMatch] = await Promise.all([
+      fetchAllPages(await source.relations({ first: 100, includeArchived: false })),
+      callerId ? findRelationByUuid(client, callerId) : Promise.resolve(undefined)
+    ])
+    const naturalMatch = relations.find((relation) => relationMatches(relation, source.id, target.id, input.type))
+
+    if (idMatch) {
+      if (!relationMatches(idMatch, source.id, target.id, input.type)) {
+        throw conflict(
+          `relation caller UUID ${callerId} conflicts with another directed relation`,
+          "Use a new caller-retained UUID or make the source, target, and type match the existing relation."
+        )
+      }
+      if (naturalMatch && !uuidEqual(naturalMatch.id, idMatch.id)) {
+        throw conflict(
+          `directed relation and caller UUID ${callerId} conflict with different relations`,
+          "Use the caller-retained UUID of the existing directed relation."
+        )
+      }
+      return unchanged(await relationSummary(idMatch, "outgoing"), "directed relation already exists (no-op)")
+    }
+
+    if (naturalMatch) {
+      if (callerId) {
+        throw conflict(
+          `directed relation already exists under UUID ${naturalMatch.id}, not caller UUID ${callerId}`,
+          "Reuse the existing relation UUID or omit --id."
+        )
+      }
+      return unchanged(await relationSummary(naturalMatch, "outgoing"), "directed relation already exists (no-op)")
+    }
+    return undefined
+  }
+
+  const existing = await classifyExisting()
   if (existing) {
-    return unchanged(await relationSummary(existing, "outgoing"), "directed relation already exists (no-op)")
+    return existing
   }
 
   try {
@@ -583,17 +628,14 @@ const createRelation = async (
       issueId: source.id,
       relatedIssueId: target.id,
       type: relationType(input.type),
-      id: input.id
+      id: callerId
     })
     const relation = await requirePayload(payload.success, payload.issueRelation, "create the relation")
     return changed(await relationSummary(relation, "outgoing"), "directed relation created")
   } catch (cause) {
-    const concurrent = await fetchAllPages(await source.relations({ first: 100, includeArchived: false }))
-    const match = concurrent.find(
-      (relation) => relation.relatedIssueId === target.id && relation.type === input.type
-    )
-    if (match) {
-      return unchanged(await relationSummary(match, "outgoing"), "directed relation already exists (no-op)")
+    const concurrent = await classifyExisting()
+    if (concurrent) {
+      return concurrent
     }
     throw cause
   }
@@ -612,27 +654,28 @@ const createComment = async (
   client: LinearClient,
   input: CreateCommentInput
 ): Promise<MutationResult<CommentSummary>> => {
+  const callerId = input.id ? normalizeUuid(input.id) : undefined
   const issue = await resolveIssue(client, input.issue)
   const classify = async (comment: Comment): Promise<MutationResult<CommentSummary>> => {
-    if (comment.issueId !== issue.id || !richTextEqual(comment.body, input.body)) {
-      throw conflict(`comment UUID ${input.id} already exists with different issue or body`, "Use a new caller-retained UUID for a different comment.")
+    if (typeof comment.issueId !== "string" || !uuidEqual(comment.issueId, issue.id) || !richTextEqual(comment.body, input.body)) {
+      throw conflict(`comment UUID ${callerId} already exists with different issue or body`, "Use a new caller-retained UUID for a different comment.")
     }
     return unchanged(await commentSummary(comment, issue.id), "matching comment already exists (no-op)")
   }
-  if (input.id) {
-    const existing = await findCommentByUuid(client, input.id)
+  if (callerId) {
+    const existing = await findCommentByUuid(client, callerId)
     if (existing) {
       return classify(existing)
     }
   }
 
   try {
-    const payload = await client.createComment({ issueId: issue.id, body: input.body, id: input.id })
+    const payload = await client.createComment({ issueId: issue.id, body: input.body, id: callerId })
     const comment = await requirePayload(payload.success, payload.comment, "create the comment")
     return changed(await commentSummary(comment, issue.id), "comment created")
   } catch (cause) {
-    if (input.id) {
-      const existing = await findCommentByUuid(client, input.id)
+    if (callerId) {
+      const existing = await findCommentByUuid(client, callerId)
       if (existing) {
         return classify(existing)
       }
@@ -641,7 +684,21 @@ const createComment = async (
   }
 }
 
-const frontier = async (client: LinearClient, mapId: string, limit: number): Promise<FrontierResult> => {
+const frontier = async (
+  client: LinearClient,
+  mapId: string,
+  first: number,
+  after?: string
+): Promise<FrontierResult> => {
+  if (!Number.isInteger(first) || first < 1 || first > 100) {
+    throw new LinearDomainError({
+      message: "invalid frontier page size",
+      help: "Use --first with an integer between 1 and 100."
+    })
+  }
+  if (after !== undefined) {
+    validateFrontierCursor(after)
+  }
   const mapIssue = await resolveIssue(client, mapId)
   const map = await issueDetail(mapIssue)
   const prefix = resolveWayfinderPrefix(map.identifier, map.labels)
@@ -667,33 +724,43 @@ const frontier = async (client: LinearClient, mapId: string, limit: number): Pro
       ]
     })
   )
-  const projected = projectFrontier(
-    candidates.map((issue) => ({
-      id: issue.id,
-      identifier: issue.identifier,
-      title: issue.title,
-      createdAt: issue.createdAt.toISOString(),
-      subIssueSortOrder: issue.subIssueSortOrder ?? null,
-      labelIds: issue.labelIds
-    })),
-    typeLabels
-  )
+  const frontierCandidates = candidates.map((issue) => ({
+    id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    createdAt: issue.createdAt.toISOString(),
+    subIssueSortOrder: issue.subIssueSortOrder ?? null,
+    labelIds: issue.labelIds
+  }))
+  const result = paginateFrontier(frontierCandidates, typeLabels, first, after)
   return {
     map: { id: map.id, identifier: map.identifier, title: map.title },
-    total: projected.length,
-    items: projected.slice(0, limit)
+    total: frontierCandidates.length,
+    items: result.items,
+    pageInfo: result.pageInfo
   }
 }
 
 const findCommentByUuid = async (client: LinearClient, id: string): Promise<Comment | undefined> => {
+  const identity = normalizeUuid(id)
   const comments = await fetchAllPages(
-    await client.comments({ first: 50, includeArchived: true, filter: { id: { eq: id } } })
+    await client.comments({ first: 50, includeArchived: true, filter: { id: { eq: identity } } })
   )
-  const matches = comments.filter((comment) => comment.id === id)
-  if (matches.length > 1) {
+  const matches = comments.filter((comment) => uuidEqual(comment.id, identity))
+  const active = matches.filter((comment) => !comment.archivedAt)
+  if (active.length > 1) {
     throw new LinearDomainError({ message: `Ambiguous Linear comment ${id}`, help: "Retry with an exact unique UUID." })
   }
-  return matches[0]
+  if (active.length === 1) {
+    return active[0]
+  }
+  if (matches.some((comment) => Boolean(comment.archivedAt))) {
+    throw conflict(
+      `Linear comment ${id} is archived`,
+      "Restore the archived comment in Linear or use a different caller-retained UUID."
+    )
+  }
+  return undefined
 }
 
 const issueSummary = async (
@@ -709,7 +776,7 @@ const issueSummary = async (
   ])
   const labelRefs = labels
     .map((label) => ({ id: label.id, name: label.name }))
-    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+    .sort((left, right) => compareText(left.name, right.name) || compareText(left.id, right.id))
   return {
     id: issue.id,
     identifier: issue.identifier,
@@ -729,7 +796,7 @@ const issueSummary = async (
 }
 
 const loadIssueLabels = async (issue: Issue): Promise<ReadonlyArray<IssueLabel>> =>
-  fetchAllPages(await issue.labels({ first: 100, includeArchived: true }))
+  fetchAllPages(await issue.labels({ first: 100, includeArchived: false }))
 
 const issueDetail = async (issue: Issue): Promise<IssueDetail> => {
   const summary = await issueSummary(issue)
@@ -822,6 +889,15 @@ const requirePayload = async <Value>(
   return value
 }
 
+const relationMatches = (
+  relation: IssueRelation,
+  sourceId: string,
+  targetId: string,
+  type: RelationType
+): boolean => relation.type === type &&
+  relation.issueId !== undefined && uuidEqual(relation.issueId, sourceId) &&
+  relation.relatedIssueId !== undefined && uuidEqual(relation.relatedIssueId, targetId)
+
 const relationType = (type: RelationType): IssueRelationType => {
   switch (type) {
     case "blocks": return IssueRelationType.Blocks
@@ -865,3 +941,8 @@ const canonicalRichText = (text: string): string =>
 
 const richTextEqual = (left: string, right: string): boolean =>
   canonicalRichText(left) === canonicalRichText(right)
+
+const compareText = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0
+
+const nullableUuidEqual = (left: string | null, right: string | null): boolean =>
+  left === null || right === null ? left === right : uuidEqual(left, right)

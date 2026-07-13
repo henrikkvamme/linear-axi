@@ -1,36 +1,39 @@
-import type { Issue, IssueLabel, LinearClient, Team, User, WorkflowState } from "@linear/sdk"
+import type { Issue, IssueLabel, IssueRelation, LinearClient, Team, User, WorkflowState } from "@linear/sdk"
 import { LinearDomainError } from "./errors"
 import { fetchAllPages } from "./linear-pagination"
 
 export const resolveTeam = async (client: LinearClient, keyOrId: string): Promise<Team> => {
+  const identity = normalizeUuid(keyOrId)
   const teams = await fetchAllPages(
     await client.teams({
       first: 50,
-      filter: isUuid(keyOrId)
-        ? { id: { eq: keyOrId } }
-        : { key: { eqIgnoreCase: keyOrId } }
+      filter: isUuid(identity)
+        ? { id: { eq: identity } }
+        : { key: { eqIgnoreCase: identity } }
     })
   )
   const matches = teams.filter((team) =>
-    isUuid(keyOrId) ? team.id === keyOrId : team.key.toLowerCase() === keyOrId.toLowerCase()
+    isUuid(identity) ? uuidEqual(team.id, identity) : team.key.toLowerCase() === identity.toLowerCase()
   )
   return exactlyOne(`team ${keyOrId}`, matches, (team) => `${team.id} (${team.key})`)
 }
 
 export const resolveIssue = async (client: LinearClient, idOrKey: string): Promise<Issue> => {
-  const normalized = idOrKey.toLowerCase()
-  if (isUuid(idOrKey)) {
+  const identity = normalizeUuid(idOrKey)
+  const normalized = identity.toLowerCase()
+  if (isUuid(identity)) {
     const issues = await fetchAllPages(
-      await client.issues({ first: 50, includeArchived: true, filter: { id: { eq: idOrKey } } })
+      await client.issues({ first: 50, includeArchived: true, filter: { id: { eq: identity } } })
     )
-    return exactlyOne(
+    return exactlyOneActive(
       `issue ${idOrKey}`,
-      issues.filter((issue) => issue.id.toLowerCase() === normalized),
-      (issue) => `${issue.id} (${issue.identifier})`
+      issues.filter((issue) => uuidEqual(issue.id, identity)),
+      (issue) => `${issue.id} (${issue.identifier})`,
+      (issue) => issue.archivedAt
     )
   }
 
-  const identifier = /^(.*)-([0-9]+)$/.exec(idOrKey)
+  const identifier = /^(.*)-([0-9]+)$/.exec(identity)
   const issues = identifier && identifier[1]
     ? await fetchAllPages(
         await client.issues({
@@ -43,22 +46,25 @@ export const resolveIssue = async (client: LinearClient, idOrKey: string): Promi
         })
       )
     : []
-  return exactlyOne(
+  return exactlyOneActive(
     `issue ${idOrKey}`,
     issues.filter((issue) => issue.identifier.toLowerCase() === normalized),
-    (issue) => `${issue.id} (${issue.identifier})`
+    (issue) => `${issue.id} (${issue.identifier})`,
+    (issue) => issue.archivedAt
   )
 }
 
 export const findIssueByUuid = async (client: LinearClient, id: string): Promise<Issue | undefined> => {
+  const identity = normalizeUuid(id)
   const issues = await fetchAllPages(
-    await client.issues({ first: 50, includeArchived: true, filter: { id: { eq: id } } })
+    await client.issues({ first: 50, includeArchived: true, filter: { id: { eq: identity } } })
   )
-  const matches = issues.filter((issue) => issue.id === id)
-  if (matches.length > 1) {
-    throw ambiguity(`issue ${id}`, matches, (issue) => `${issue.id} (${issue.identifier})`)
-  }
-  return matches[0]
+  return findOneActive(
+    `issue ${id}`,
+    issues.filter((issue) => uuidEqual(issue.id, identity)),
+    (issue) => `${issue.id} (${issue.identifier})`,
+    (issue) => issue.archivedAt
+  )
 }
 
 export const resolveUser = async (client: LinearClient, idOrMe: string): Promise<User> => {
@@ -72,8 +78,9 @@ export const resolveUser = async (client: LinearClient, idOrMe: string): Promise
     })
   }
 
-  const users = await fetchAllPages(await client.users({ first: 50, filter: { id: { eq: idOrMe } } }))
-  return exactlyOne(`user ${idOrMe}`, users.filter((user) => user.id === idOrMe), (user) => user.id)
+  const identity = normalizeUuid(idOrMe)
+  const users = await fetchAllPages(await client.users({ first: 50, filter: { id: { eq: identity } } }))
+  return exactlyOne(`user ${idOrMe}`, users.filter((user) => uuidEqual(user.id, identity)), (user) => user.id)
 }
 
 export const resolveLabelForTeam = async (
@@ -81,43 +88,46 @@ export const resolveLabelForTeam = async (
   idOrName: string,
   teamId: string
 ): Promise<IssueLabel> => {
+  const identity = normalizeUuid(idOrName)
+  const normalizedTeamId = normalizeUuid(teamId)
   const labels = await fetchAllPages(
     await client.issueLabels({
       first: 50,
       includeArchived: true,
-      filter: isUuid(idOrName)
-        ? { id: { eq: idOrName } }
+      filter: isUuid(identity)
+        ? { id: { eq: identity } }
         : {
-            name: { eqIgnoreCase: idOrName },
-            or: [{ team: { null: true } }, { team: { id: { eq: teamId } } }]
+            name: { eqIgnoreCase: identity },
+            or: [{ team: { null: true } }, { team: { id: { eq: normalizedTeamId } } }]
           }
     })
   )
-  const normalized = idOrName.toLowerCase()
+  const normalized = identity.toLowerCase()
   const matches = labels.filter((label) => {
-    const identityMatches = isUuid(idOrName)
-      ? label.id === idOrName
+    const identityMatches = isUuid(identity)
+      ? uuidEqual(label.id, identity)
       : label.name.toLowerCase() === normalized
-    return identityMatches && (label.teamId === undefined || label.teamId === teamId)
+    return identityMatches && (label.teamId === undefined || uuidEqual(label.teamId, normalizedTeamId))
   })
-  return exactlyOne(`label ${idOrName}`, matches, labelCandidate)
+  return exactlyOneActive(`label ${idOrName}`, matches, labelCandidate, (label) => label.archivedAt)
 }
 
 export const resolveLabelGlobally = async (client: LinearClient, idOrName: string): Promise<IssueLabel> => {
+  const identity = normalizeUuid(idOrName)
   const labels = await fetchAllPages(
     await client.issueLabels({
       first: 50,
       includeArchived: true,
-      filter: isUuid(idOrName)
-        ? { id: { eq: idOrName } }
-        : { name: { eqIgnoreCase: idOrName } }
+      filter: isUuid(identity)
+        ? { id: { eq: identity } }
+        : { name: { eqIgnoreCase: identity } }
     })
   )
-  const normalized = idOrName.toLowerCase()
+  const normalized = identity.toLowerCase()
   const matches = labels.filter((label) =>
-    isUuid(idOrName) ? label.id === idOrName : label.name.toLowerCase() === normalized
+    isUuid(identity) ? uuidEqual(label.id, identity) : label.name.toLowerCase() === normalized
   )
-  return exactlyOne(`label ${idOrName}`, matches, labelCandidate)
+  return exactlyOneActive(`label ${idOrName}`, matches, labelCandidate, (label) => label.archivedAt)
 }
 
 export const resolveLabelInScope = async (
@@ -125,8 +135,14 @@ export const resolveLabelInScope = async (
   idOrName: string,
   teamId: string | null
 ): Promise<IssueLabel> => {
-  const labels = await findLabelsInScope(client, idOrName, teamId)
-  return exactlyOne(`label ${idOrName}`, labels, labelCandidate)
+  const labels = await findLabelsInScopeByIdentity(
+    client,
+    idOrName,
+    teamId,
+    isUuid(idOrName) ? "id" : "name",
+    true
+  )
+  return exactlyOneActive(`label ${idOrName}`, labels, labelCandidate, (label) => label.archivedAt)
 }
 
 export const findLabelByIdInScope = (
@@ -154,33 +170,47 @@ const findOneLabelInScope = async (
   teamId: string | null,
   identity: "id" | "name"
 ): Promise<IssueLabel | undefined> => {
-  const labels = await findLabelsInScopeByIdentity(client, value, teamId, identity)
-  if (labels.length > 1) {
-    throw ambiguity(`label ${value}`, labels, labelCandidate)
-  }
-  return labels[0]
+  const labels = await findLabelsInScopeByIdentity(client, value, teamId, identity, true)
+  return findOneActive(`label ${value}`, labels, labelCandidate, (label) => label.archivedAt)
 }
 
 const findLabelsInScopeByIdentity = async (
   client: LinearClient,
   value: string,
   teamId: string | null,
-  identity: "id" | "name"
+  identity: "id" | "name",
+  includeArchived = false
 ): Promise<ReadonlyArray<IssueLabel>> => {
+  const normalizedValue = identity === "id" ? normalizeUuid(value) : value
+  const normalizedTeamId = teamId === null ? null : normalizeUuid(teamId)
   const labels = await fetchAllPages(
     await client.issueLabels({
       first: 50,
       includeArchived: true,
       filter: {
-        ...(identity === "id" ? { id: { eq: value } } : { name: { eqIgnoreCase: value } }),
-        team: teamId === null ? { null: true } : { id: { eq: teamId } }
+        ...(identity === "id" ? { id: { eq: normalizedValue } } : { name: { eqIgnoreCase: normalizedValue } }),
+        team: normalizedTeamId === null ? { null: true } : { id: { eq: normalizedTeamId } }
       }
     })
   )
-  const normalized = value.toLowerCase()
+  const normalizedName = normalizedValue.toLowerCase()
   return labels.filter((label) =>
-    (identity === "id" ? label.id === value : label.name.toLowerCase() === normalized) &&
-    (teamId === null ? label.teamId === undefined : label.teamId === teamId)
+    (identity === "id" ? uuidEqual(label.id, normalizedValue) : label.name.toLowerCase() === normalizedName) &&
+    (normalizedTeamId === null ? label.teamId === undefined : label.teamId !== undefined && uuidEqual(label.teamId, normalizedTeamId)) &&
+    (includeArchived || !label.archivedAt)
+  )
+}
+
+export const findRelationByUuid = async (client: LinearClient, id: string): Promise<IssueRelation | undefined> => {
+  const identity = normalizeUuid(id)
+  const relations = await fetchAllPages(
+    await client.issueRelations({ first: 100, includeArchived: true })
+  )
+  return findOneActive(
+    `issue relation ${id}`,
+    relations.filter((relation) => uuidEqual(relation.id, identity)),
+    (relation) => relation.id,
+    (relation) => relation.archivedAt
   )
 }
 
@@ -189,22 +219,33 @@ export const resolveWorkflowState = async (
   id: string,
   teamId: string
 ): Promise<WorkflowState> => {
+  const identity = normalizeUuid(id)
+  const normalizedTeamId = normalizeUuid(teamId)
   const states = await fetchAllPages(
-    await client.workflowStates({ first: 50, filter: { id: { eq: id }, team: { id: { eq: teamId } } } })
+    await client.workflowStates({ first: 50, filter: { id: { eq: identity }, team: { id: { eq: normalizedTeamId } } } })
   )
-  return exactlyOne(`workflow state ${id}`, states.filter((state) => state.id === id), (state) => `${state.id} (${state.name})`)
+  return exactlyOne(
+    `workflow state ${id}`,
+    states.filter((state) => uuidEqual(state.id, identity)),
+    (state) => `${state.id} (${state.name})`
+  )
 }
 
 export const completedStates = async (client: LinearClient, teamId: string): Promise<ReadonlyArray<WorkflowState>> =>
   fetchAllPages(
     await client.workflowStates({
       first: 50,
-      filter: { team: { id: { eq: teamId } }, type: { eq: "completed" } }
+      filter: { team: { id: { eq: normalizeUuid(teamId) } }, type: { eq: "completed" } }
     })
   )
 
 export const isUuid = (value: string): boolean =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+
+export const normalizeUuid = (value: string): string => isUuid(value) ? value.toLowerCase() : value
+
+export const uuidEqual = (left: string, right: string): boolean =>
+  normalizeUuid(left) === normalizeUuid(right)
 
 const exactlyOne = <Value>(
   description: string,
@@ -212,16 +253,55 @@ const exactlyOne = <Value>(
   candidate: (value: Value) => string
 ): Value => {
   if (matches.length === 0) {
-    throw new LinearDomainError({
-      message: `No Linear ${description} matched`,
-      help: "List the relevant objects and retry with an exact UUID."
-    })
+    throw notFound(description)
   }
   if (matches.length > 1) {
     throw ambiguity(description, matches, candidate)
   }
   return matches[0]!
 }
+
+const exactlyOneActive = <Value>(
+  description: string,
+  matches: ReadonlyArray<Value>,
+  candidate: (value: Value) => string,
+  archivedAt: (value: Value) => unknown
+): Value => {
+  const match = findOneActive(description, matches, candidate, archivedAt)
+  if (!match) {
+    throw notFound(description)
+  }
+  return match
+}
+
+const findOneActive = <Value>(
+  description: string,
+  matches: ReadonlyArray<Value>,
+  candidate: (value: Value) => string,
+  archivedAt: (value: Value) => unknown
+): Value | undefined => {
+  const active = matches.filter((value) => !archivedAt(value))
+  if (active.length > 1) {
+    throw ambiguity(description, active, candidate)
+  }
+  if (active.length === 1) {
+    return active[0]
+  }
+  const archived = matches.filter((value) => Boolean(archivedAt(value)))
+  if (archived.length > 0) {
+    throw new LinearDomainError({
+      message: `Linear ${description} is archived; matched ${archived.map(candidate).join(", ")}`,
+      help: "Restore the archived object in Linear or retry with a different active identity."
+    })
+  }
+  return undefined
+}
+
+const notFound = (description: string): LinearDomainError =>
+  new LinearDomainError({
+    message: `No Linear ${description} matched`,
+    help: "List the relevant objects and retry with an exact UUID."
+  })
 
 const ambiguity = <Value>(
   description: string,

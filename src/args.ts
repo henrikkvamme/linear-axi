@@ -95,8 +95,8 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
         help: spec.help
       })
     }
-    if (flag === "limit") {
-      validateLimit(value, spec.help)
+    if (flag === "limit" || flag === "first") {
+      validatePageSize(flag, value, spec.help)
     }
   }
 
@@ -145,11 +145,11 @@ export const readLimitFlag = (flags: ReadonlyMap<string, string | boolean>, fall
   return Number(raw)
 }
 
-const validateLimit = (value: string | boolean | undefined, help: string): void => {
-  const limit = typeof value === "string" ? Number(value) : Number.NaN
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+const validatePageSize = (flag: string, value: string | boolean | undefined, help: string): void => {
+  const size = typeof value === "string" ? Number(value) : Number.NaN
+  if (!Number.isInteger(size) || size < 1 || size > 100) {
     throw new UsageError({
-      message: "--limit must be an integer between 1 and 100",
+      message: `--${flag} must be an integer between 1 and 100`,
       help
     })
   }
@@ -178,7 +178,7 @@ export const topLevelHelp = [
   "  linear-axi relations create --issue <source> --related-issue <target> --type <type> [--id <uuid-v4>]",
   "  linear-axi comments list --issue <issue> [--after <cursor>] [--limit 50] [--full]",
   "  linear-axi comments create --issue <issue> (--body \"...\" | --body-file <path|->) [--id <uuid-v4>]",
-  "  linear-axi wayfinder frontier --map <issue> [--limit 20]"
+  "  linear-axi wayfinder frontier --map <issue> [--first 20] [--after <cursor>]"
 ].join("\n")
 
 const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
@@ -338,10 +338,10 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
   },
   {
     path: ["wayfinder", "frontier"],
-    flags: new Set(["help", "map", "limit"]),
-    valueFlags: new Set(["map", "limit"]),
+    flags: new Set(["help", "map", "first", "after", "limit"]),
+    valueFlags: new Set(["map", "first", "after", "limit"]),
     required: new Set(["map"]),
-    help: "Usage: linear-axi wayfinder frontier --map <issue-id-or-key> [--limit 20]"
+    help: "Usage: linear-axi wayfinder frontier --map <issue-id-or-key> [--first 20] [--after <cursor>] [--limit 20]\nEach page recomputes current Linear state and does not provide snapshot isolation, so membership or ordering changes can move issues across the cursor. Restart without --after for a fresh frontier. --limit remains an alias for --first."
   }
 ]
 
@@ -365,7 +365,7 @@ const commandExamples: Readonly<Record<string, ReadonlyArray<string>>> = {
   "relations create": ["linear-axi relations create --issue ENG-123 --related-issue ENG-124 --type blocks"],
   "comments list": ["linear-axi comments list --issue ENG-123 --full"],
   "comments create": ["linear-axi comments create --issue ENG-123 --body \"Implemented in PR.\""],
-  "wayfinder frontier": ["linear-axi wayfinder frontier --map ENG-100 --limit 20"]
+  "wayfinder frontier": ["linear-axi wayfinder frontier --map ENG-100 --first 20"]
 }
 
 const optionValues: Readonly<Record<string, string>> = {
@@ -376,6 +376,7 @@ const optionValues: Readonly<Record<string, string>> = {
   "env-file": "<path>",
   timeout: "<seconds>",
   limit: "<1-100>",
+  first: "<1-100>",
   fields: "<fields>",
   after: "<cursor>",
   id: "<id>",

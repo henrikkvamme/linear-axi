@@ -6,6 +6,7 @@ import { Effect } from "effect"
 import { commandSpecs, parseArgs } from "../src/args"
 import { runCommand } from "../src/commands"
 import type { IssueDetail, IssueSummary, LinearGateway } from "../src/linear"
+import { encodeFrontierCursor } from "../src/wayfinder"
 
 const baseIssue: IssueSummary = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -62,7 +63,8 @@ const fakeGateway = (overrides: Partial<LinearGateway> = {}): LinearGateway => (
   frontier: () => Effect.succeed({
     map: { id: "map-id", identifier: "ENG-100", title: "Map" },
     total: 1,
-    items: [{ id: baseIssue.id, identifier: baseIssue.identifier, title: baseIssue.title, type: "task" }]
+    items: [{ id: baseIssue.id, identifier: baseIssue.identifier, title: baseIssue.title, type: "task" }],
+    pageInfo: { hasNextPage: false, endCursor: null }
   }),
   ...overrides
 })
@@ -97,7 +99,7 @@ describe("runCommand", () => {
     })
     const output = await run(["issues", "list", "--team", "ENG", "--label", "wayfinder:task", "--parent", "ENG-100", "--assignee", "none", "--state", "open", "--after", "cursor-1", "--limit", "5", "--fields", "identifier,title,parent"], gateway)
     expect(output.issues).toEqual([{ identifier: "ENG-123", title: "Fix auth bug", parent: null }])
-    expect((output.help as string[])[0]).toContain("--after \"next-cursor\"")
+    expect((output.help as string[])[0]).toContain("--after 'next-cursor'")
   })
 
   test("issues list preserves structured label names including commas", async () => {
@@ -117,6 +119,21 @@ describe("runCommand", () => {
       identifier: "ENG-123",
       labels: ["backend,urgent", "wayfinder:task"]
     }])
+  })
+
+  test("continuation commands shell-escape replayed values and cursors", async () => {
+    const output = await run(
+      ["issues", "list", "--team", "$(echo injected)'`$HOME", "--limit", "5"],
+      fakeGateway({ listIssues: () => Effect.succeed({
+        items: [baseIssue],
+        page: { hasNext: true, endCursor: "cursor'$(echo injected)`$HOME" }
+      }) })
+    )
+    const help = (output.help as string[])[0]!
+
+    expect(help).toContain("--team '$(echo injected)'\"'\"'`$HOME'")
+    expect(help).toContain("--after 'cursor'\"'\"'$(echo injected)`$HOME'")
+    expect(help).not.toContain('"$(echo injected)')
   })
 
   test("issues list emits a definitive child empty state", async () => {
@@ -203,25 +220,67 @@ describe("runCommand", () => {
     await run(["comments", "create", "--issue", "ENG-123", "--body-file", file, "--id", id], gateway)
   })
 
-  test("frontier emits deterministic claim guidance and definitive empty state", async () => {
-    const found = await run(["wayfinder", "frontier", "--map", "ENG-100"])
+  test("frontier emits paginated claim guidance and definitive empty pages", async () => {
+    const previousCursor = encodeFrontierCursor({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      createdAt: "2026-07-07T00:00:00.000Z",
+      subIssueSortOrder: 1
+    })
+    const nextCursor = encodeFrontierCursor({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      createdAt: "2026-07-08T00:00:00.000Z",
+      subIssueSortOrder: 2
+    })
+    const calls: unknown[] = []
+    const gateway = fakeGateway({
+      frontier: (input) => {
+        calls.push(input)
+        return Effect.succeed({
+          map: { id: "map-id", identifier: "ENG-100", title: "Map" },
+          total: 101,
+          items: [{ id: baseIssue.id, identifier: baseIssue.identifier, title: baseIssue.title, type: "task" }],
+          pageInfo: { hasNextPage: true, endCursor: nextCursor }
+        })
+      }
+    })
+    const found = await run(["wayfinder", "frontier", "--map", "ENG-100", "--first", "100", "--after", previousCursor], gateway)
+    expect(calls).toEqual([{ map: "ENG-100", first: 100, after: previousCursor }])
+    expect(found.pageInfo).toEqual({ hasNextPage: true, endCursor: nextCursor })
     expect((found.help as string[])[0]).toContain("issues assign --id ENG-123 --assignee me")
-    const empty = await run(["wayfinder", "frontier", "--map", "ENG-100"], fakeGateway({
-      frontier: () => Effect.succeed({ map: { id: "map-id", identifier: "ENG-100", title: "Map" }, total: 0, items: [] })
+    expect((found.help as string[])[1]).toContain(`--after '${nextCursor}'`)
+
+    const empty = await run(["wayfinder", "frontier", "--map", "ENG-100", "--after", previousCursor], fakeGateway({
+      frontier: () => Effect.succeed({
+        map: { id: "map-id", identifier: "ENG-100", title: "Map" },
+        total: 100,
+        items: [],
+        pageInfo: { hasNextPage: false, endCursor: null }
+      })
     }))
-    expect(empty.frontier).toBe("0 open, unblocked, unassigned children found for ENG-100")
+    expect(empty.frontier).toBe("0 frontier issues found after the supplied cursor for ENG-100")
+    expect(empty.pageInfo).toEqual({ hasNextPage: false, endCursor: null })
   })
 
   test("malformed and conflicting flags fail before gateway access", async () => {
     let calls = 0
     const gateway = fakeGateway({
       createComment: () => { calls += 1; return Effect.succeed(mutation({ id: "x", issueId: "x", body: "x", createdAt: "x", updatedAt: "x", author: "x", url: "x" })) },
-      updateIssueDescription: () => { calls += 1; return Effect.succeed(mutation(detail())) }
+      updateIssueDescription: () => { calls += 1; return Effect.succeed(mutation(detail())) },
+      frontier: () => {
+        calls += 1
+        return Effect.succeed({
+          map: { id: "map-id", identifier: "ENG-100", title: "Map" },
+          total: 0,
+          items: [],
+          pageInfo: { hasNextPage: false, endCursor: null }
+        })
+      }
     })
     for (const argv of [
       ["comments", "create", "--issue", "ENG-123", "--body", "a", "--body-file", "b"],
       ["issues", "update", "--id", "ENG-100", "--description-file", "x", "--if-updated-at", "yesterday"],
-      ["labels", "create", "--workspace", "--team", "ENG", "--name", "x", "--color", "red"]
+      ["labels", "create", "--workspace", "--team", "ENG", "--name", "x", "--color", "red"],
+      ["wayfinder", "frontier", "--map", "ENG-100", "--after", "invalid"]
     ]) {
       const parsed = parseArgs(argv, commandSpecs)
       const exit = await Effect.runPromiseExit(runCommand(parsed, gateway, "/repo/src/main.ts"))

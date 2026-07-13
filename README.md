@@ -79,10 +79,12 @@ linear-axi relations create --issue <blocker> --related-issue <blocked> --type b
 linear-axi relations list --issue <issue> --type blocks --direction both
 linear-axi comments list --issue <issue> --limit 50
 linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
-linear-axi wayfinder frontier --map <map-issue>
+linear-axi wayfinder frontier --map <map-issue> --first 20
 ```
 
 For `relations create --type blocks`, `--issue` is the blocker and `--related-issue` is the blocked issue.
+
+Wayfinder frontier pagination uses `--first` and the returned `pageInfo.endCursor` with `--after`. Every page recomputes current Linear state and does not provide snapshot isolation, so membership or ordering changes can move issues across the cursor. Restart without `--after` when a fresh frontier is required.
 
 Assignment is a verified claim convention, not an atomic claim. Another writer can race between the read and update. Wayfinder agents must not use `--replace` to claim work and should release only their own assignment with `--if-assignee`.
 

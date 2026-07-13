@@ -222,13 +222,18 @@ export interface CreateCommentInput {
 
 export interface FrontierInput {
   readonly map: string
-  readonly limit: number
+  readonly first: number
+  readonly after?: string
 }
 
 export interface FrontierResult {
   readonly map: Pick<IssueSummary, "id" | "identifier" | "title">
   readonly total: number
   readonly items: ReadonlyArray<FrontierIssue>
+  readonly pageInfo: {
+    readonly hasNextPage: boolean
+    readonly endCursor: string | null
+  }
 }
 
 export const credentialsFromEnv = (env: NodeJS.ProcessEnv): Credentials | undefined => {

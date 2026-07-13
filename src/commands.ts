@@ -24,6 +24,7 @@ import type {
 import { DESCRIPTION_CONCURRENCY_WARNING } from "./linear"
 import { connectOAuth, setupOAuth } from "./oauth"
 import { truncateText, type OutputValue } from "./output"
+import { validateFrontierCursor } from "./wayfinder"
 
 const ISSUE_FIELD_SET: ReadonlySet<string> = new Set(ISSUE_FIELDS)
 const LABEL_FIELD_SET: ReadonlySet<string> = new Set(LABEL_FIELDS)
@@ -412,18 +413,37 @@ const commentsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
 
 const wayfinderFrontier = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const map = readStringFlag(parsed.flags, "map")!
-  const limit = readLimitFlag(parsed.flags, 20)
-  return gateway.frontier({ map, limit }).pipe(Effect.map((result) => ({
+  const firstFlag = readStringFlag(parsed.flags, "first")
+  const limitFlag = readStringFlag(parsed.flags, "limit")
+  if (firstFlag !== undefined && limitFlag !== undefined) {
+    return usage("--first and --limit are mutually exclusive", parsed.command)
+  }
+  const after = readStringFlag(parsed.flags, "after")
+  if (after !== undefined) {
+    try {
+      validateFrontierCursor(after)
+    } catch {
+      return usage("--after is not a valid frontier cursor", parsed.command)
+    }
+  }
+  const first = firstFlag === undefined ? readLimitFlag(parsed.flags, 20) : Number(firstFlag)
+  return gateway.frontier({ map, first, after }).pipe(Effect.map((result) => ({
     map: result.map,
+    count: `${result.items.length} of ${result.total} current frontier issues shown`,
+    pageInfo: result.pageInfo,
     ...(result.items.length === 0
-      ? { frontier: `0 open, unblocked, unassigned children found for ${result.map.identifier}` }
+      ? {
+          frontier: after
+            ? `0 frontier issues found after the supplied cursor for ${result.map.identifier}`
+            : `0 open, unblocked, unassigned children found for ${result.map.identifier}`,
+          help: []
+        }
       : {
-          count: `${result.total} total frontier issues`,
           frontier: result.items,
           help: [
             `Run \`linear-axi issues assign --id ${result.items[0]!.identifier} --assignee me\` to claim the first frontier issue.`,
-            ...(result.total > limit
-              ? [`Run \`linear-axi wayfinder frontier --map ${map} --limit ${Math.min(100, result.total)}\` to show more; the first result is unchanged.`]
+            ...(result.pageInfo.hasNextPage && result.pageInfo.endCursor
+              ? [continuationCommand("wayfinder frontier", parsed, result.pageInfo.endCursor)]
               : [])
           ]
         })
@@ -535,9 +555,11 @@ const issueMutationOutput = (result: { value: IssueSummary; changed: boolean; re
 const continuationCommand = (command: string, parsed: ParsedArgs, cursor: string): string => {
   const flags = [...parsed.flags.entries()]
     .filter(([name]) => name !== "after" && name !== "help")
-    .map(([name, value]) => value === true ? `--${name}` : `--${name} ${JSON.stringify(value)}`)
-  return `Run \`linear-axi ${command}${flags.length ? ` ${flags.join(" ")}` : ""} --after ${JSON.stringify(cursor)}\` for the next page.`
+    .map(([name, value]) => value === true ? `--${name}` : `--${name} ${shellQuote(String(value))}`)
+  return `Run \`linear-axi ${command}${flags.length ? ` ${flags.join(" ")}` : ""} --after ${shellQuote(cursor)}\` for the next page.`
 }
+
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
 
 const usage = (message: string, command: ReadonlyArray<string>): Effect.Effect<never, UsageError> =>
   Effect.fail(new UsageError({ message, help: helpFor(command) }))

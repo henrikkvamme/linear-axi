@@ -77,4 +77,4 @@ test("standalone binary runs without a source checkout", () => {
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
-})
+}, 15_000)

@@ -34,7 +34,7 @@ linear-axi relations create --issue <blocker> --related-issue <blocked> --type b
 linear-axi relations list --issue <issue> --direction both
 linear-axi comments list --issue <issue> --limit 50
 linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
-linear-axi wayfinder frontier --map <map-issue>
+linear-axi wayfinder frontier --map <map-issue> --first 20
 ```
 
 ## Rules
@@ -71,6 +71,9 @@ linear-axi wayfinder frontier --map <map-issue>
 
 11. Replace descriptions only from the latest version.
     Completion criterion: fetch the full issue, merge locally, then pass that exact `updatedAt` to `issues update --if-updated-at`. On conflict, refetch and merge again. Linear has no atomic compare-and-swap, so keep resolution comments canonical and do not claim that the final read/write race is eliminated.
+
+12. Treat frontier pages as current-state projections.
+    Completion criterion: follow `pageInfo.endCursor` with `--after`, but restart without `--after` when current membership or ordering matters. Frontier pagination does not provide snapshot isolation.
 
 ## Updating The CLI
 
