@@ -20,9 +20,21 @@ linear-axi auth login --no-open
 linear-axi teams list --limit 50
 linear-axi issues list --assignee me --limit 20
 linear-axi issues list --team <key-or-id> --limit 20
+linear-axi issues list --parent <issue-id-or-key> --label <id-or-name> --assignee none --state open --limit 100
 linear-axi issues view --id <issue-id-or-key>
-linear-axi issues create --team <key-or-id> --title "..." --description "..."
-linear-axi comments create --issue <issue-id-or-key> --body "..."
+linear-axi issues create --team <key-or-id> --title "..." --description-file <path> --parent <issue> --label <label>
+linear-axi issues assign --id <issue-id-or-key> --assignee me
+linear-axi issues unassign --id <issue-id-or-key> --if-assignee me
+linear-axi issues close --id <issue-id-or-key>
+linear-axi issues update --id <issue-id-or-key> --description-file <path> --if-updated-at <RFC3339>
+linear-axi labels list --workspace --name <exact-name>
+linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
+linear-axi labels apply --issue <issue> --label <label>
+linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks
+linear-axi relations list --issue <issue> --direction both
+linear-axi comments list --issue <issue> --limit 50
+linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
+linear-axi wayfinder frontier --map <map-issue>
 ```
 
 ## Rules
@@ -50,6 +62,15 @@ linear-axi comments create --issue <issue-id-or-key> --body "..."
 
 8. Handle remote-browser loopback callbacks.
    Completion criterion: if the user approves Linear OAuth and the live browser lands on `http://127.0.0.1:14582/oauth/callback?...` with `This site can't be reached`, keep the still-running `auth login` process alive and paste that full callback URL into the CLI stdin. Then read the waiting CLI output and verify the configured credentials file was written. Do not paste the callback code or resulting tokens in the final answer.
+
+9. Preserve directed blocking semantics.
+   Completion criterion: for `relations create --type blocks`, pass the blocker as `--issue` and the blocked issue as `--related-issue`. A reverse relation is distinct.
+
+10. Treat assignment as a non-atomic claim convention.
+    Completion criterion: claim only an unassigned issue, never pass `--replace` for a Wayfinder claim, and release with `--if-assignee me`. Read-after-write verification narrows but cannot eliminate concurrent claim races.
+
+11. Replace descriptions only from the latest version.
+    Completion criterion: fetch the full issue, merge locally, then pass that exact `updatedAt` to `issues update --if-updated-at`. On conflict, refetch and merge again. Linear has no atomic compare-and-swap, so keep resolution comments canonical and do not claim that the final read/write race is eliminated.
 
 ## Updating The CLI
 

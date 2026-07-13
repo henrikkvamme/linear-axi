@@ -31,4 +31,15 @@ export class LinearApiError extends Error {
   }
 }
 
-export type CliError = UsageError | AuthError | LinearApiError
+export class LinearDomainError extends Error {
+  readonly _tag = "LinearDomainError"
+  readonly help?: string
+
+  constructor(input: { message: string; help?: string }) {
+    super(input.message)
+    this.name = this._tag
+    this.help = input.help
+  }
+}
+
+export type CliError = UsageError | AuthError | LinearApiError | LinearDomainError

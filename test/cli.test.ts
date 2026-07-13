@@ -52,7 +52,18 @@ describe("linear-axi process", () => {
     ["issues", "list"],
     ["issues", "view"],
     ["issues", "create"],
-    ["comments", "create"]
+    ["issues", "assign"],
+    ["issues", "unassign"],
+    ["issues", "close"],
+    ["issues", "update"],
+    ["labels", "list"],
+    ["labels", "create"],
+    ["labels", "apply"],
+    ["relations", "list"],
+    ["relations", "create"],
+    ["comments", "list"],
+    ["comments", "create"],
+    ["wayfinder", "frontier"]
   ]) {
     test(`prints command help for ${command.join(" ")}`, () => {
       const result = runCli(...command, "--help")
@@ -140,7 +151,15 @@ describe("linear-axi process", () => {
 
     expect(result.exitCode).toBe(2)
     expect(stderrText(result)).toBe("")
-    expect(stdout).toContain("--body is required")
+    expect(stdout).toContain("exactly one of --body or --body-file is required")
     expect(stdout).not.toContain("Linear credentials are not configured")
+  })
+
+  test("rejects malformed mutation flags before authentication", () => {
+    const result = runCli("labels", "create", "--workspace", "--name", "fixture", "--color", "red")
+    expect(result.exitCode).toBe(2)
+    expect(stderrText(result)).toBe("")
+    expect(stdoutText(result)).toContain("--color must use #RRGGBB")
+    expect(stdoutText(result)).not.toContain("Linear credentials are not configured")
   })
 })

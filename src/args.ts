@@ -156,10 +156,21 @@ export const topLevelHelp = [
   "  linear-axi auth oauth setup [--notify]",
   "  linear-axi auth oauth connect [--client-id <id>] [--write-env] [--notify]",
   "  linear-axi teams list [--limit 50]",
-  "  linear-axi issues list [--assignee me] [--team <key-or-id>] [--limit 20]",
+  "  linear-axi issues list [--team <key-or-id>] [--label <id-or-name>] [--parent <issue>] [--assignee me|none|<user-uuid>] [--state open|closed] [--after <cursor>] [--limit 20] [--fields <fields>]",
   "  linear-axi issues view --id <issue-id-or-key> [--full]",
-  "  linear-axi issues create --team <key-or-id> --title \"...\" [--description \"...\"]",
-  "  linear-axi comments create --issue <issue-id-or-key> --body \"...\""
+  "  linear-axi issues create --team <key-or-id> --title \"...\" [--description \"...\" | --description-file <path|->] [--parent <issue>] [--label <label>] [--id <uuid-v4>]",
+  "  linear-axi issues assign --id <issue> --assignee me|<user-uuid> [--replace]",
+  "  linear-axi issues unassign --id <issue> [--if-assignee me|<user-uuid>]",
+  "  linear-axi issues close --id <issue> [--state <state-uuid>]",
+  "  linear-axi issues update --id <issue> --description-file <path|-> --if-updated-at <RFC3339>",
+  "  linear-axi labels list [--workspace | --team <team>] [--name <exact-name>] [--issue <issue>] [--after <cursor>] [--limit 100] [--fields <fields>]",
+  "  linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <team>) [--description \"...\"] [--id <uuid-v4>] [--if-absent]",
+  "  linear-axi labels apply --issue <issue> --label <id-or-name>",
+  "  linear-axi relations list --issue <issue> [--type <type>] [--direction outgoing|incoming|both] [--after <cursor>] [--limit 100]",
+  "  linear-axi relations create --issue <source> --related-issue <target> --type <type> [--id <uuid-v4>]",
+  "  linear-axi comments list --issue <issue> [--after <cursor>] [--limit 50] [--full]",
+  "  linear-axi comments create --issue <issue> (--body \"...\" | --body-file <path|->) [--id <uuid-v4>]",
+  "  linear-axi wayfinder frontier --map <issue> [--limit 20]"
 ].join("\n")
 
 export const commandSpecs: ReadonlyArray<CommandSpec> = [
@@ -221,9 +232,9 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
   },
   {
     path: ["issues", "list"],
-    flags: new Set(["help", "assignee", "team", "limit"]),
-    valueFlags: new Set(["assignee", "team", "limit"]),
-    help: "Usage: linear-axi issues list [--assignee me] [--team <key-or-id>] [--limit 20]"
+    flags: new Set(["help", "assignee", "team", "label", "parent", "state", "after", "limit", "fields"]),
+    valueFlags: new Set(["assignee", "team", "label", "parent", "state", "after", "limit", "fields"]),
+    help: "Usage: linear-axi issues list [--team <key-or-id>] [--label <id-or-name>] [--parent <issue-id-or-key>] [--assignee me|none|<user-uuid>] [--state open|closed] [--after <cursor>] [--limit 20] [--fields id,identifier,title,state]"
   },
   {
     path: ["issues", "view"],
@@ -234,16 +245,92 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
   },
   {
     path: ["issues", "create"],
-    flags: new Set(["help", "team", "title", "description"]),
-    valueFlags: new Set(["team", "title", "description"]),
+    flags: new Set(["help", "team", "title", "description", "description-file", "parent", "label", "id"]),
+    valueFlags: new Set(["team", "title", "description", "description-file", "parent", "label", "id"]),
     required: new Set(["team", "title"]),
-    help: "Usage: linear-axi issues create --team <key-or-id> --title \"...\" [--description \"...\"]"
+    help: "Usage: linear-axi issues create --team <key-or-id> --title \"...\" [--description \"...\" | --description-file <path|->] [--parent <issue-id-or-key>] [--label <id-or-name>] [--id <uuid-v4>]"
+  },
+  {
+    path: ["issues", "assign"],
+    flags: new Set(["help", "id", "assignee", "replace"]),
+    valueFlags: new Set(["id", "assignee"]),
+    required: new Set(["id", "assignee"]),
+    help: "Usage: linear-axi issues assign --id <issue-id-or-key> --assignee me|<user-uuid> [--replace]"
+  },
+  {
+    path: ["issues", "unassign"],
+    flags: new Set(["help", "id", "if-assignee"]),
+    valueFlags: new Set(["id", "if-assignee"]),
+    required: new Set(["id"]),
+    help: "Usage: linear-axi issues unassign --id <issue-id-or-key> [--if-assignee me|<user-uuid>]"
+  },
+  {
+    path: ["issues", "close"],
+    flags: new Set(["help", "id", "state"]),
+    valueFlags: new Set(["id", "state"]),
+    required: new Set(["id"]),
+    help: "Usage: linear-axi issues close --id <issue-id-or-key> [--state <completed-state-uuid>]"
+  },
+  {
+    path: ["issues", "update"],
+    flags: new Set(["help", "id", "description-file", "if-updated-at"]),
+    valueFlags: new Set(["id", "description-file", "if-updated-at"]),
+    required: new Set(["id", "description-file", "if-updated-at"]),
+    help: "Usage: linear-axi issues update --id <issue-id-or-key> --description-file <path|-> --if-updated-at <RFC3339>\nKnown-stale updates are rejected and writes are verified, but Linear has no atomic compare-and-swap; an edit can still race between the final read and write."
+  },
+  {
+    path: ["labels", "list"],
+    flags: new Set(["help", "workspace", "team", "name", "issue", "after", "limit", "fields"]),
+    valueFlags: new Set(["team", "name", "issue", "after", "limit", "fields"]),
+    help: "Usage: linear-axi labels list [--workspace | --team <key-or-id>] [--name <exact-name>] [--issue <issue-id-or-key>] [--after <cursor>] [--limit 100] [--fields id,name,scope]"
+  },
+  {
+    path: ["labels", "create"],
+    flags: new Set(["help", "name", "color", "workspace", "team", "description", "id", "if-absent"]),
+    valueFlags: new Set(["name", "color", "team", "description", "id"]),
+    required: new Set(["name", "color"]),
+    help: "Usage: linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <key-or-id>) [--description \"...\"] [--id <uuid-v4>] [--if-absent]"
+  },
+  {
+    path: ["labels", "apply"],
+    flags: new Set(["help", "issue", "label"]),
+    valueFlags: new Set(["issue", "label"]),
+    required: new Set(["issue", "label"]),
+    help: "Usage: linear-axi labels apply --issue <issue-id-or-key> --label <id-or-name>"
+  },
+  {
+    path: ["relations", "list"],
+    flags: new Set(["help", "issue", "type", "direction", "after", "limit"]),
+    valueFlags: new Set(["issue", "type", "direction", "after", "limit"]),
+    required: new Set(["issue"]),
+    help: "Usage: linear-axi relations list --issue <issue-id-or-key> [--type blocks|related|duplicate|similar] [--direction outgoing|incoming|both] [--after <cursor>] [--limit 100]"
+  },
+  {
+    path: ["relations", "create"],
+    flags: new Set(["help", "issue", "related-issue", "type", "id"]),
+    valueFlags: new Set(["issue", "related-issue", "type", "id"]),
+    required: new Set(["issue", "related-issue", "type"]),
+    help: "Usage: linear-axi relations create --issue <source-issue> --related-issue <target-issue> --type blocks|related|duplicate|similar [--id <uuid-v4>]\nFor --type blocks, --issue is the blocker and --related-issue is the blocked issue."
+  },
+  {
+    path: ["comments", "list"],
+    flags: new Set(["help", "issue", "after", "limit", "full"]),
+    valueFlags: new Set(["issue", "after", "limit"]),
+    required: new Set(["issue"]),
+    help: "Usage: linear-axi comments list --issue <issue-id-or-key> [--after <cursor>] [--limit 50] [--full]"
   },
   {
     path: ["comments", "create"],
-    flags: new Set(["help", "issue", "body"]),
-    valueFlags: new Set(["issue", "body"]),
-    required: new Set(["issue", "body"]),
-    help: "Usage: linear-axi comments create --issue <issue-id-or-key> --body \"...\""
+    flags: new Set(["help", "issue", "body", "body-file", "id"]),
+    valueFlags: new Set(["issue", "body", "body-file", "id"]),
+    required: new Set(["issue"]),
+    help: "Usage: linear-axi comments create --issue <issue-id-or-key> (--body \"...\" | --body-file <path|->) [--id <uuid-v4>]"
+  },
+  {
+    path: ["wayfinder", "frontier"],
+    flags: new Set(["help", "map", "limit"]),
+    valueFlags: new Set(["map", "limit"]),
+    required: new Set(["map"]),
+    help: "Usage: linear-axi wayfinder frontier --map <issue-id-or-key> [--limit 20]"
   }
 ]

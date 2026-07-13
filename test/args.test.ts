@@ -115,4 +115,41 @@ describe("parseArgs", () => {
     expect(parsed.flags.get("notify")).toBe(true)
     expect(parsed.flags.get("redirect-uri")).toBe("http://127.0.0.1:14582/oauth/callback")
   })
+
+  const newCommands: ReadonlyArray<ReadonlyArray<string>> = [
+    ["issues", "assign"],
+    ["issues", "unassign"],
+    ["issues", "close"],
+    ["issues", "update"],
+    ["labels", "list"],
+    ["labels", "create"],
+    ["labels", "apply"],
+    ["relations", "list"],
+    ["relations", "create"],
+    ["comments", "list"],
+    ["wayfinder", "frontier"]
+  ]
+
+  for (const command of newCommands) {
+    test(`rejects unknown flags for ${command.join(" ")} even with help`, () => {
+      expect(() => parseArgs([...command, "--bogus", "--help"], commandSpecs)).toThrow(UsageError)
+    })
+  }
+
+  for (const [command, required] of [
+    [["issues", "assign"], "id"],
+    [["issues", "unassign"], "id"],
+    [["issues", "close"], "id"],
+    [["issues", "update"], "id"],
+    [["labels", "create"], "name"],
+    [["labels", "apply"], "issue"],
+    [["relations", "list"], "issue"],
+    [["relations", "create"], "issue"],
+    [["comments", "list"], "issue"],
+    [["wayfinder", "frontier"], "map"]
+  ] as const) {
+    test(`rejects missing --${required} for ${command.join(" ")}`, () => {
+      expect(() => parseArgs(command, commandSpecs)).toThrow(UsageError)
+    })
+  }
 })

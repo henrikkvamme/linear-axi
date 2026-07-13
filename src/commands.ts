@@ -1,12 +1,50 @@
 import { Effect } from "effect"
-import { type ParsedArgs, readBooleanFlag, readLimitFlag, readStringFlag, topLevelHelp } from "./args"
-import { UsageError, type CliError } from "./errors"
-import type { LinearGateway } from "./linear"
+import {
+  commandSpecs,
+  findSpec,
+  type ParsedArgs,
+  readBooleanFlag,
+  readLimitFlag,
+  readStringFlag,
+  topLevelHelp
+} from "./args"
+import type { Env } from "./env"
+import { LinearDomainError, UsageError, type CliError } from "./errors"
+import type {
+  IssueSummary,
+  LabelSummary,
+  LinearGateway,
+  RelationDirection,
+  RelationType
+} from "./linear"
+import { DESCRIPTION_CONCURRENCY_WARNING } from "./linear"
 import { connectOAuth, setupOAuth } from "./oauth"
 import { truncateText, type OutputValue } from "./output"
-import type { Env } from "./env"
+
+const ISSUE_FIELDS = new Set([
+  "id", "identifier", "title", "state", "assignee", "parent", "labels", "updatedAt", "url", "subIssueSortOrder"
+])
+const DEFAULT_ISSUE_FIELDS = ["id", "identifier", "title", "state"]
+const LABEL_FIELDS = new Set(["id", "name", "scope", "color", "description", "isGroup", "archivedAt"])
+const DEFAULT_LABEL_FIELDS = ["id", "name", "scope"]
+const RELATION_TYPES = new Set<RelationType>(["blocks", "related", "duplicate", "similar"])
+const RELATION_DIRECTIONS = new Set(["outgoing", "incoming", "both"])
 
 export const runCommand = (
+  parsed: ParsedArgs,
+  gateway: LinearGateway,
+  binPath: string,
+  env: Env = process.env,
+  credentialPathEnv: Env = process.env
+): Effect.Effect<OutputValue, CliError> =>
+  Effect.try({
+    try: () => dispatchCommand(parsed, gateway, binPath, env, credentialPathEnv),
+    catch: (cause): CliError => cause instanceof UsageError
+      ? cause
+      : new LinearDomainError({ message: "Command validation failed", help: helpFor(parsed.command) })
+  }).pipe(Effect.flatten)
+
+const dispatchCommand = (
   parsed: ParsedArgs,
   gateway: LinearGateway,
   binPath: string,
@@ -16,39 +54,37 @@ export const runCommand = (
   const path = parsed.command.join(" ")
 
   if (parsed.flags.get("help") === true) {
-    return Effect.succeed({
-      help: helpFor(path)
-    })
+    return Effect.succeed({ help: helpFor(parsed.command) })
   }
 
   switch (path) {
-    case "home":
-      return home(gateway, binPath)
+    case "home": return home(gateway, binPath)
     case "auth status":
-      return gateway.authStatus().pipe(
-        Effect.map((auth) => ({
-          auth,
-          help: auth.authenticated ? [] : ["Run `linear-axi auth login` to choose and connect a Linear workspace."]
-        }))
-      )
+      return gateway.authStatus().pipe(Effect.map((auth) => ({
+        auth,
+        help: auth.authenticated ? [] : ["Run `linear-axi auth login` to choose and connect a Linear workspace."]
+      })))
     case "auth login":
       return authOAuthConnect(parsed, env, credentialPathEnv, { openBrowser: true, promptConsent: true, writeEnv: true })
-    case "auth oauth setup":
-      return authOAuthSetup(parsed, env)
-    case "auth oauth connect":
-      return authOAuthConnect(parsed, env, credentialPathEnv)
-    case "teams list":
-      return teamsList(parsed, gateway)
-    case "issues list":
-      return issuesList(parsed, gateway)
-    case "issues view":
-      return issuesView(parsed, gateway)
-    case "issues create":
-      return issuesCreate(parsed, gateway)
-    case "comments create":
-      return commentsCreate(parsed, gateway)
-    default:
-      return Effect.fail(new UsageError({ message: `unknown command ${path}`, help: topLevelHelp }))
+    case "auth oauth setup": return authOAuthSetup(parsed, env)
+    case "auth oauth connect": return authOAuthConnect(parsed, env, credentialPathEnv)
+    case "teams list": return teamsList(parsed, gateway)
+    case "issues list": return issuesList(parsed, gateway)
+    case "issues view": return issuesView(parsed, gateway)
+    case "issues create": return issuesCreate(parsed, gateway)
+    case "issues assign": return issuesAssign(parsed, gateway)
+    case "issues unassign": return issuesUnassign(parsed, gateway)
+    case "issues close": return issuesClose(parsed, gateway)
+    case "issues update": return issuesUpdate(parsed, gateway)
+    case "labels list": return labelsList(parsed, gateway)
+    case "labels create": return labelsCreate(parsed, gateway)
+    case "labels apply": return labelsApply(parsed, gateway)
+    case "relations list": return relationsList(parsed, gateway)
+    case "relations create": return relationsCreate(parsed, gateway)
+    case "comments list": return commentsList(parsed, gateway)
+    case "comments create": return commentsCreate(parsed, gateway)
+    case "wayfinder frontier": return wayfinderFrontier(parsed, gateway)
+    default: return Effect.fail(new UsageError({ message: `unknown command ${path}`, help: topLevelHelp }))
   }
 }
 
@@ -65,12 +101,12 @@ const home = (gateway: LinearGateway, binPath: string) =>
       }
 
       return gateway.listIssues({ assignee: "me", limit: 10 }).pipe(
-        Effect.map((issues) => ({
+        Effect.map((result) => ({
           bin: collapseHome(binPath),
           description: "Operate Linear through a Bun, Effect, AXI-oriented CLI.",
           auth,
-          count: `${issues.length} assigned issues shown`,
-          issues,
+          count: `${result.items.length} assigned issues shown`,
+          issues: result.items.map((issue) => projectIssue(issue, DEFAULT_ISSUE_FIELDS)),
           help: [
             "Run `linear-axi issues view --id <issue-id-or-key>` for details.",
             "Run `linear-axi teams list` to find team keys."
@@ -80,18 +116,317 @@ const home = (gateway: LinearGateway, binPath: string) =>
     })
   )
 
-const teamsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
-  const limit = readLimitFlag(parsed.flags, 50)
-  return gateway.listTeams(limit).pipe(
+const teamsList = (parsed: ParsedArgs, gateway: LinearGateway) =>
+  gateway.listTeams(readLimitFlag(parsed.flags, 50)).pipe(
     Effect.map((teams) => ({
       count: `${teams.length} teams shown`,
-      teams,
-      help:
-        teams.length === 0
-          ? ["No teams were returned for this Linear account."]
-          : ["Run `linear-axi issues list --team <key-or-id>` to list issues for a team."]
+      ...(teams.length === 0 ? { teams: "0 teams found for this Linear account" } : { teams }),
+      help: teams.length === 0 ? [] : ["Run `linear-axi issues list --team <key-or-id>` to list issues for a team."]
     }))
   )
+
+const issuesList = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const assignee = readStringFlag(parsed.flags, "assignee")
+  const state = readStringFlag(parsed.flags, "state")
+  validateAssignee(assignee, true, helpFor(parsed.command))
+  if (state !== undefined && state !== "open" && state !== "closed") {
+    return usage("--state must be `open` or `closed`", parsed.command)
+  }
+  const fields = readFields(parsed, "fields", ISSUE_FIELDS, DEFAULT_ISSUE_FIELDS)
+  return gateway.listIssues({
+    limit: readLimitFlag(parsed.flags, 20),
+    after: readStringFlag(parsed.flags, "after"),
+    assignee,
+    team: readStringFlag(parsed.flags, "team"),
+    label: readStringFlag(parsed.flags, "label"),
+    parent: readStringFlag(parsed.flags, "parent"),
+    state
+  }).pipe(
+    Effect.map((result) => {
+      const parent = readStringFlag(parsed.flags, "parent")
+      const help = result.page.hasNext && result.page.endCursor
+        ? [continuationCommand("issues list", parsed, result.page.endCursor)]
+        : result.items.length > 0
+          ? ["Run `linear-axi issues view --id <issue-id-or-key>` for details."]
+          : []
+      return {
+        count: `${result.items.length} issues shown`,
+        page: result.page,
+        ...(result.items.length === 0
+          ? { issues: parent ? `0 child issues found for ${parent}` : "0 issues matched this query" }
+          : { issues: result.items.map((issue) => projectIssue(issue, fields)) }),
+        help
+      }
+    })
+  )
+}
+
+const issuesView = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const id = readStringFlag(parsed.flags, "id")!
+  const full = readBooleanFlag(parsed.flags, "full")
+  return gateway.viewIssue(id).pipe(
+    Effect.map((issue) => {
+      const description = truncateText(issue.description, 1200, full)
+      return {
+        issue: { ...issue, description: description.text },
+        ...(description.truncated
+          ? {
+              body: { truncated: true, total: description.total },
+              help: [`Run \`linear-axi issues view --id ${issue.identifier} --full\` to see the complete description.`]
+            }
+          : {})
+      }
+    })
+  )
+}
+
+const issuesCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const description = readStringFlag(parsed.flags, "description")
+  const descriptionFile = readStringFlag(parsed.flags, "description-file")
+  if (description !== undefined && descriptionFile !== undefined) {
+    return usage("--description and --description-file are mutually exclusive", parsed.command)
+  }
+  const id = readStringFlag(parsed.flags, "id")
+  if (id && !isUuidV4(id)) {
+    return usage("--id must be a UUID v4", parsed.command)
+  }
+  return readOptionalText(description, descriptionFile, "description-file", parsed.command).pipe(
+    Effect.flatMap((body) => gateway.createIssue({
+      team: readStringFlag(parsed.flags, "team")!,
+      title: readStringFlag(parsed.flags, "title")!,
+      description: body,
+      parent: readStringFlag(parsed.flags, "parent"),
+      label: readStringFlag(parsed.flags, "label"),
+      id
+    })),
+    Effect.map((result) => ({
+      issue: result.value,
+      changed: result.changed,
+      result: result.result,
+      help: result.changed ? [`Run \`linear-axi issues view --id ${result.value.identifier}\` for details.`] : []
+    }))
+  )
+}
+
+const issuesAssign = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const assignee = readStringFlag(parsed.flags, "assignee")!
+  validateAssignee(assignee, false, helpFor(parsed.command))
+  return gateway.assignIssue({
+    id: readStringFlag(parsed.flags, "id")!,
+    assignee,
+    replace: readBooleanFlag(parsed.flags, "replace")
+  }).pipe(Effect.map(issueMutationOutput))
+}
+
+const issuesUnassign = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const expected = readStringFlag(parsed.flags, "if-assignee")
+  validateAssignee(expected, false, helpFor(parsed.command))
+  return gateway.unassignIssue({
+    id: readStringFlag(parsed.flags, "id")!,
+    ifAssignee: expected
+  }).pipe(Effect.map(issueMutationOutput))
+}
+
+const issuesClose = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const state = readStringFlag(parsed.flags, "state")
+  if (state && !isUuidV4(state)) {
+    return usage("--state must be a workflow-state UUID", parsed.command)
+  }
+  return gateway.closeIssue({ id: readStringFlag(parsed.flags, "id")!, state }).pipe(Effect.map(issueMutationOutput))
+}
+
+const issuesUpdate = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const timestamp = readStringFlag(parsed.flags, "if-updated-at")!
+  if (!isRfc3339(timestamp)) {
+    return usage("--if-updated-at must be an RFC3339 timestamp", parsed.command)
+  }
+  return readRequiredText(readStringFlag(parsed.flags, "description-file")!, "description-file", parsed.command).pipe(
+    Effect.flatMap((description) => gateway.updateIssueDescription({
+      id: readStringFlag(parsed.flags, "id")!,
+      description,
+      ifUpdatedAt: timestamp
+    })),
+    Effect.map((result) => ({
+      issue: result.value,
+      changed: result.changed,
+      result: result.result,
+      concurrency: DESCRIPTION_CONCURRENCY_WARNING
+    }))
+  )
+}
+
+const labelsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const workspace = readBooleanFlag(parsed.flags, "workspace")
+  const team = readStringFlag(parsed.flags, "team")
+  const issue = readStringFlag(parsed.flags, "issue")
+  if (workspace && team) {
+    return usage("--workspace and --team are mutually exclusive", parsed.command)
+  }
+  if (issue && (workspace || team)) {
+    return usage("--issue cannot be combined with --workspace or --team", parsed.command)
+  }
+  const fields = readFields(parsed, "fields", LABEL_FIELDS, DEFAULT_LABEL_FIELDS)
+  return gateway.listLabels({
+    limit: readLimitFlag(parsed.flags, 100),
+    after: readStringFlag(parsed.flags, "after"),
+    workspace,
+    team,
+    name: readStringFlag(parsed.flags, "name"),
+    issue
+  }).pipe(Effect.map((result) => ({
+    count: `${result.items.length} labels shown`,
+    page: result.page,
+    ...(result.items.length === 0
+      ? { labels: "0 labels matched the requested scope and name" }
+      : { labels: result.items.map((label) => projectLabel(label, fields)) }),
+    help: result.page.hasNext && result.page.endCursor
+      ? [continuationCommand("labels list", parsed, result.page.endCursor)]
+      : []
+  })))
+}
+
+const labelsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const workspace = readBooleanFlag(parsed.flags, "workspace")
+  const team = readStringFlag(parsed.flags, "team")
+  if (workspace === (team !== undefined)) {
+    return usage("exactly one of --workspace or --team is required", parsed.command)
+  }
+  const color = readStringFlag(parsed.flags, "color")!
+  if (!/^#[0-9a-f]{6}$/i.test(color)) {
+    return usage("--color must use #RRGGBB", parsed.command)
+  }
+  const id = readStringFlag(parsed.flags, "id")
+  if (id && !isUuidV4(id)) {
+    return usage("--id must be a UUID v4", parsed.command)
+  }
+  return gateway.createLabel({
+    name: readStringFlag(parsed.flags, "name")!,
+    color,
+    workspace,
+    team,
+    description: readStringFlag(parsed.flags, "description"),
+    id,
+    ifAbsent: readBooleanFlag(parsed.flags, "if-absent")
+  }).pipe(Effect.map((result) => ({ label: result.value, changed: result.changed, result: result.result })))
+}
+
+const labelsApply = (parsed: ParsedArgs, gateway: LinearGateway) =>
+  gateway.applyLabel({
+    issue: readStringFlag(parsed.flags, "issue")!,
+    label: readStringFlag(parsed.flags, "label")!
+  }).pipe(Effect.map(issueMutationOutput))
+
+const relationsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const type = readStringFlag(parsed.flags, "type") as RelationType | undefined
+  const direction = readStringFlag(parsed.flags, "direction") ?? "both"
+  if (type && !RELATION_TYPES.has(type)) {
+    return usage("--type must be blocks, related, duplicate, or similar", parsed.command)
+  }
+  if (!RELATION_DIRECTIONS.has(direction)) {
+    return usage("--direction must be outgoing, incoming, or both", parsed.command)
+  }
+  return gateway.listRelations({
+    issue: readStringFlag(parsed.flags, "issue")!,
+    type,
+    direction: direction as RelationDirection | "both",
+    after: readStringFlag(parsed.flags, "after"),
+    limit: readLimitFlag(parsed.flags, 100)
+  }).pipe(Effect.map((result) => ({
+    count: `${result.items.length} relations shown`,
+    page: result.page,
+    ...(result.items.length === 0 ? { relations: "0 relations matched this issue and direction" } : { relations: result.items }),
+    help: result.page.hasNext && result.page.endCursor
+      ? [continuationCommand("relations list", parsed, result.page.endCursor)]
+      : []
+  })))
+}
+
+const relationsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const type = readStringFlag(parsed.flags, "type") as RelationType
+  if (!RELATION_TYPES.has(type)) {
+    return usage("--type must be blocks, related, duplicate, or similar", parsed.command)
+  }
+  const id = readStringFlag(parsed.flags, "id")
+  if (id && !isUuidV4(id)) {
+    return usage("--id must be a UUID v4", parsed.command)
+  }
+  return gateway.createRelation({
+    issue: readStringFlag(parsed.flags, "issue")!,
+    relatedIssue: readStringFlag(parsed.flags, "related-issue")!,
+    type,
+    id
+  }).pipe(Effect.map((result) => ({ relation: result.value, changed: result.changed, result: result.result })))
+}
+
+const commentsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const full = readBooleanFlag(parsed.flags, "full")
+  return gateway.listComments({
+    issue: readStringFlag(parsed.flags, "issue")!,
+    after: readStringFlag(parsed.flags, "after"),
+    limit: readLimitFlag(parsed.flags, 50)
+  }).pipe(Effect.map((result) => {
+    let truncated = false
+    const comments = result.items.map((comment) => {
+      const body = truncateText(comment.body, 500, full)
+      truncated ||= body.truncated
+      return {
+        id: comment.id,
+        createdAt: comment.createdAt,
+        author: comment.author,
+        body: body.truncated ? `${body.text} (truncated, ${body.total} chars total)` : body.text
+      }
+    })
+    const help = [
+      ...(truncated ? [`Run \`linear-axi comments list --issue ${readStringFlag(parsed.flags, "issue")} --full\` for complete bodies.`] : []),
+      ...(result.page.hasNext && result.page.endCursor ? [continuationCommand("comments list", parsed, result.page.endCursor)] : [])
+    ]
+    return {
+      count: `${comments.length} comments shown`,
+      page: result.page,
+      ...(comments.length === 0 ? { comments: "0 comments found for this issue" } : { comments }),
+      help
+    }
+  }))
+}
+
+const commentsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const body = readStringFlag(parsed.flags, "body")
+  const bodyFile = readStringFlag(parsed.flags, "body-file")
+  if ((body === undefined) === (bodyFile === undefined)) {
+    return usage("exactly one of --body or --body-file is required", parsed.command)
+  }
+  const id = readStringFlag(parsed.flags, "id")
+  if (id && !isUuidV4(id)) {
+    return usage("--id must be a UUID v4", parsed.command)
+  }
+  return readOptionalText(body, bodyFile, "body-file", parsed.command).pipe(
+    Effect.flatMap((text) => gateway.createComment({
+      issue: readStringFlag(parsed.flags, "issue")!,
+      body: text!,
+      id
+    })),
+    Effect.map((result) => ({ comment: result.value, changed: result.changed, result: result.result }))
+  )
+}
+
+const wayfinderFrontier = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const map = readStringFlag(parsed.flags, "map")!
+  const limit = readLimitFlag(parsed.flags, 20)
+  return gateway.frontier({ map, limit }).pipe(Effect.map((result) => ({
+    map: result.map,
+    ...(result.items.length === 0
+      ? { frontier: `0 open, unblocked, unassigned children found for ${result.map.identifier}` }
+      : {
+          count: `${result.total} total frontier issues`,
+          frontier: result.items,
+          help: [
+            `Run \`linear-axi issues assign --id ${result.items[0]!.identifier} --assignee me\` to claim the first frontier issue.`,
+            ...(result.total > limit
+              ? [`Run \`linear-axi wayfinder frontier --map ${map} --limit ${Math.min(100, result.total)}\` to show more; the first result is unchanged.`]
+              : [])
+          ]
+        })
+  })))
 }
 
 const authOAuthConnect = (
@@ -102,14 +437,8 @@ const authOAuthConnect = (
 ) => {
   const timeout = readStringFlag(parsed.flags, "timeout")
   if (timeout !== undefined && (!/^[0-9]+$/.test(timeout) || Number(timeout) < 30 || Number(timeout) > 3600)) {
-    return Effect.fail(
-      new UsageError({
-        message: "--timeout must be an integer between 30 and 3600 seconds",
-        help: "Usage: linear-axi auth login [--timeout 300]"
-      })
-    )
+    return usage("--timeout must be an integer between 30 and 3600 seconds", parsed.command)
   }
-
   return connectOAuth({
     env,
     credentialPathEnv,
@@ -127,145 +456,101 @@ const authOAuthConnect = (
   })
 }
 
-const authOAuthSetup = (parsed: ParsedArgs, env: Env) =>
-  setupOAuth({
-    env,
-    redirectUri: readStringFlag(parsed.flags, "redirect-uri"),
-    scope: readStringFlag(parsed.flags, "scope"),
-    actor: readStringFlag(parsed.flags, "actor"),
-    notify: readBooleanFlag(parsed.flags, "notify")
+const authOAuthSetup = (parsed: ParsedArgs, env: Env) => setupOAuth({
+  env,
+  redirectUri: readStringFlag(parsed.flags, "redirect-uri"),
+  scope: readStringFlag(parsed.flags, "scope"),
+  actor: readStringFlag(parsed.flags, "actor"),
+  notify: readBooleanFlag(parsed.flags, "notify")
+})
+
+const readOptionalText = (
+  inline: string | undefined,
+  file: string | undefined,
+  flag: string,
+  command: ReadonlyArray<string>
+): Effect.Effect<string | undefined, UsageError> =>
+  file === undefined ? Effect.succeed(inline) : readRequiredText(file, flag, command)
+
+const readRequiredText = (
+  file: string,
+  flag: string,
+  command: ReadonlyArray<string>
+): Effect.Effect<string, UsageError> =>
+  Effect.tryPromise({
+    try: () => file === "-" ? Bun.stdin.text() : Bun.file(file).text(),
+    catch: () => new UsageError({ message: `could not read --${flag} ${file}`, help: helpFor(command) })
   })
 
-const issuesList = (parsed: ParsedArgs, gateway: LinearGateway) => {
-  const limit = readLimitFlag(parsed.flags, 20)
-  const assignee = readStringFlag(parsed.flags, "assignee")
-  const team = readStringFlag(parsed.flags, "team")
-
-  if (assignee !== undefined && assignee !== "me") {
-    return Effect.fail(
-      new UsageError({
-        message: "--assignee only supports `me`",
-        help: "Usage: linear-axi issues list [--assignee me] [--team <key-or-id>] [--limit 20]"
-      })
-    )
+const validateAssignee = (value: string | undefined, allowNone: boolean, help: string): void => {
+  if (value === undefined || value === "me" || (allowNone && value === "none") || isUuidV4(value)) {
+    return
   }
-
-  return gateway.listIssues({ limit, assignee, team }).pipe(
-    Effect.map((issues) => ({
-      count: `${issues.length} issues shown`,
-      issues,
-      help:
-        issues.length === 0
-          ? ["No issues matched this query."]
-          : ["Run `linear-axi issues view --id <issue-id-or-key>` for details."]
-    }))
-  )
+  throw new UsageError({ message: `--assignee must be ${allowNone ? "me, none, or" : "me or"} a user UUID`, help })
 }
 
-const issuesView = (parsed: ParsedArgs, gateway: LinearGateway) => {
-  const id = readStringFlag(parsed.flags, "id")!
-  const full = readBooleanFlag(parsed.flags, "full")
-
-  return gateway.viewIssue(id).pipe(
-    Effect.map((issue) => {
-      const description = truncateText(issue.description, 1200, full)
-      return {
-        issue: {
-          ...issue,
-          description: description.text
-        },
-        ...(description.truncated
-          ? {
-              body: {
-                truncated: true,
-                total: description.total
-              },
-              help: [`Run \`linear-axi issues view --id ${issue.identifier} --full\` to see the complete description.`]
-            }
-          : {})
-      }
+const readFields = (
+  parsed: ParsedArgs,
+  flag: string,
+  allowed: ReadonlySet<string>,
+  defaults: ReadonlyArray<string>
+): ReadonlyArray<string> => {
+  const raw = readStringFlag(parsed.flags, flag)
+  if (raw === undefined) {
+    return defaults
+  }
+  const fields = raw.split(",")
+  const invalid = fields.filter((field) => field.length === 0 || !allowed.has(field))
+  if (invalid.length > 0) {
+    throw new UsageError({
+      message: `--${flag} contains unsupported fields: ${invalid.join(", ")}`,
+      help: helpFor(parsed.command)
     })
-  )
+  }
+  return [...new Set(fields)]
 }
 
-const issuesCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
-  const team = readStringFlag(parsed.flags, "team")!
-  const title = readStringFlag(parsed.flags, "title")!
-  const description = readStringFlag(parsed.flags, "description")
+const projectIssue = (issue: IssueSummary, fields: ReadonlyArray<string>): Record<string, unknown> =>
+  Object.fromEntries(fields.map((field) => [field, issueField(issue, field)]))
 
-  return gateway.createIssue({ team, title, description }).pipe(
-    Effect.map((issue) => ({
-      issue,
-      help: [`Run \`linear-axi issues view --id ${issue.identifier}\` for details.`]
-    }))
-  )
-}
-
-const commentsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
-  const issue = readStringFlag(parsed.flags, "issue")!
-  const body = readStringFlag(parsed.flags, "body")!
-
-  return gateway.createComment({ issue, body }).pipe(
-    Effect.map((comment) => ({
-      comment
-    }))
-  )
-}
-
-const helpFor = (path: string): string => {
-  switch (path) {
-    case "home":
-      return topLevelHelp
-    case "auth status":
-      return "Usage: linear-axi auth status\nExample: linear-axi auth status"
-    case "auth login":
-      return [
-        "Usage: linear-axi auth login [--notify] [--no-open] [--timeout 300]",
-        "Example: linear-axi auth login",
-        "Example: linear-axi auth login --notify",
-        "Opens Linear OAuth consent with workspace selection and saves the token to the user credentials file."
-      ].join("\n")
-    case "auth oauth setup":
-      return [
-        "Usage: linear-axi auth oauth setup [--redirect-uri <url>] [--scope read,write] [--actor user|app] [--notify]",
-        "Example: linear-axi auth oauth setup --notify",
-        "Example: linear-axi auth oauth setup --redirect-uri http://127.0.0.1:14582/oauth/callback"
-      ].join("\n")
-    case "auth oauth connect":
-      return [
-        "Usage: linear-axi auth oauth connect [--client-id <id>] [--redirect-uri <url>] [--scope read,write] [--actor user|app] [--prompt-consent] [--write-env] [--notify]",
-        "Example: linear-axi auth oauth connect --client-id lin_oauth_app_123 --write-env --prompt-consent",
-        "Example: linear-axi auth oauth connect --client-id lin_oauth_app_123 --redirect-uri http://127.0.0.1:14582/oauth/callback --notify --write-env"
-      ].join("\n")
-    case "teams list":
-      return "Usage: linear-axi teams list [--limit 50]\nExample: linear-axi teams list --limit 25"
-    case "issues list":
-      return [
-        "Usage: linear-axi issues list [--assignee me] [--team <key-or-id>] [--limit 20]",
-        "Example: linear-axi issues list --assignee me",
-        "Example: linear-axi issues list --team ENG --limit 10"
-      ].join("\n")
-    case "issues view":
-      return "Usage: linear-axi issues view --id <issue-id-or-key> [--full]\nExample: linear-axi issues view --id ENG-123"
-    case "issues create":
-      return [
-        "Usage: linear-axi issues create --team <key-or-id> --title \"...\" [--description \"...\"]",
-        "Example: linear-axi issues create --team ENG --title \"Fix auth bug\""
-      ].join("\n")
-    case "comments create":
-      return [
-        "Usage: linear-axi comments create --issue <issue-id-or-key> --body \"...\"",
-        "Example: linear-axi comments create --issue ENG-123 --body \"Implemented in PR.\""
-      ].join("\n")
-    default:
-      return topLevelHelp
+const issueField = (issue: IssueSummary, field: string): unknown => {
+  switch (field) {
+    case "labels": return issue.labels.map((label) => label.name).join(",")
+    case "assignee": return issue.assignee
+    case "parent": return issue.parent
+    default: return issue[field as keyof IssueSummary]
   }
 }
+
+const projectLabel = (label: LabelSummary, fields: ReadonlyArray<string>): Record<string, unknown> =>
+  Object.fromEntries(fields.map((field) => [field, label[field as keyof LabelSummary]]))
+
+const issueMutationOutput = (result: { value: IssueSummary; changed: boolean; result: string }): OutputValue => ({
+  issue: result.value,
+  changed: result.changed,
+  result: result.result
+})
+
+const continuationCommand = (command: string, parsed: ParsedArgs, cursor: string): string => {
+  const flags = [...parsed.flags.entries()]
+    .filter(([name]) => name !== "after" && name !== "help")
+    .map(([name, value]) => value === true ? `--${name}` : `--${name} ${JSON.stringify(value)}`)
+  return `Run \`linear-axi ${command}${flags.length ? ` ${flags.join(" ")}` : ""} --after ${JSON.stringify(cursor)}\` for the next page.`
+}
+
+const usage = (message: string, command: ReadonlyArray<string>): Effect.Effect<never, UsageError> =>
+  Effect.fail(new UsageError({ message, help: helpFor(command) }))
+
+const helpFor = (path: ReadonlyArray<string>): string => findSpec(path, commandSpecs)?.help ?? topLevelHelp
+
+const isUuidV4 = (value: string): boolean =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+
+const isRfc3339 = (value: string): boolean =>
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) && !Number.isNaN(Date.parse(value))
 
 const collapseHome = (path: string): string => {
   const home = process.env.HOME
-  if (!home) {
-    return path
-  }
+  if (!home) return path
   return path.startsWith(home) ? `~${path.slice(home.length)}` : path
 }

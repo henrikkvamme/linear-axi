@@ -16,3 +16,10 @@ The vendored subtree split is `bdca35449d5dfce5b4433da75ec0a88d0a9b2b27`.
 - Prefer examples and tests from `repos/effect` over guesses.
 - Do not import from `repos/effect`; application code imports normal package dependencies.
 - Keep `repos/effect` excluded from tests and typechecking.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

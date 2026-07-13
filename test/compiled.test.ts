@@ -36,6 +36,32 @@ test("standalone binary runs without a source checkout", () => {
     expect(stdout).toContain("linear-axi auth login")
     expect(stdout).not.toContain("LINEAR_AXI_REPO")
 
+    for (const command of [
+      ["issues", "assign"],
+      ["issues", "unassign"],
+      ["issues", "close"],
+      ["issues", "update"],
+      ["labels", "list"],
+      ["labels", "create"],
+      ["labels", "apply"],
+      ["relations", "list"],
+      ["relations", "create"],
+      ["comments", "list"],
+      ["comments", "create"],
+      ["wayfinder", "frontier"]
+    ]) {
+      const helpResult = Bun.spawnSync({
+        cmd: [binary, ...command, "--help"],
+        cwd: root,
+        env: { HOME: home, PATH: process.env.PATH ?? "" },
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(helpResult.exitCode).toBe(0)
+      expect(new TextDecoder().decode(helpResult.stderr)).toBe("")
+      expect(new TextDecoder().decode(helpResult.stdout)).toContain(`linear-axi ${command.join(" ")}`)
+    }
+
     const homeResult = Bun.spawnSync({
       cmd: [binary],
       cwd: root,
