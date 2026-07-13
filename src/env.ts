@@ -4,23 +4,50 @@ import { join } from "node:path"
 
 export type Env = Record<string, string | undefined>
 
-export const loadEnv = (cwd: string, base: Env = process.env): Env => {
-  const files = base.LINEAR_AXI_ENV_FILE
-    ? [base.LINEAR_AXI_ENV_FILE, join(cwd, ".env")]
-    : [managedSecretsFilePath(base), credentialsFilePath(base), join(cwd, ".env")]
-  const loaded: Env = {}
+const credentialKeys = ["LINEAR_API_KEY", "LINEAR_ACCESS_TOKEN"] as const
+const trustedPathKeys = new Set(["HOME", "XDG_CONFIG_HOME", "LINEAR_AXI_ENV_FILE"])
 
-  for (const file of files) {
-    if (existsSync(file)) {
-      Object.assign(loaded, parseDotEnv(readFileSync(file, "utf8")))
+export const loadEnv = (cwd: string, base: Env = process.env): Env => {
+  const repo = readEnvFile(join(cwd, ".env"))
+  const explicit = base.LINEAR_AXI_ENV_FILE ? readEnvFile(base.LINEAR_AXI_ENV_FILE) : undefined
+  const managed = explicit ? undefined : readEnvFile(managedSecretsFilePath(base))
+  const oauth = explicit ? undefined : readEnvFile(credentialsFilePath(base))
+  const env: Env = explicit
+    ? Object.assign({}, explicit, repo, base)
+    : Object.assign({}, managed, oauth, repo, base)
+  const credentials = (explicit
+    ? [base, explicit, repo]
+    : [base, oauth, repo, managed]
+  ).find(hasCredentials)
+
+  for (const key of credentialKeys) {
+    delete env[key]
+    const value = credentials?.[key]
+    if (value !== undefined && value.length > 0) {
+      env[key] = value
     }
   }
 
-  return {
-    ...loaded,
-    ...base
-  }
+  return env
 }
+
+const readEnvFile = (file: string): Env => {
+  if (!existsSync(file)) {
+    return {}
+  }
+
+  const env = parseDotEnv(readFileSync(file, "utf8"))
+  for (const key of trustedPathKeys) {
+    delete env[key]
+  }
+  return env
+}
+
+const hasCredentials = (env: Env | undefined): boolean =>
+  env !== undefined && credentialKeys.some((key) => {
+    const value = env[key]
+    return value !== undefined && value.length > 0
+  })
 
 export const credentialsFilePath = (env: Env = process.env): string =>
   env.LINEAR_AXI_ENV_FILE ?? join(configHome(env), "linear-axi", "credentials.env")

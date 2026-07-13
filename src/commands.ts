@@ -10,7 +10,8 @@ export const runCommand = (
   parsed: ParsedArgs,
   gateway: LinearGateway,
   binPath: string,
-  env: Env = process.env
+  env: Env = process.env,
+  credentialPathEnv: Env = process.env
 ): Effect.Effect<OutputValue, CliError> => {
   const path = parsed.command.join(" ")
 
@@ -31,11 +32,11 @@ export const runCommand = (
         }))
       )
     case "auth login":
-      return authOAuthConnect(parsed, env, { openBrowser: true, promptConsent: true, writeEnv: true })
+      return authOAuthConnect(parsed, env, credentialPathEnv, { openBrowser: true, promptConsent: true, writeEnv: true })
     case "auth oauth setup":
       return authOAuthSetup(parsed, env)
     case "auth oauth connect":
-      return authOAuthConnect(parsed, env)
+      return authOAuthConnect(parsed, env, credentialPathEnv)
     case "teams list":
       return teamsList(parsed, gateway)
     case "issues list":
@@ -96,6 +97,7 @@ const teamsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
 const authOAuthConnect = (
   parsed: ParsedArgs,
   env: Env,
+  credentialPathEnv: Env,
   defaults: { openBrowser?: boolean; promptConsent?: boolean; writeEnv?: boolean } = {}
 ) => {
   const timeout = readStringFlag(parsed.flags, "timeout")
@@ -110,6 +112,7 @@ const authOAuthConnect = (
 
   return connectOAuth({
     env,
+    credentialPathEnv,
     cwd: process.cwd(),
     clientId: readStringFlag(parsed.flags, "client-id"),
     redirectUri: readStringFlag(parsed.flags, "redirect-uri"),

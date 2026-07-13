@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, statSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
@@ -23,6 +23,15 @@ describe("browserOpenCommand", () => {
     expect(browserOpenCommand("linux", "https://linear.app/oauth/authorize")).toEqual({
       command: "xdg-open",
       args: ["https://linear.app/oauth/authorize"]
+    })
+  })
+
+  test("does not pass OAuth URLs through the Windows command shell", () => {
+    const url = "https://linear.app/oauth/authorize?client_id=client1&scope=read%2Cwrite&state=state1"
+
+    expect(browserOpenCommand("win32", url)).toEqual({
+      command: "rundll32.exe",
+      args: ["url.dll,FileProtocolHandler", url]
     })
   })
 
@@ -56,6 +65,56 @@ describe("writeOAuthEnv", () => {
     expect(statSync(join(root, "config", "linear-axi")).mode & 0o777).toBe(0o700)
     expect(statSync(envFile).mode & 0o777).toBe(0o600)
     expect(readFileSync(envFile, "utf8")).toBe("LINEAR_ACCESS_TOKEN=secret-token\n")
+  })
+
+  test("refuses to write credentials through a symlink", async () => {
+    if (process.platform === "win32") {
+      return
+    }
+
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-oauth-env-test-"))
+    const target = join(root, "target.env")
+    const envFile = join(root, "credentials.env")
+    writeFileSync(target, "SAFE=unchanged\n")
+    symlinkSync(target, envFile)
+
+    const exit = await Effect.runPromiseExit(writeOAuthEnv(envFile, {
+      LINEAR_ACCESS_TOKEN: "secret-token"
+    }))
+
+    expect(exit._tag).toBe("Failure")
+    expect(readFileSync(target, "utf8")).toBe("SAFE=unchanged\n")
+  })
+
+  test("refuses to write credentials through a directory symlink", async () => {
+    if (process.platform === "win32") {
+      return
+    }
+
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-oauth-env-test-"))
+    const targetDirectory = join(root, "target")
+    const credentialDirectory = join(root, "linear-axi")
+    mkdirSync(targetDirectory)
+    symlinkSync(targetDirectory, credentialDirectory)
+
+    const exit = await Effect.runPromiseExit(writeOAuthEnv(join(credentialDirectory, "credentials.env"), {
+      LINEAR_ACCESS_TOKEN: "secret-token"
+    }))
+
+    expect(exit._tag).toBe("Failure")
+    expect(() => readFileSync(join(targetDirectory, "credentials.env"), "utf8")).toThrow()
+  })
+
+  test("replaces conflicting credentials when saving OAuth", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-oauth-env-test-"))
+    const envFile = join(root, "credentials.env")
+    writeFileSync(envFile, "LINEAR_API_KEY=stale-api-key\n")
+
+    await Effect.runPromise(writeOAuthEnv(envFile, {
+      LINEAR_ACCESS_TOKEN: "oauth-token"
+    }))
+
+    expect(readFileSync(envFile, "utf8")).toBe("LINEAR_ACCESS_TOKEN=oauth-token\n")
   })
 })
 

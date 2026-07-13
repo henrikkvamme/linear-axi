@@ -42,7 +42,7 @@ LINEAR_ACCESS_TOKEN=...
 LINEAR_TEAM=BEN
 ```
 
-Process variables override repo-local `.env`, which overrides the OAuth credentials file and a managed `~/.config/linear-axi/secrets.env`. `LINEAR_API_KEY` takes precedence over `LINEAR_ACCESS_TOKEN`.
+Process credentials override file credentials. The OAuth credentials file overrides repo-local `.env` credentials so a successful login selects the new workspace; repo credentials are used when no OAuth credentials exist, followed by managed `~/.config/linear-axi/secrets.env` credentials. Other settings use process, repo, OAuth, then managed precedence. Within one source, `LINEAR_API_KEY` takes precedence over `LINEAR_ACCESS_TOKEN`.
 
 ## Use
 

@@ -48,7 +48,7 @@ linear-axi comments create --issue <issue-id-or-key> --body "..."
    Completion criterion: if a browser handoff times out, is interrupted, or the user lands on `This site can't be reached`, stop the old `auth login` process and restart with a fresh authorize URL. OAuth codes and state are one-use.
 
 8. Handle remote-browser loopback callbacks.
-   Completion criterion: if the user approves Linear OAuth and the live browser lands on `http://127.0.0.1:14582/oauth/callback?...` with `This site can't be reached`, keep the still-running `auth login` process alive and paste that full callback URL into the CLI stdin. Then read the waiting CLI output and verify `.env` was written. Do not paste the callback code or resulting tokens in the final answer.
+   Completion criterion: if the user approves Linear OAuth and the live browser lands on `http://127.0.0.1:14582/oauth/callback?...` with `This site can't be reached`, keep the still-running `auth login` process alive and paste that full callback URL into the CLI stdin. Then read the waiting CLI output and verify `~/.config/linear-axi/credentials.env` was written. Do not paste the callback code or resulting tokens in the final answer.
 
 ## Updating The CLI
 

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { credentialsFilePath, loadEnv, parseDotEnv } from "../src/env"
+import { credentialsFromEnv } from "../src/linear"
 
 describe("parseDotEnv", () => {
   test("parses dotenv assignments without overriding shell semantics", () => {
@@ -59,11 +60,65 @@ describe("loadEnv", () => {
     const cwd = join(root, "work")
     const credentialFile = join(root, "credentials.env")
     mkdirSync(cwd)
-    writeFileSync(credentialFile, "LINEAR_API_KEY=explicit-key\n")
+    writeFileSync(credentialFile, "LINEAR_ACCESS_TOKEN=explicit-token\n")
+    writeFileSync(join(cwd, ".env"), "LINEAR_API_KEY=repo-key\n")
 
     const env = loadEnv(cwd, { LINEAR_AXI_ENV_FILE: credentialFile })
 
-    expect(env.LINEAR_API_KEY).toBe("explicit-key")
+    expect(credentialsFromEnv(env)).toEqual({ kind: "accessToken", value: "explicit-token" })
     expect(credentialsFilePath(env)).toBe(credentialFile)
+  })
+
+  test("does not let dotenv files redirect credential storage", () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-env-test-"))
+    const home = join(root, "home")
+    const cwd = join(root, "repo")
+    mkdirSync(cwd)
+    writeFileSync(join(cwd, ".env"), [
+      `HOME=${join(root, "redirected-home")}`,
+      `XDG_CONFIG_HOME=${join(root, "redirected-config")}`,
+      `LINEAR_AXI_ENV_FILE=${join(root, "redirected.env")}`,
+      ""
+    ].join("\n"))
+
+    const env = loadEnv(cwd, { HOME: home })
+
+    expect(env.HOME).toBe(home)
+    expect(env.XDG_CONFIG_HOME).toBeUndefined()
+    expect(env.LINEAR_AXI_ENV_FILE).toBeUndefined()
+    expect(credentialsFilePath(env)).toBe(join(home, ".config", "linear-axi", "credentials.env"))
+  })
+
+  test("prefers OAuth credentials over repo credentials as one identity", () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-env-test-"))
+    const home = join(root, "home")
+    const cwd = join(root, "repo")
+    const configDir = join(home, ".config", "linear-axi")
+    mkdirSync(configDir, { recursive: true })
+    mkdirSync(cwd)
+    writeFileSync(join(configDir, "credentials.env"), "LINEAR_ACCESS_TOKEN=oauth-token\n")
+    writeFileSync(join(cwd, ".env"), "LINEAR_API_KEY=stale-repo-key\n")
+
+    expect(credentialsFromEnv(loadEnv(cwd, { HOME: home }))).toEqual({
+      kind: "accessToken",
+      value: "oauth-token"
+    })
+  })
+
+  test("prefers process credentials over file credentials as one identity", () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-env-test-"))
+    const home = join(root, "home")
+    const cwd = join(root, "repo")
+    mkdirSync(cwd)
+    writeFileSync(join(cwd, ".env"), "LINEAR_API_KEY=repo-key\n")
+
+    expect(credentialsFromEnv(loadEnv(cwd, {
+      HOME: home,
+      LINEAR_API_KEY: "",
+      LINEAR_ACCESS_TOKEN: "process-token"
+    }))).toEqual({
+      kind: "accessToken",
+      value: "process-token"
+    })
   })
 })

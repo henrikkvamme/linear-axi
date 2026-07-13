@@ -1,5 +1,16 @@
 import { createHash, randomBytes } from "node:crypto"
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import { dirname, resolve } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -16,6 +27,7 @@ const defaultClientId = "ccca1dd4294ba5c02db81a5db629ba17"
 
 export interface OAuthConnectInput {
   env: Env
+  credentialPathEnv: Env
   cwd: string
   clientId?: string
   redirectUri?: string
@@ -72,7 +84,7 @@ export const browserOpenCommand = (platform: NodeJS.Platform, url: string): Brow
     case "linux":
       return { command: "xdg-open", args: [url] }
     case "win32":
-      return { command: "cmd", args: ["/c", "start", "", url] }
+      return { command: "rundll32.exe", args: ["url.dll,FileProtocolHandler", url] }
     default:
       return undefined
   }
@@ -147,7 +159,7 @@ export const connectOAuth = (input: OAuthConnectInput): Effect.Effect<OutputValu
     const scope = input.scope ?? input.env.LINEAR_OAUTH_SCOPE ?? "read,write"
     const actor = yield* normalizeActor(input.actor ?? input.env.LINEAR_OAUTH_ACTOR ?? "user")
     const timeoutSeconds = input.timeoutSeconds ?? 300
-    const defaultEnvFile = credentialsFilePath(input.env)
+    const defaultEnvFile = credentialsFilePath(input.credentialPathEnv)
     const envFile = resolve(input.cwd, input.envFile ?? defaultEnvFile)
 
     yield* validateLocalRedirectUri(redirectUri)
@@ -207,7 +219,7 @@ export const connectOAuth = (input: OAuthConnectInput): Effect.Effect<OutputValu
         tokenType: token.token_type,
         expiresIn: token.expires_in,
         refreshToken: token.refresh_token ? "stored" : "missing",
-        envFile: input.writeEnv ? collapsePath(envFile, input.cwd, input.env) : "not written"
+        envFile: input.writeEnv ? collapsePath(envFile, input.cwd, input.credentialPathEnv) : "not written"
       },
       help: input.writeEnv
         ? ["Run `linear-axi auth status` to verify the saved token.", "Run `linear-axi teams list --limit 50` to inspect the connected workspace."]
@@ -530,12 +542,8 @@ const ensureEnvFileCanStoreSecrets = (
   Effect.try({
     try: () => {
       if (resolve(envFile) === resolve(defaultEnvFile)) {
-        const directory = dirname(envFile)
-        mkdirSync(directory, { recursive: true, mode: 0o700 })
-        chmodSync(directory, 0o700)
-        if (existsSync(envFile) && lstatSync(envFile).isSymbolicLink()) {
-          throw new Error("credential file is a symbolic link")
-        }
+        ensureCredentialDirectory(dirname(envFile))
+        ensureRegularCredentialFile(envFile)
         return
       }
 
@@ -543,6 +551,8 @@ const ensureEnvFileCanStoreSecrets = (
       if (relative.startsWith("/")) {
         throw new Error("env file is outside the current repo")
       }
+      ensureCredentialDirectory(dirname(envFile))
+      ensureRegularCredentialFile(envFile)
       const result = spawnSync("git", ["check-ignore", "-q", "--", relative], {
         cwd,
         stdio: "ignore"
@@ -553,8 +563,8 @@ const ensureEnvFileCanStoreSecrets = (
     },
     catch: (cause) =>
       new UsageError({
-        message: cause instanceof Error && cause.message === "credential file is a symbolic link"
-          ? "refusing to write OAuth tokens through a credential-file symlink"
+        message: cause instanceof Error && cause.message.includes("symbolic link")
+          ? "refusing to write OAuth tokens through a credential-path symlink"
           : "refusing to write OAuth tokens to an unsafe env file",
         help: "Use the default credentials file, or choose a gitignored --env-file inside the current repo."
       })
@@ -566,9 +576,15 @@ export const writeOAuthEnv = (
 ): Effect.Effect<void, LinearApiError> =>
   Effect.try({
     try: () => {
-      mkdirSync(dirname(envFile), { recursive: true, mode: 0o700 })
-      const existing = existsSync(envFile) ? parseDotEnv(readFileSync(envFile, "utf8")) : {}
+      const directory = ensureCredentialDirectory(dirname(envFile))
+      const directoryStat = lstatSync(directory)
+      const existing = readCredentialEnv(envFile)
       const next = { ...existing, ...values }
+      if (values.LINEAR_ACCESS_TOKEN) {
+        delete next.LINEAR_API_KEY
+      } else if (values.LINEAR_API_KEY) {
+        delete next.LINEAR_ACCESS_TOKEN
+      }
       const orderedKeys = [
         "LINEAR_OAUTH_CLIENT_ID",
         "LINEAR_OAUTH_REDIRECT_URI",
@@ -593,15 +609,84 @@ export const writeOAuthEnv = (
         }
       }
 
-      writeFileSync(envFile, `${lines.join("\n")}\n`, { mode: 0o600 })
-      chmodSync(envFile, 0o600)
+      const temporaryFile = `${envFile}.${process.pid}.${randomBytes(12).toString("hex")}.tmp`
+      let temporaryFileExists = false
+      try {
+        writeFileSync(temporaryFile, `${lines.join("\n")}\n`, { flag: "wx", mode: 0o600 })
+        temporaryFileExists = true
+        const currentDirectoryStat = lstatSync(directory)
+        if (
+          currentDirectoryStat.isSymbolicLink() ||
+          currentDirectoryStat.dev !== directoryStat.dev ||
+          currentDirectoryStat.ino !== directoryStat.ino
+        ) {
+          throw new Error("credential directory changed while writing")
+        }
+        renameSync(temporaryFile, envFile)
+        temporaryFileExists = false
+      } finally {
+        if (temporaryFileExists) {
+          rmSync(temporaryFile, { force: true })
+        }
+      }
     },
     catch: (cause) =>
       new LinearApiError({
         message: readableError(cause),
-        help: "Check .env permissions and rerun auth."
+        help: "Check the credentials file permissions and rerun auth."
       })
   })
+
+const ensureCredentialDirectory = (directory: string): string => {
+  if (!existsSync(directory)) {
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+  }
+
+  const stat = lstatSync(directory)
+  if (stat.isSymbolicLink()) {
+    throw new Error("credential directory is a symbolic link")
+  }
+  if (!stat.isDirectory()) {
+    throw new Error("credential directory is not a directory")
+  }
+  return directory
+}
+
+const ensureRegularCredentialFile = (envFile: string): void => {
+  if (!existsSync(envFile)) {
+    return
+  }
+
+  const stat = lstatSync(envFile)
+  if (stat.isSymbolicLink()) {
+    throw new Error("credential file is a symbolic link")
+  }
+  if (!stat.isFile()) {
+    throw new Error("credential file is not a regular file")
+  }
+}
+
+const readCredentialEnv = (envFile: string): Env => {
+  if (!existsSync(envFile)) {
+    return {}
+  }
+
+  const pathStat = lstatSync(envFile)
+  if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+    throw new Error("credential file is not a regular file")
+  }
+
+  const descriptor = openSync(envFile, "r")
+  try {
+    const descriptorStat = fstatSync(descriptor)
+    if (descriptorStat.dev !== pathStat.dev || descriptorStat.ino !== pathStat.ino) {
+      throw new Error("credential file changed while reading")
+    }
+    return parseDotEnv(readFileSync(descriptor, "utf8"))
+  } finally {
+    closeSync(descriptor)
+  }
+}
 
 const normalizeActor = (actor: string): Effect.Effect<"user" | "app", UsageError> => {
   if (actor === "user" || actor === "app") {
