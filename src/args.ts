@@ -173,7 +173,7 @@ export const topLevelHelp = [
   "  linear-axi wayfinder frontier --map <issue> [--limit 20]"
 ].join("\n")
 
-export const commandSpecs: ReadonlyArray<CommandSpec> = [
+const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
   {
     path: ["home"],
     flags: new Set(["help"]),
@@ -199,13 +199,13 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
       "timeout"
     ]),
     valueFlags: new Set(["client-id", "redirect-uri", "scope", "actor", "env-file", "timeout"]),
-    help: "Usage: linear-axi auth login [--notify] [--no-open]"
+    help: "Usage: linear-axi auth login [--client-id <id>] [--redirect-uri <url>] [--scope <scopes>] [--actor user|app] [--prompt-consent] [--notify] [--no-open] [--env-file <path>] [--timeout 300]"
   },
   {
     path: ["auth", "oauth", "setup"],
     flags: new Set(["help", "notify", "redirect-uri", "scope", "actor"]),
     valueFlags: new Set(["redirect-uri", "scope", "actor"]),
-    help: "Usage: linear-axi auth oauth setup [--notify]"
+    help: "Usage: linear-axi auth oauth setup [--redirect-uri <url>] [--scope <scopes>] [--actor user|app] [--notify]"
   },
   {
     path: ["auth", "oauth", "connect"],
@@ -222,7 +222,7 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
       "timeout"
     ]),
     valueFlags: new Set(["client-id", "redirect-uri", "scope", "actor", "env-file", "timeout"]),
-    help: "Usage: linear-axi auth oauth connect [--client-id <id>] [--redirect-uri <url>] [--write-env] [--notify]"
+    help: "Usage: linear-axi auth oauth connect [--client-id <id>] [--redirect-uri <url>] [--scope <scopes>] [--actor user|app] [--prompt-consent] [--write-env] [--env-file <path>] [--timeout 300] [--notify]"
   },
   {
     path: ["teams", "list"],
@@ -334,3 +334,76 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
     help: "Usage: linear-axi wayfinder frontier --map <issue-id-or-key> [--limit 20]"
   }
 ]
+
+const commandExamples: Readonly<Record<string, ReadonlyArray<string>>> = {
+  "auth status": ["linear-axi auth status"],
+  "auth login": ["linear-axi auth login", "linear-axi auth login --notify --timeout 300"],
+  "auth oauth setup": ["linear-axi auth oauth setup --notify"],
+  "auth oauth connect": ["linear-axi auth oauth connect --client-id lin_oauth_app_123 --write-env"],
+  "teams list": ["linear-axi teams list --limit 25"],
+  "issues list": ["linear-axi issues list --team ENG --state open", "linear-axi issues list --assignee me --limit 10"],
+  "issues view": ["linear-axi issues view --id ENG-123 --full"],
+  "issues create": ["linear-axi issues create --team ENG --title \"Fix auth bug\""],
+  "issues assign": ["linear-axi issues assign --id ENG-123 --assignee me"],
+  "issues unassign": ["linear-axi issues unassign --id ENG-123 --if-assignee me"],
+  "issues close": ["linear-axi issues close --id ENG-123"],
+  "issues update": ["linear-axi issues update --id ENG-123 --description-file issue.md --if-updated-at 2026-07-13T12:00:00Z"],
+  "labels list": ["linear-axi labels list --team ENG --name wayfinder:task"],
+  "labels create": ["linear-axi labels create --team ENG --name wayfinder:task --color '#123456'"],
+  "labels apply": ["linear-axi labels apply --issue ENG-123 --label wayfinder:task"],
+  "relations list": ["linear-axi relations list --issue ENG-123 --type blocks --direction outgoing"],
+  "relations create": ["linear-axi relations create --issue ENG-123 --related-issue ENG-124 --type blocks"],
+  "comments list": ["linear-axi comments list --issue ENG-123 --full"],
+  "comments create": ["linear-axi comments create --issue ENG-123 --body \"Implemented in PR.\""],
+  "wayfinder frontier": ["linear-axi wayfinder frontier --map ENG-100 --limit 20"]
+}
+
+const optionValues: Readonly<Record<string, string>> = {
+  "client-id": "<id>",
+  "redirect-uri": "<url>",
+  scope: "<scopes>",
+  actor: "user|app",
+  "env-file": "<path>",
+  timeout: "<seconds>",
+  limit: "<1-100>",
+  fields: "<fields>",
+  after: "<cursor>",
+  id: "<id>",
+  team: "<team>",
+  issue: "<issue>",
+  map: "<issue>",
+  state: "<state>",
+  assignee: "<assignee>",
+  "if-assignee": "<assignee>",
+  "if-updated-at": "<RFC3339>",
+  "description-file": "<path|->",
+  "body-file": "<path|->",
+  "related-issue": "<issue>",
+  type: "<type>",
+  direction: "<direction>",
+  color: "<#RRGGBB>",
+  name: "<name>",
+  label: "<label>",
+  parent: "<issue>",
+  title: "<title>",
+  description: "<text>",
+  body: "<text>"
+}
+
+const completeHelp = (spec: CommandSpec): CommandSpec => {
+  if (spec.path[0] === "home") {
+    return spec
+  }
+  const options = [...spec.flags].map((flag) => {
+    const value = spec.valueFlags?.has(flag) ? ` ${optionValues[flag] ?? "<value>"}` : ""
+    const required = spec.required?.has(flag) ? " (required)" : ""
+    return `  --${flag}${value}${required}`
+  })
+  const examples = commandExamples[spec.path.join(" ")] ?? []
+  return {
+    ...spec,
+    help: [spec.help, "Options:", ...options, "Example:", ...examples.map((example) => `  ${example}`)].join("\n")
+  }
+}
+
+export const commandSpecs: ReadonlyArray<CommandSpec> = rawCommandSpecs.map(completeHelp)

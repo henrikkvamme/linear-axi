@@ -18,17 +18,35 @@ export const resolveTeam = async (client: LinearClient, keyOrId: string): Promis
 }
 
 export const resolveIssue = async (client: LinearClient, idOrKey: string): Promise<Issue> => {
-  const issues = await fetchAllPages(
-    await client.issues({
-      first: 50,
-      filter: { id: { eq: idOrKey } }
-    })
-  )
   const normalized = idOrKey.toLowerCase()
-  const matches = issues.filter(
-    (issue) => issue.id.toLowerCase() === normalized || issue.identifier.toLowerCase() === normalized
+  if (isUuid(idOrKey)) {
+    const issues = await fetchAllPages(
+      await client.issues({ first: 50, filter: { id: { eq: idOrKey } } })
+    )
+    return exactlyOne(
+      `issue ${idOrKey}`,
+      issues.filter((issue) => issue.id.toLowerCase() === normalized),
+      (issue) => `${issue.id} (${issue.identifier})`
+    )
+  }
+
+  const identifier = /^(.*)-([0-9]+)$/.exec(idOrKey)
+  const issues = identifier && identifier[1]
+    ? await fetchAllPages(
+        await client.issues({
+          first: 50,
+          filter: {
+            number: { eq: Number(identifier[2]) },
+            team: { key: { eqIgnoreCase: identifier[1] } }
+          }
+        })
+      )
+    : []
+  return exactlyOne(
+    `issue ${idOrKey}`,
+    issues.filter((issue) => issue.identifier.toLowerCase() === normalized),
+    (issue) => `${issue.id} (${issue.identifier})`
   )
-  return exactlyOne(`issue ${idOrKey}`, matches, (issue) => `${issue.id} (${issue.identifier})`)
 }
 
 export const findIssueByUuid = async (client: LinearClient, id: string): Promise<Issue | undefined> => {

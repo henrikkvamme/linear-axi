@@ -40,7 +40,44 @@ const clientWithIssues = (
   ...extras
 } as unknown as LinearClient)
 
+const team = {
+  id: "22222222-2222-4222-8222-222222222222",
+  key: "BEN",
+  name: "Bender"
+}
+
 describe("SDK LinearGateway conflict contracts", () => {
+  test("resolves human issue identifiers by exact team key and issue number", async () => {
+    const filters: unknown[] = []
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter?: unknown }) => {
+        filters.push(variables.filter)
+        return page(variables.filter && JSON.stringify(variables.filter).includes('"number":{"eq":1}') ? [issue()] : [])
+      }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).viewIssue("BEN-1"))
+
+    expect(result.identifier).toBe("BEN-1")
+    expect(filters).toEqual([{ number: { eq: 1 }, team: { key: { eqIgnoreCase: "BEN" } } }])
+  })
+
+  test("human issue resolution preserves not-found and ambiguity errors", async () => {
+    const ambiguousClient = clientWithIssues([
+      issue(),
+      issue({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" })
+    ])
+    const ambiguous = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client: ambiguousClient }).viewIssue("BEN-1")
+    ))
+    const missing = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client: clientWithIssues([]) }).viewIssue("BEN-404")
+    ))
+
+    expect(ambiguous.message).toContain("Ambiguous Linear issue BEN-1")
+    expect(missing.message).toContain("No Linear issue BEN-404 matched")
+  })
+
   test("stale description rejects before mutation", async () => {
     let updates = 0
     const client = clientWithIssues([issue()], {
@@ -109,6 +146,38 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(result.value.description).toBe("line one\nline two")
   })
 
+  test("caller-UUID issue retry accepts server-canonical Markdown and newlines", async () => {
+    const existing = issue({ description: "[decision](<https://example.com>)" })
+    let creates = 0
+    const client = clientWithIssues([existing], {
+      teams: async () => page([team]),
+      createIssue: async () => { creates += 1; return { success: true, issue: Promise.resolve(existing) } }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).createIssue({
+      team: "BEN",
+      title: "Map",
+      description: "[decision](https://example.com)\r\n",
+      id: existing.id
+    }))
+
+    expect(result.changed).toBe(false)
+    expect(creates).toBe(0)
+  })
+
+  test("caller-UUID issue retry rejects materially different Markdown", async () => {
+    const existing = issue({ description: "[decision](<https://example.com>)" })
+    const client = clientWithIssues([existing], { teams: async () => page([team]) })
+    const exit = await Effect.runPromiseExit(makeLinearGateway({}, { client }).createIssue({
+      team: "BEN",
+      title: "Map",
+      description: "[other](https://example.com)\n",
+      id: existing.id
+    }))
+
+    expect(exit._tag).toBe("Failure")
+  })
+
   test("description verification follows Linear's server-canonical Markdown", async () => {
     const before = issue()
     const after = issue({ description: "[decision](<https://example.com>)", updatedAt: new Date("2026-07-13T12:01:00.000Z") })
@@ -128,8 +197,12 @@ describe("SDK LinearGateway conflict contracts", () => {
 
   test("server-normalized equivalent description is a no-op", async () => {
     const current = issue({ description: "[decision](<https://example.com>)" })
+    let updates = 0
     const client = clientWithIssues([current], {
-      updateIssue: async () => ({ success: true, issue: Promise.resolve(current) })
+      updateIssue: async () => {
+        updates += 1
+        return { success: true, issue: Promise.resolve(current) }
+      }
     })
     const result = await Effect.runPromise(makeLinearGateway({}, { client }).updateIssueDescription({
       id: "BEN-1",
@@ -138,6 +211,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     }))
     expect(result.changed).toBe(false)
     expect(result.result).toContain("Linear normalization")
+    expect(updates).toBe(0)
   })
 
   test("post-write mismatch is a conflict", async () => {
@@ -213,6 +287,72 @@ describe("SDK LinearGateway conflict contracts", () => {
     const result = await Effect.runPromise(makeLinearGateway({}, { client }).closeIssue({ id: "BEN-1" }))
     expect(result.changed).toBe(true)
     expect(selected).toBe(selectedState.id)
+  })
+
+  test("issue summaries fetch truthful label names across every page", async () => {
+    let labelPages = 0
+    const secondPage = page([
+      { id: "label-1", name: "wayfinder:map" },
+      { id: "label-2", name: "wayfinder:task" }
+    ])
+    const firstPage: ConnectionLike<{ id: string; name: string }> = {
+      nodes: [{ id: "label-1", name: "wayfinder:map" }],
+      pageInfo: { hasNextPage: true, endCursor: "next" },
+      fetchNext: async () => {
+        labelPages += 1
+        return secondPage
+      }
+    }
+    const labeled = issue({
+      labelIds: ["label-1", "label-2"],
+      labels: async () => firstPage
+    })
+    const result = await Effect.runPromise(makeLinearGateway({}, { client: clientWithIssues([labeled]) }).listIssues({ limit: 20 }))
+
+    expect(result.items[0]?.labels).toEqual([
+      { id: "label-1", name: "wayfinder:map" },
+      { id: "label-2", name: "wayfinder:task" }
+    ])
+    expect(labelPages).toBe(1)
+  })
+
+  test("relation filtering and limits precede counterpart resolution", async () => {
+    let counterpartReads = 0
+    const counterpart = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-9", title: "Target" })
+    const relation = (id: string, type: string) => {
+      const value = {
+        id,
+        type,
+        issueId: issue().id,
+        relatedIssueId: counterpart.id
+      } as Record<string, unknown>
+      Object.defineProperty(value, "relatedIssue", {
+        get: () => {
+          counterpartReads += 1
+          return Promise.resolve(counterpart)
+        }
+      })
+      return value
+    }
+    const source = issue({
+      relations: async () => page([
+        relation("c", "related"),
+        relation("b", "blocks"),
+        relation("a", "blocks")
+      ])
+    })
+    const gateway = makeLinearGateway({}, { client: clientWithIssues([source]) })
+
+    const result = await Effect.runPromise(gateway.listRelations({
+      issue: "BEN-1",
+      type: "blocks",
+      direction: "outgoing",
+      limit: 1
+    }))
+
+    expect(result.items.map((item) => item.id)).toEqual(["a"])
+    expect(result.page).toEqual({ hasNext: true, endCursor: "relation:1" })
+    expect(counterpartReads).toBe(1)
   })
 
   test("rate-limit errors remain structured API failures", async () => {

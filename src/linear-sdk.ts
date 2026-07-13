@@ -184,7 +184,7 @@ const createIssue = async (
     const detail = await issueDetail(existing)
     const matches = detail.teamId === team.id &&
       detail.title === input.title &&
-      detail.description === (input.description ?? "") &&
+      descriptionsEqual(detail.description, input.description ?? "") &&
       detail.parentId === (parent?.id ?? null) &&
       (label === undefined || detail.labels.some((existingLabel) => existingLabel.id === label.id))
     if (!matches) {
@@ -210,7 +210,7 @@ const createIssue = async (
       id: input.id
     })
     const issue = await requirePayload(payload.success, payload.issue, "create the issue")
-    return changed(await issueSummary(issue, true), "issue created")
+    return changed(await issueSummary(issue), "issue created")
   } catch (cause) {
     if (input.id) {
       const existing = await findIssueByUuid(client, input.id)
@@ -332,8 +332,13 @@ const updateIssueDescription = async (
       `Refetch with \`linear-axi issues view --id ${current.identifier} --full\`, merge the current description, and retry with its updatedAt.`
     )
   }
-  if (current.description === desiredDescription) {
-    return unchanged(current, "description already matches (no-op)")
+  if (descriptionsEqual(current.description, desiredDescription)) {
+    return unchanged(
+      current,
+      current.description === desiredDescription
+        ? "description already matches (no-op)"
+        : "description already matches after Linear normalization (no-op)"
+    )
   }
 
   const payload = await client.updateIssue(issue.id, { description: desiredDescription })
@@ -453,7 +458,7 @@ const applyLabel = async (
   const issue = await resolveIssue(client, input.issue)
   const label = await resolveLabelForTeam(client, input.label, requireTeamId(issue))
   if (issue.labelIds.includes(label.id)) {
-    return unchanged(await issueSummary(issue, true), "label already applied (no-op)")
+    return unchanged(await issueSummary(issue), "label already applied (no-op)")
   }
 
   try {
@@ -464,13 +469,13 @@ const applyLabel = async (
     if (!concurrent.labelIds.includes(label.id)) {
       throw cause
     }
-    return unchanged(await issueSummary(concurrent, true), "label already applied (no-op)")
+    return unchanged(await issueSummary(concurrent), "label already applied (no-op)")
   }
   const verified = await resolveIssue(client, issue.id)
   if (!verified.labelIds.includes(label.id)) {
     throw conflict(`${label.name} was not present after apply`, "Refetch the issue before retrying.")
   }
-  return changed(await issueSummary(verified, true), "label applied")
+  return changed(await issueSummary(verified), "label applied")
 }
 
 const listRelations = async (
@@ -485,13 +490,16 @@ const listRelations = async (
     ? []
     : await fetchAllPages(await issue.inverseRelations({ first: 100, includeArchived: false }))
   const rows = [
-    ...await Promise.all(outgoing.map((relation) => relationSummary(relation, "outgoing"))),
-    ...await Promise.all(incoming.map((relation) => relationSummary(relation, "incoming")))
+    ...outgoing.map((relation) => ({ relation, direction: "outgoing" as const })),
+    ...incoming.map((relation) => ({ relation, direction: "incoming" as const }))
   ]
-    .filter((relation) => !input.type || relation.type === input.type)
-    .sort((left, right) => left.id.localeCompare(right.id) || left.direction.localeCompare(right.direction))
+    .filter(({ relation }) => !input.type || relation.type === input.type)
+    .sort(({ relation: left, direction: leftDirection }, { relation: right, direction: rightDirection }) =>
+      left.id.localeCompare(right.id) || leftDirection.localeCompare(rightDirection)
+    )
   const offset = parseLocalCursor(input.after, "relation")
-  const items = rows.slice(offset, offset + input.limit)
+  const selected = rows.slice(offset, offset + input.limit)
+  const items = await Promise.all(selected.map(({ relation, direction }) => relationSummary(relation, direction)))
   const nextOffset = offset + items.length
   return {
     items,
@@ -632,13 +640,12 @@ const findCommentByUuid = async (client: LinearClient, id: string): Promise<Comm
   return matches[0]
 }
 
-const issueSummary = async (issue: Issue, includeLabelNames = false): Promise<IssueSummary> => {
+const issueSummary = async (issue: Issue): Promise<IssueSummary> => {
   const state = await issue.state
   const assignee = await issue.assignee
   const parent = await issue.parent
-  const labels = includeLabelNames
-    ? (await fetchAllPages(await issue.labels({ first: 100 }))).map((label) => ({ id: label.id, name: label.name }))
-    : issue.labelIds.map((id) => ({ id, name: id }))
+  const labels = (await fetchAllPages(await issue.labels({ first: 100 })))
+    .map((label) => ({ id: label.id, name: label.name }))
   return {
     id: issue.id,
     identifier: issue.identifier,
@@ -658,7 +665,7 @@ const issueSummary = async (issue: Issue, includeLabelNames = false): Promise<Is
 }
 
 const issueDetail = async (issue: Issue): Promise<IssueDetail> => {
-  const summary = await issueSummary(issue, true)
+  const summary = await issueSummary(issue)
   const team = await issue.team
   if (!team) {
     throw new LinearDomainError({ message: `${issue.identifier} has no team`, help: "Inspect the issue in Linear." })
@@ -785,3 +792,9 @@ const readableError = (cause: unknown): string => {
 
 const normalizeDescription = (description: string): string =>
   description.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replace(/\n+$/, "")
+
+const canonicalDescription = (description: string): string =>
+  normalizeDescription(description).replace(/\]\(<(https?:\/\/[^>\n]+)>\)/g, "]($1)")
+
+const descriptionsEqual = (left: string, right: string): boolean =>
+  canonicalDescription(left) === canonicalDescription(right)

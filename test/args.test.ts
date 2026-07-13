@@ -116,6 +116,22 @@ describe("parseArgs", () => {
     expect(parsed.flags.get("redirect-uri")).toBe("http://127.0.0.1:14582/oauth/callback")
   })
 
+  test("command help documents every accepted option and an example", () => {
+    for (const spec of commandSpecs.filter((candidate) => candidate.path[0] !== "home")) {
+      expect(spec.help).toContain("Example:")
+      for (const flag of spec.flags) {
+        expect(spec.help).toContain(`--${flag}`)
+      }
+    }
+  })
+
+  test("auth login help includes all credential and OAuth controls", () => {
+    const help = commandSpecs.find((spec) => spec.path.join(" ") === "auth login")?.help
+    for (const flag of ["timeout", "scope", "actor", "env-file", "redirect-uri", "client-id"]) {
+      expect(help).toContain(`--${flag}`)
+    }
+  })
+
   const newCommands: ReadonlyArray<ReadonlyArray<string>> = [
     ["issues", "assign"],
     ["issues", "unassign"],
