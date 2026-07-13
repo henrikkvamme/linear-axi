@@ -1,11 +1,11 @@
 import { createHash, randomBytes } from "node:crypto"
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
-import { resolve } from "node:path"
+import { dirname, resolve } from "node:path"
 import { spawnSync } from "node:child_process"
 import { Effect } from "effect"
 import { UsageError, LinearApiError } from "./errors"
-import { parseDotEnv, type Env } from "./env"
+import { credentialsFilePath, parseDotEnv, type Env } from "./env"
 import type { OutputValue } from "./output"
 
 const authorizeEndpoint = "https://linear.app/oauth/authorize"
@@ -23,6 +23,7 @@ export interface OAuthConnectInput {
   actor?: string
   promptConsent: boolean
   notify: boolean
+  openBrowser: boolean
   writeEnv: boolean
   envFile?: string
   timeoutSeconds?: number
@@ -53,6 +54,46 @@ export interface OAuthTokenResponse {
   scope: string | ReadonlyArray<string>
   refresh_token?: string
 }
+
+export interface BrowserOpenCommand {
+  command: string
+  args: ReadonlyArray<string>
+}
+
+export interface BrowserOpenOptions {
+  platform?: NodeJS.Platform
+  launch?: (command: string, args: ReadonlyArray<string>) => number | null
+}
+
+export const browserOpenCommand = (platform: NodeJS.Platform, url: string): BrowserOpenCommand | undefined => {
+  switch (platform) {
+    case "darwin":
+      return { command: "open", args: [url] }
+    case "linux":
+      return { command: "xdg-open", args: [url] }
+    case "win32":
+      return { command: "cmd", args: ["/c", "start", "", url] }
+    default:
+      return undefined
+  }
+}
+
+export const openOAuthUrl = (url: string, options: BrowserOpenOptions = {}): Effect.Effect<boolean> =>
+  Effect.sync(() => {
+    const opener = browserOpenCommand(options.platform ?? process.platform, url)
+    if (!opener) {
+      process.stderr.write("No supported browser opener was found. Open the OAuth URL above manually.\n")
+      return false
+    }
+
+    const launch = options.launch ?? ((command: string, args: ReadonlyArray<string>) =>
+      spawnSync(command, [...args], { stdio: "ignore" }).status)
+    const opened = launch(opener.command, opener.args) === 0
+    if (!opened) {
+      process.stderr.write(`Could not open the browser with ${opener.command}. Open the OAuth URL above manually.\n`)
+    }
+    return opened
+  })
 
 export const setupOAuth = (input: OAuthSetupInput): Effect.Effect<OutputValue, UsageError | LinearApiError> =>
   Effect.gen(function*() {
@@ -106,12 +147,13 @@ export const connectOAuth = (input: OAuthConnectInput): Effect.Effect<OutputValu
     const scope = input.scope ?? input.env.LINEAR_OAUTH_SCOPE ?? "read,write"
     const actor = yield* normalizeActor(input.actor ?? input.env.LINEAR_OAUTH_ACTOR ?? "user")
     const timeoutSeconds = input.timeoutSeconds ?? 300
-    const envFile = resolve(input.cwd, input.envFile ?? ".env")
+    const defaultEnvFile = credentialsFilePath(input.env)
+    const envFile = resolve(input.cwd, input.envFile ?? defaultEnvFile)
 
     yield* validateLocalRedirectUri(redirectUri)
 
     if (input.writeEnv) {
-      yield* ensureEnvFileCanStoreSecrets(envFile, input.cwd)
+      yield* ensureEnvFileCanStoreSecrets(envFile, input.cwd, defaultEnvFile)
     }
 
     const session = createOAuthSession({
@@ -127,6 +169,8 @@ export const connectOAuth = (input: OAuthConnectInput): Effect.Effect<OutputValu
 
     if (input.notify) {
       yield* notifyBender(session.authorizeUrl, `Authorize Linear OAuth for linear-axi: ${session.authorizeUrl}`)
+    } else if (input.openBrowser) {
+      yield* openOAuthUrl(session.authorizeUrl)
     }
 
     const code = yield* waitForOAuthCode({
@@ -163,7 +207,7 @@ export const connectOAuth = (input: OAuthConnectInput): Effect.Effect<OutputValu
         tokenType: token.token_type,
         expiresIn: token.expires_in,
         refreshToken: token.refresh_token ? "stored" : "missing",
-        envFile: input.writeEnv ? collapseCwd(envFile, input.cwd) : "not written"
+        envFile: input.writeEnv ? collapsePath(envFile, input.cwd, input.env) : "not written"
       },
       help: input.writeEnv
         ? ["Run `linear-axi auth status` to verify the saved token.", "Run `linear-axi teams list --limit 50` to inspect the connected workspace."]
@@ -478,9 +522,23 @@ const validateLocalRedirectUri = (redirectUri: string): Effect.Effect<void, Usag
     }
   })
 
-const ensureEnvFileCanStoreSecrets = (envFile: string, cwd: string): Effect.Effect<void, UsageError> =>
+const ensureEnvFileCanStoreSecrets = (
+  envFile: string,
+  cwd: string,
+  defaultEnvFile: string
+): Effect.Effect<void, UsageError> =>
   Effect.try({
     try: () => {
+      if (resolve(envFile) === resolve(defaultEnvFile)) {
+        const directory = dirname(envFile)
+        mkdirSync(directory, { recursive: true, mode: 0o700 })
+        chmodSync(directory, 0o700)
+        if (existsSync(envFile) && lstatSync(envFile).isSymbolicLink()) {
+          throw new Error("credential file is a symbolic link")
+        }
+        return
+      }
+
       const relative = relativeToCwd(envFile, cwd)
       if (relative.startsWith("/")) {
         throw new Error("env file is outside the current repo")
@@ -493,16 +551,22 @@ const ensureEnvFileCanStoreSecrets = (envFile: string, cwd: string): Effect.Effe
         throw new Error(`${relative} is not gitignored`)
       }
     },
-    catch: () =>
+    catch: (cause) =>
       new UsageError({
-        message: "refusing to write OAuth tokens to a tracked env file",
-        help: "Add `.env` to .gitignore, then rerun with `--write-env`."
+        message: cause instanceof Error && cause.message === "credential file is a symbolic link"
+          ? "refusing to write OAuth tokens through a credential-file symlink"
+          : "refusing to write OAuth tokens to an unsafe env file",
+        help: "Use the default credentials file, or choose a gitignored --env-file inside the current repo."
       })
   })
 
-const writeOAuthEnv = (envFile: string, values: Record<string, string | undefined>): Effect.Effect<void, LinearApiError> =>
+export const writeOAuthEnv = (
+  envFile: string,
+  values: Record<string, string | undefined>
+): Effect.Effect<void, LinearApiError> =>
   Effect.try({
     try: () => {
+      mkdirSync(dirname(envFile), { recursive: true, mode: 0o700 })
       const existing = existsSync(envFile) ? parseDotEnv(readFileSync(envFile, "utf8")) : {}
       const next = { ...existing, ...values }
       const orderedKeys = [
@@ -599,6 +663,14 @@ const relativeToCwd = (file: string, cwd: string): string => {
 const collapseCwd = (file: string, cwd: string): string => {
   const relative = relativeToCwd(file, cwd)
   return relative.startsWith("/") ? file : relative
+}
+
+const collapsePath = (file: string, cwd: string, env: Env): string => {
+  const home = env.HOME
+  if (home && (file === home || file.startsWith(`${home}/`))) {
+    return `~${file.slice(home.length)}`
+  }
+  return collapseCwd(file, cwd)
 }
 
 const readableError = (cause: unknown): string => {

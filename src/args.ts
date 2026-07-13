@@ -92,12 +92,14 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
     }
   }
 
-  for (const required of spec.required ?? []) {
-    if (!flags.has(required)) {
-      throw new UsageError({
-        message: `--${required} is required`,
-        help: spec.help
-      })
+  if (flags.get("help") !== true) {
+    for (const required of spec.required ?? []) {
+      if (!flags.has(required)) {
+        throw new UsageError({
+          message: `--${required} is required`,
+          help: spec.help
+        })
+      }
     }
   }
 
@@ -150,7 +152,7 @@ export const topLevelHelp = [
   "Commands:",
   "  linear-axi",
   "  linear-axi auth status",
-  "  linear-axi auth login [--notify]",
+  "  linear-axi auth login [--notify] [--no-open]",
   "  linear-axi auth oauth setup [--notify]",
   "  linear-axi auth oauth connect [--client-id <id>] [--write-env] [--notify]",
   "  linear-axi teams list [--limit 50]",
@@ -181,11 +183,12 @@ export const commandSpecs: ReadonlyArray<CommandSpec> = [
       "actor",
       "prompt-consent",
       "notify",
+      "no-open",
       "env-file",
       "timeout"
     ]),
     valueFlags: new Set(["client-id", "redirect-uri", "scope", "actor", "env-file", "timeout"]),
-    help: "Usage: linear-axi auth login [--notify]"
+    help: "Usage: linear-axi auth login [--notify] [--no-open]"
   },
   {
     path: ["auth", "oauth", "setup"],

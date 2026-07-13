@@ -23,6 +23,25 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["issues", "view"], commandSpecs)).toThrow(UsageError)
   })
 
+  test("allows help without required command flags", () => {
+    const parsed = parseArgs(["issues", "view", "--help"], commandSpecs)
+
+    expect(parsed.command).toEqual(["issues", "view"])
+    expect(parsed.flags.get("help")).toBe(true)
+  })
+
+  test("rejects unknown flags even when help is present", () => {
+    expect(() => parseArgs(["issues", "view", "--bogus", "--help"], commandSpecs)).toThrow(UsageError)
+  })
+
+  test("rejects malformed flags even when help is present", () => {
+    expect(() => parseArgs(["issues", "view", "--full=yes", "--help"], commandSpecs)).toThrow(UsageError)
+  })
+
+  test("rejects missing value flags before treating following help as command help", () => {
+    expect(() => parseArgs(["issues", "create", "--team", "--help"], commandSpecs)).toThrow(UsageError)
+  })
+
   test("rejects boolean flags with values", () => {
     expect(() => parseArgs(["issues", "view", "--full", "ENG-123"], commandSpecs)).toThrow(UsageError)
   })
@@ -73,6 +92,13 @@ describe("parseArgs", () => {
     expect(parsed.command).toEqual(["auth", "login"])
     expect(parsed.flags.get("notify")).toBe(true)
     expect(parsed.flags.get("timeout")).toBe("300")
+  })
+
+  test("parses auth login without opening a local browser", () => {
+    const parsed = parseArgs(["auth", "login", "--no-open"], commandSpecs)
+
+    expect(parsed.command).toEqual(["auth", "login"])
+    expect(parsed.flags.get("no-open")).toBe(true)
   })
 
   test("parses oauth setup flags", () => {

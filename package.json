@@ -35,7 +35,8 @@
     "bun": ">=1.2.0"
   },
   "scripts": {
-    "check": "bun run typecheck && bun run test",
+    "build": "bun build --compile --no-compile-autoload-dotenv --outfile dist/linear-axi src/main.ts",
+    "check": "bun run typecheck && bun run test && bun run build",
     "typecheck": "tsc --noEmit",
     "test": "bun test ./test/*.test.ts"
   },

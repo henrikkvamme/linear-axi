@@ -1,6 +1,63 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtempSync, readFileSync, statSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { Effect } from "effect"
-import { createOAuthSession, readOAuthCodeFromCallbackUrl } from "../src/oauth"
+import {
+  browserOpenCommand,
+  createOAuthSession,
+  openOAuthUrl,
+  readOAuthCodeFromCallbackUrl,
+  writeOAuthEnv
+} from "../src/oauth"
+
+describe("browserOpenCommand", () => {
+  test("uses the native macOS browser opener", () => {
+    expect(browserOpenCommand("darwin", "https://linear.app/oauth/authorize")).toEqual({
+      command: "open",
+      args: ["https://linear.app/oauth/authorize"]
+    })
+  })
+
+  test("uses xdg-open on Linux", () => {
+    expect(browserOpenCommand("linux", "https://linear.app/oauth/authorize")).toEqual({
+      command: "xdg-open",
+      args: ["https://linear.app/oauth/authorize"]
+    })
+  })
+
+  test("launches the selected browser command", () => {
+    const calls: Array<{ command: string; args: ReadonlyArray<string> }> = []
+    const opened = Effect.runSync(openOAuthUrl("https://linear.app/oauth/authorize", {
+      platform: "darwin",
+      launch: (command, args) => {
+        calls.push({ command, args })
+        return 0
+      }
+    }))
+
+    expect(opened).toBe(true)
+    expect(calls).toEqual([{
+      command: "open",
+      args: ["https://linear.app/oauth/authorize"]
+    }])
+  })
+})
+
+describe("writeOAuthEnv", () => {
+  test("creates a private credentials directory and file", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-oauth-env-test-"))
+    const envFile = join(root, "config", "linear-axi", "credentials.env")
+
+    await Effect.runPromise(writeOAuthEnv(envFile, {
+      LINEAR_ACCESS_TOKEN: "secret-token"
+    }))
+
+    expect(statSync(join(root, "config", "linear-axi")).mode & 0o777).toBe(0o700)
+    expect(statSync(envFile).mode & 0o777).toBe(0o600)
+    expect(readFileSync(envFile, "utf8")).toBe("LINEAR_ACCESS_TOKEN=secret-token\n")
+  })
+})
 
 describe("createOAuthSession", () => {
   test("builds a Linear OAuth PKCE authorization URL", () => {

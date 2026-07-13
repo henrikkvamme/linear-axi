@@ -12,7 +12,8 @@ const runCli = (...args: ReadonlyArray<string>) => {
     cwd,
     env: {
       PATH: process.env.PATH ?? "",
-      HOME: process.env.HOME ?? ""
+      HOME: join(cwd, "home"),
+      XDG_CONFIG_HOME: join(cwd, "config")
     },
     stdout: "pipe",
     stderr: "pipe"
@@ -20,8 +21,21 @@ const runCli = (...args: ReadonlyArray<string>) => {
 }
 
 const stdoutText = (result: ReturnType<typeof runCli>) => new TextDecoder().decode(result.stdout)
+const stderrText = (result: ReturnType<typeof runCli>) => new TextDecoder().decode(result.stderr)
 
 describe("linear-axi process", () => {
+  test("prints content-first home output without credentials", () => {
+    const result = runCli()
+    const stdout = stdoutText(result)
+
+    expect(result.exitCode).toBe(0)
+    expect(stderrText(result)).toBe("")
+    expect(stdout).toContain("bin:")
+    expect(stdout).toContain("description:")
+    expect(stdout).toContain("authenticated: false")
+    expect(stdout).toContain("Run `linear-axi auth login` to choose and connect a Linear workspace.")
+  })
+
   test("prints top-level help", () => {
     const result = runCli("--help")
 
@@ -29,17 +43,60 @@ describe("linear-axi process", () => {
     expect(stdoutText(result)).toContain("linear-axi teams list")
   })
 
+  for (const command of [
+    ["auth", "status"],
+    ["auth", "login"],
+    ["auth", "oauth", "setup"],
+    ["auth", "oauth", "connect"],
+    ["teams", "list"],
+    ["issues", "list"],
+    ["issues", "view"],
+    ["issues", "create"],
+    ["comments", "create"]
+  ]) {
+    test(`prints command help for ${command.join(" ")}`, () => {
+      const result = runCli(...command, "--help")
+      const stdout = stdoutText(result)
+
+      expect(result.exitCode).toBe(0)
+      expect(stderrText(result)).toBe("")
+      expect(stdout).toContain("Usage: linear-axi")
+      expect(stdout).toContain(command.join(" "))
+    })
+  }
+
+  test("prints OAuth setup guidance without credentials", () => {
+    const result = runCli("auth", "oauth", "setup")
+    const stdout = stdoutText(result)
+
+    expect(result.exitCode).toBe(0)
+    expect(stderrText(result)).toBe("")
+    expect(stdout).toContain("oauthSetup:")
+    expect(stdout).toContain("phase: register-client")
+    expect(stdout).toContain("redirectUri: \"http://127.0.0.1:14582/oauth/callback\"")
+  })
+
   test("rejects unknown flags with usage exit", () => {
     const result = runCli("teams", "list", "--bogus")
 
     expect(result.exitCode).toBe(2)
+    expect(stderrText(result)).toBe("")
     expect(stdoutText(result)).toContain("unknown flag --bogus")
+  })
+
+  test("rejects unknown commands with usage exit", () => {
+    const result = runCli("issues", "delete", "--id", "ENG-123")
+
+    expect(result.exitCode).toBe(2)
+    expect(stderrText(result)).toBe("")
+    expect(stdoutText(result)).toContain("unknown command issues delete")
   })
 
   test("reports unauthenticated live commands as runtime errors", () => {
     const result = runCli("teams", "list")
 
     expect(result.exitCode).toBe(1)
+    expect(stderrText(result)).toBe("")
     expect(stdoutText(result)).toContain("Linear credentials are not configured")
   })
 
@@ -47,6 +104,7 @@ describe("linear-axi process", () => {
     const result = runCli("auth", "status")
 
     expect(result.exitCode).toBe(0)
+    expect(stderrText(result)).toBe("")
     expect(stdoutText(result)).toContain("authenticated: false")
   })
 
@@ -54,6 +112,7 @@ describe("linear-axi process", () => {
     const result = runCli("teams", "list", "--limit", "0")
 
     expect(result.exitCode).toBe(2)
+    expect(stderrText(result)).toBe("")
     expect(stdoutText(result)).toContain("--limit must be an integer")
   })
 
@@ -61,6 +120,27 @@ describe("linear-axi process", () => {
     const result = runCli("--help", "auth")
 
     expect(result.exitCode).toBe(2)
+    expect(stderrText(result)).toBe("")
     expect(stdoutText(result)).toContain("--help does not take a value")
+  })
+
+  test("rejects issue creation before auth when required fields are missing", () => {
+    const result = runCli("issues", "create", "--team", "ENG")
+    const stdout = stdoutText(result)
+
+    expect(result.exitCode).toBe(2)
+    expect(stderrText(result)).toBe("")
+    expect(stdout).toContain("--title is required")
+    expect(stdout).not.toContain("Linear credentials are not configured")
+  })
+
+  test("rejects comment creation before auth when required fields are missing", () => {
+    const result = runCli("comments", "create", "--issue", "ENG-123")
+    const stdout = stdoutText(result)
+
+    expect(result.exitCode).toBe(2)
+    expect(stderrText(result)).toBe("")
+    expect(stdout).toContain("--body is required")
+    expect(stdout).not.toContain("Linear credentials are not configured")
   })
 })

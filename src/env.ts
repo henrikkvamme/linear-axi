@@ -1,19 +1,33 @@
 import { existsSync, readFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { join } from "node:path"
 
 export type Env = Record<string, string | undefined>
 
 export const loadEnv = (cwd: string, base: Env = process.env): Env => {
-  const envFile = join(cwd, ".env")
-  if (!existsSync(envFile)) {
-    return { ...base }
+  const files = base.LINEAR_AXI_ENV_FILE
+    ? [base.LINEAR_AXI_ENV_FILE, join(cwd, ".env")]
+    : [managedSecretsFilePath(base), credentialsFilePath(base), join(cwd, ".env")]
+  const loaded: Env = {}
+
+  for (const file of files) {
+    if (existsSync(file)) {
+      Object.assign(loaded, parseDotEnv(readFileSync(file, "utf8")))
+    }
   }
 
   return {
-    ...parseDotEnv(readFileSync(envFile, "utf8")),
+    ...loaded,
     ...base
   }
 }
+
+export const credentialsFilePath = (env: Env = process.env): string =>
+  env.LINEAR_AXI_ENV_FILE ?? join(configHome(env), "linear-axi", "credentials.env")
+
+const managedSecretsFilePath = (env: Env): string => join(configHome(env), "linear-axi", "secrets.env")
+
+const configHome = (env: Env): string => env.XDG_CONFIG_HOME ?? join(env.HOME ?? homedir(), ".config")
 
 export const parseDotEnv = (text: string): Env => {
   const env: Env = {}

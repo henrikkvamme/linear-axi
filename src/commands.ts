@@ -27,11 +27,11 @@ export const runCommand = (
       return gateway.authStatus().pipe(
         Effect.map((auth) => ({
           auth,
-          help: auth.authenticated ? [] : ["Set LINEAR_API_KEY or LINEAR_ACCESS_TOKEN.", "Run `linear-axi auth login --notify` to connect this repo via OAuth."]
+          help: auth.authenticated ? [] : ["Run `linear-axi auth login` to choose and connect a Linear workspace."]
         }))
       )
     case "auth login":
-      return authOAuthConnect(parsed, env, { promptConsent: true, writeEnv: true })
+      return authOAuthConnect(parsed, env, { openBrowser: true, promptConsent: true, writeEnv: true })
     case "auth oauth setup":
       return authOAuthSetup(parsed, env)
     case "auth oauth connect":
@@ -59,7 +59,7 @@ const home = (gateway: LinearGateway, binPath: string) =>
           bin: collapseHome(binPath),
           description: "Operate Linear through a Bun, Effect, AXI-oriented CLI.",
           auth,
-          help: ["Set LINEAR_API_KEY or LINEAR_ACCESS_TOKEN.", "Run `linear-axi teams list` after auth is configured."]
+          help: ["Run `linear-axi auth login` to choose and connect a Linear workspace."]
         })
       }
 
@@ -96,7 +96,7 @@ const teamsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
 const authOAuthConnect = (
   parsed: ParsedArgs,
   env: Env,
-  defaults: { promptConsent?: boolean; writeEnv?: boolean } = {}
+  defaults: { openBrowser?: boolean; promptConsent?: boolean; writeEnv?: boolean } = {}
 ) => {
   const timeout = readStringFlag(parsed.flags, "timeout")
   if (timeout !== undefined && (!/^[0-9]+$/.test(timeout) || Number(timeout) < 30 || Number(timeout) > 3600)) {
@@ -117,6 +117,7 @@ const authOAuthConnect = (
     actor: readStringFlag(parsed.flags, "actor"),
     promptConsent: readBooleanFlag(parsed.flags, "prompt-consent") || defaults.promptConsent === true,
     notify: readBooleanFlag(parsed.flags, "notify"),
+    openBrowser: defaults.openBrowser === true && !readBooleanFlag(parsed.flags, "no-open"),
     writeEnv: readBooleanFlag(parsed.flags, "write-env") || defaults.writeEnv === true,
     envFile: readStringFlag(parsed.flags, "env-file"),
     timeoutSeconds: timeout === undefined ? undefined : Number(timeout)
@@ -216,9 +217,10 @@ const helpFor = (path: string): string => {
       return "Usage: linear-axi auth status\nExample: linear-axi auth status"
     case "auth login":
       return [
-        "Usage: linear-axi auth login [--notify] [--timeout 300]",
+        "Usage: linear-axi auth login [--notify] [--no-open] [--timeout 300]",
+        "Example: linear-axi auth login",
         "Example: linear-axi auth login --notify",
-        "Opens Linear OAuth consent with workspace selection and saves the token to .env."
+        "Opens Linear OAuth consent with workspace selection and saves the token to the user credentials file."
       ].join("\n")
     case "auth oauth setup":
       return [

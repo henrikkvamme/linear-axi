@@ -86,6 +86,67 @@ describe("runCommand", () => {
     expect(exit._tag).toBe("Failure")
   })
 
+  test("issues create passes the requested payload to the gateway", async () => {
+    const gateway: LinearGateway = {
+      ...fakeGateway(""),
+      createIssue: (input) => {
+        expect(input).toEqual({
+          team: "ENG",
+          title: "Fix auth bug",
+          description: "Details"
+        })
+        return Effect.succeed(baseIssue)
+      }
+    }
+
+    const output = await run([
+      "issues",
+      "create",
+      "--team",
+      "ENG",
+      "--title",
+      "Fix auth bug",
+      "--description",
+      "Details"
+    ], gateway)
+
+    expect(output.issue).toEqual(baseIssue)
+  })
+
+  test("comments create passes the requested payload to the gateway", async () => {
+    const gateway: LinearGateway = {
+      ...fakeGateway(""),
+      createComment: (input) => {
+        expect(input).toEqual({
+          issue: "ENG-123",
+          body: "Implemented in PR."
+        })
+        return Effect.succeed({
+          id: "comment-id",
+          issueId: "issue-id",
+          body: input.body,
+          url: baseIssue.url
+        })
+      }
+    }
+
+    const output = await run([
+      "comments",
+      "create",
+      "--issue",
+      "ENG-123",
+      "--body",
+      "Implemented in PR."
+    ], gateway)
+
+    expect(output.comment).toEqual({
+      id: "comment-id",
+      issueId: "issue-id",
+      body: "Implemented in PR.",
+      url: baseIssue.url
+    })
+  })
+
   test("oauth connect rejects unsupported actors before listening", async () => {
     const parsed = parseArgs(["auth", "oauth", "connect", "--client-id", "client1", "--actor", "robot"], commandSpecs)
     const exit = await Effect.runPromiseExit(runCommand(parsed, fakeGateway(""), "/repo/src/main.ts"))
