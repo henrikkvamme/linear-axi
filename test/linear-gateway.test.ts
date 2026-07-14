@@ -1216,6 +1216,76 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(counterpartReads).toBe(1)
   })
 
+  test("starts outgoing and incoming relation pagination concurrently", async () => {
+    let outgoingStarted = false
+    let incomingStarted = false
+    let outgoingObservedIncoming = false
+    let incomingObservedOutgoing = false
+    const source = issue({
+      relations: async () => {
+        outgoingStarted = true
+        await Promise.resolve()
+        outgoingObservedIncoming = incomingStarted
+        return page([])
+      },
+      inverseRelations: async () => {
+        incomingStarted = true
+        await Promise.resolve()
+        incomingObservedOutgoing = outgoingStarted
+        return page([])
+      }
+    })
+
+    await Effect.runPromise(makeLinearGateway({}, { client: clientWithIssues([source]) }).listRelations({
+      issue: "BEN-1",
+      direction: "both",
+      limit: 20
+    }))
+
+    expect(outgoingObservedIncoming).toBe(true)
+    expect(incomingObservedOutgoing).toBe(true)
+  })
+
+  test("starts relation natural-key and caller-UUID lookups concurrently", async () => {
+    const callerId = "88888888-8888-4888-8888-888888888888"
+    const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
+    const naturalRelation = {
+      id: "77777777-7777-4777-8777-777777777777",
+      type: "blocks",
+      issueId: issue().id,
+      relatedIssueId: target.id,
+      relatedIssue: Promise.resolve(target)
+    }
+    let identityLookupStarted = false
+    let naturalLookupObservedIdentity = false
+    const source = issue({
+      relations: async () => {
+        await Promise.resolve()
+        naturalLookupObservedIdentity = identityLookupStarted
+        return page([naturalRelation])
+      }
+    })
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source]),
+      issueRelation: async () => {
+        identityLookupStarted = true
+        throw new Error("Entity not found: IssueRelation")
+      },
+      createIssueRelation: async () => { throw new Error("must not create") }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createRelation({
+      issue: "BEN-1",
+      relatedIssue: "BEN-2",
+      type: "blocks",
+      id: callerId
+    })))
+
+    expect(error.message).toContain(`not caller UUID ${callerId}`)
+    expect(naturalLookupObservedIdentity).toBe(true)
+  })
+
   test("caller relation UUID probes use singular lookup for no-op, conflict, and archived conflict", async () => {
     const relationId = "88888888-8888-4888-8888-888888888888"
     const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
@@ -1425,17 +1495,28 @@ describe("SDK LinearGateway conflict contracts", () => {
       })))
       expect(error.message).toBe("invalid label cursor")
     }
-    const frontierError = await Effect.runPromise(Effect.flip(gateway.frontier({
-      map: "BEN-1",
-      first: 20,
-      after: "invalid"
-    })))
+    const offsetTimestampCursor = `wf1.${Buffer.from(JSON.stringify({
+      v: 1,
+      order: 1,
+      createdAt: "2026-01-01T01:00:00.000+01:00",
+      id: "11111111-1111-4111-8111-111111111111"
+    }), "utf8").toString("base64url")}`
+    const frontierErrors = await Promise.all(["invalid", offsetTimestampCursor].map((after) =>
+      Effect.runPromise(Effect.flip(gateway.frontier({
+        map: "BEN-1",
+        first: 20,
+        after
+      })))
+    ))
     const frontierSizeError = await Effect.runPromise(Effect.flip(gateway.frontier({
       map: "BEN-1",
       first: 101
     })))
 
-    expect(frontierError.message).toBe("invalid frontier cursor")
+    expect(frontierErrors.map((error) => error.message)).toEqual([
+      "invalid frontier cursor",
+      "invalid frontier cursor"
+    ])
     expect(frontierSizeError.message).toBe("invalid frontier page size")
     expect(issueReads).toBe(0)
   })

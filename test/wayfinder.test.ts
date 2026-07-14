@@ -28,7 +28,7 @@ describe("Wayfinder frontier projection", () => {
       id: `${index.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`,
       identifier: `BEN-${index + 1}`,
       title: `Issue ${index + 1}`,
-      createdAt: "2026-01-01T00:00:00Z",
+      createdAt: "2026-01-01T00:00:00.000Z",
       subIssueSortOrder: index,
       labelIds: ["task-id"]
     }))
@@ -50,7 +50,7 @@ describe("Wayfinder frontier projection", () => {
       id: "22222222-2222-4222-8222-222222222222",
       identifier: "BEN-2",
       title: "Removed",
-      createdAt: "2026-01-01T00:00:00Z",
+      createdAt: "2026-01-01T00:00:00.000Z",
       subIssueSortOrder: 2,
       labelIds: ["task-id"]
     }
@@ -68,7 +68,7 @@ describe("Wayfinder frontier projection", () => {
       id: "22222222-2222-4222-8222-222222222222",
       identifier: "BEN-2",
       title: "Second",
-      createdAt: "2026-01-01T00:00:00Z",
+      createdAt: "2026-01-01T00:00:00.000Z",
       subIssueSortOrder: 2,
       labelIds: ["task-id"]
     }
@@ -85,7 +85,7 @@ describe("Wayfinder frontier projection", () => {
   test("rejects malformed and non-canonically encoded frontier cursors", () => {
     const candidate = {
       id: "11111111-1111-4111-8111-111111111111",
-      createdAt: "2026-01-01T00:00:00Z",
+      createdAt: "2026-01-01T00:00:00.000Z",
       subIssueSortOrder: 1
     }
     const canonical = encodeFrontierCursor(candidate)
@@ -100,7 +100,7 @@ describe("Wayfinder frontier projection", () => {
       order: candidate.subIssueSortOrder,
       createdAt: candidate.createdAt,
       id: candidate.id,
-      x: ">"
+      x: "࠾"
     })
     const regularBase64 = Buffer.from(regularBase64Payload, "utf8").toString("base64")
     expect(regularBase64).toContain("+")
@@ -112,6 +112,24 @@ describe("Wayfinder frontier projection", () => {
       `wf1.${Buffer.from(reorderedPayload, "utf8").toString("base64url")}`,
       `wf1.${regularBase64}`
     ]) {
+      expect(() => paginateFrontier([], labels, 20, cursor)).toThrow("invalid frontier cursor")
+    }
+  })
+
+  test("rejects noncanonical cursor timestamps used as lexical sort keys", () => {
+    for (const createdAt of [
+      "2026-01-01T01:00:00.000+01:00",
+      "2026-01-01T00:00:00Z",
+      "2026-01-01"
+    ]) {
+      const payload = {
+        v: 1,
+        order: 1,
+        createdAt,
+        id: "11111111-1111-4111-8111-111111111111"
+      }
+      const cursor = `wf1.${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}`
+
       expect(() => paginateFrontier([], labels, 20, cursor)).toThrow("invalid frontier cursor")
     }
   })

@@ -128,16 +128,23 @@ describe("linear-axi process", () => {
   })
 
   test("invalid local cursors exit as usage errors before authentication", () => {
+    const offsetTimestampCursor = `wf1.${Buffer.from(JSON.stringify({
+      v: 1,
+      order: 1,
+      createdAt: "2026-01-01T01:00:00.000+01:00",
+      id: "11111111-1111-4111-8111-111111111111"
+    }), "utf8").toString("base64url")}`
     for (const args of [
       ["labels", "list", "--issue", "ENG-123", "--name", "fixture", "--after", "label:01"],
       ["relations", "list", "--issue", "ENG-123", "--after", "invalid"],
-      ["relations", "list", "--issue", "ENG-123", "--after="]
+      ["relations", "list", "--issue", "ENG-123", "--after="],
+      ["wayfinder", "frontier", "--map", "ENG-123", "--after", offsetTimestampCursor]
     ]) {
       const result = runCli(...args)
 
       expect(result.exitCode).toBe(2)
       expect(stderrText(result)).toBe("")
-      expect(stdoutText(result)).toContain("invalid")
+      expect(stdoutText(result)).toMatch(/invalid|not a valid/)
       expect(stdoutText(result)).not.toContain("Linear credentials are not configured")
     }
   })

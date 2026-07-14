@@ -115,7 +115,13 @@ const decodeFrontierCursor = (cursor: string): FrontierCursor => {
     const decoded = decodeFrontierCursorValue(
       JSON.parse(Buffer.from(cursor.slice("wf1.".length), "base64url").toString("utf8"))
     )
-    if (!Number.isFinite(decoded.order ?? 0) || Number.isNaN(Date.parse(decoded.createdAt)) || !isUuid(decoded.id)) {
+    const createdAtTime = Date.parse(decoded.createdAt)
+    if (
+      !Number.isFinite(decoded.order ?? 0) ||
+      !Number.isFinite(createdAtTime) ||
+      new Date(createdAtTime).toISOString() !== decoded.createdAt ||
+      !isUuid(decoded.id)
+    ) {
       throw new Error("shape")
     }
     if (encodeFrontierCursor({

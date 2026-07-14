@@ -580,12 +580,14 @@ const listRelations = async (
 ): Promise<PageResult<RelationSummary>> => {
   const offset = parseLocalCursor(input.after, "relation")
   const issue = await resolveIssue(client, input.issue)
-  const outgoing = input.direction === "incoming"
-    ? []
-    : await fetchAllPages(await issue.relations({ first: 100, includeArchived: false }))
-  const incoming = input.direction === "outgoing"
-    ? []
-    : await fetchAllPages(await issue.inverseRelations({ first: 100, includeArchived: false }))
+  const [outgoing, incoming] = await Promise.all([
+    input.direction === "incoming"
+      ? Promise.resolve([])
+      : issue.relations({ first: 100, includeArchived: false }).then(fetchAllPages),
+    input.direction === "outgoing"
+      ? Promise.resolve([])
+      : issue.inverseRelations({ first: 100, includeArchived: false }).then(fetchAllPages)
+  ])
   const rows = [
     ...outgoing.map((relation) => ({ relation, direction: "outgoing" as const })),
     ...incoming.map((relation) => ({ relation, direction: "incoming" as const }))
@@ -616,7 +618,7 @@ const createRelation = async (
 
   const classifyExisting = async (): Promise<MutationResult<RelationSummary> | undefined> => {
     const [relations, idMatch] = await Promise.all([
-      fetchAllPages(await source.relations({ first: 100, includeArchived: false })),
+      source.relations({ first: 100, includeArchived: false }).then(fetchAllPages),
       callerId ? findRelationByUuid(client, callerId) : Promise.resolve(undefined)
     ])
     const naturalMatch = relations.find((relation) => relationMatches(relation, source.id, target.id, input.type))
