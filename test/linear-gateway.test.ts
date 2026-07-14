@@ -579,10 +579,10 @@ describe("SDK LinearGateway conflict contracts", () => {
     const disabled = user({ active: false, isAssignable: false })
     const before = issue({ assigneeId: disabled.id, assignee: Promise.resolve(disabled) })
     const after = issue({ assigneeId: undefined, assignee: undefined })
-    const userQueries: Array<{ includeDisabled?: boolean }> = []
+    const userQueries: Array<{ includeArchived?: boolean; includeDisabled?: boolean }> = []
     let issueReads = 0
     const client = clientWithIssues([], {
-      users: async (variables: { includeDisabled?: boolean }) => {
+      users: async (variables: { includeArchived?: boolean; includeDisabled?: boolean }) => {
         userQueries.push(variables)
         return page([disabled])
       },
@@ -603,17 +603,61 @@ describe("SDK LinearGateway conflict contracts", () => {
 
     expect(listed.items[0]?.assigneeId).toBe(disabled.id)
     expect(released.changed).toBe(true)
-    expect(userQueries.map((query) => query.includeDisabled)).toEqual([true, true])
+    expect(userQueries.map(({ includeArchived, includeDisabled }) => ({ includeArchived, includeDisabled }))).toEqual([
+      { includeArchived: true, includeDisabled: true },
+      { includeArchived: true, includeDisabled: true }
+    ])
   })
 
-  test("assignment requires an active assignable user", async () => {
+  test("archived users remain resolvable for issue filters and unassign preconditions", async () => {
+    const archived = user({
+      active: false,
+      isAssignable: false,
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    const before = issue({ assigneeId: archived.id, assignee: Promise.resolve(archived) })
+    const after = issue({ assigneeId: undefined, assignee: undefined })
+    let issueReads = 0
+    const client = clientWithIssues([], {
+      users: async (variables: { includeArchived?: boolean; includeDisabled?: boolean }) => {
+        expect(variables.includeArchived).toBe(true)
+        expect(variables.includeDisabled).toBe(true)
+        return page([archived])
+      },
+      issues: async () => page([issueReads++ < 2 ? before : after]),
+      updateIssue: async () => ({ success: true, issue: Promise.resolve(after) })
+    })
+    const gateway = makeLinearGateway({}, { client })
+
+    const listed = await Effect.runPromise(gateway.listIssues({
+      assignee: archived.id,
+      limit: 20,
+      fields: ["assignee"]
+    }))
+    const released = await Effect.runPromise(gateway.unassignIssue({
+      id: "BEN-1",
+      ifAssignee: archived.id
+    }))
+
+    expect(listed.items[0]?.assigneeId).toBe(archived.id)
+    expect(released.changed).toBe(true)
+  })
+
+  test("assignment requires an active unarchived assignable user", async () => {
     let updates = 0
     for (const unavailable of [
       user({ active: false, isAssignable: true }),
-      user({ id: "44444444-4444-4444-8444-444444444444", active: true, isAssignable: false })
+      user({ id: "44444444-4444-4444-8444-444444444444", active: true, isAssignable: false }),
+      user({
+        id: "55555555-5555-4555-8555-555555555555",
+        active: true,
+        isAssignable: true,
+        archivedAt: new Date("2026-07-13T13:00:00.000Z")
+      })
     ]) {
       const client = clientWithIssues([issue()], {
-        users: async (variables: { includeDisabled?: boolean }) => {
+        users: async (variables: { includeArchived?: boolean; includeDisabled?: boolean }) => {
+          expect(variables.includeArchived).toBe(true)
           expect(variables.includeDisabled).toBe(true)
           return page([unavailable])
         },
