@@ -57,8 +57,17 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["teams", "list", "--limit", "0"], commandSpecs)).toThrow(UsageError)
   })
 
-  test("rejects empty cursors during parsing", () => {
-    expect(() => parseArgs(["relations", "list", "--issue", "ENG-123", "--after="], commandSpecs)).toThrow(UsageError)
+  test("rejects empty values during parsing", () => {
+    for (const args of [
+      ["issues", "create", "--team=", "--title", "Child"],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--parent="],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--label="],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--id="],
+      ["issues", "close", "--id", "ENG-123", "--state="],
+      ["relations", "list", "--issue", "ENG-123", "--after="]
+    ]) {
+      expect(() => parseArgs(args, commandSpecs)).toThrow(UsageError)
+    }
   })
 
   test("rejects help values", () => {

@@ -89,9 +89,9 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
         help: spec.help
       })
     }
-    if (flag === "after" && value === "") {
+    if (expectsValue && value === "") {
       throw new UsageError({
-        message: "invalid --after cursor: value cannot be empty",
+        message: flag === "after" ? "invalid --after cursor: value cannot be empty" : `--${flag} cannot be empty`,
         help: spec.help
       })
     }

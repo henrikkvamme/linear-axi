@@ -254,6 +254,26 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(updates).toBe(0)
   })
 
+  test("stale description rejects before loading unrelated issue relations", async () => {
+    let labelReads = 0
+    const staleIssue = issue({
+      labels: async () => {
+        labelReads += 1
+        throw new Error("unrelated label read failed")
+      }
+    })
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client: clientWithIssues([staleIssue]) }).updateIssueDescription({
+        id: "BEN-1",
+        description: "replacement",
+        ifUpdatedAt: "2026-07-13T11:59:59.000Z"
+      })
+    ))
+
+    expect(error.message).toContain("changed since --if-updated-at")
+    expect(labelReads).toBe(0)
+  })
+
   test("matching description is an idempotent no-op", async () => {
     let updates = 0
     const client = clientWithIssues([issue()], {
@@ -667,6 +687,37 @@ describe("SDK LinearGateway conflict contracts", () => {
 
     expect(result.changed).toBe(false)
     expect(updates).toBe(0)
+  })
+
+  test.each([
+    { name: "scoped name", id: undefined, requestedName: "wayfinder:task", ifAbsent: true },
+    { name: "caller UUID", id: "55555555-5555-4555-8555-555555555555", requestedName: "wayfinder:task", ifAbsent: false },
+    { name: "caller UUID before a name mismatch", id: "55555555-5555-4555-8555-555555555555", requestedName: "wayfinder:other", ifAbsent: true },
+    { name: "scoped name before a UUID mismatch", id: "66666666-6666-4666-8666-666666666666", requestedName: "wayfinder:task", ifAbsent: true }
+  ])("label create rejects a group found by $name", async ({ id, requestedName, ifAbsent }) => {
+    const existing = issueLabel({ isGroup: true })
+    let creates = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async (variables: { filter: { id?: { eq: string } } }) =>
+        page(variables.filter.id && variables.filter.id.eq !== existing.id ? [] : [existing]),
+      createIssueLabel: async () => { creates += 1; return { success: true } }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client }).createLabel({
+        name: requestedName,
+        color: existing.color,
+        description: existing.description ?? undefined,
+        workspace: false,
+        team: "BEN",
+        id,
+        ifAbsent
+      })
+    ))
+
+    expect(error.message).toContain("label group")
+    expect(creates).toBe(0)
   })
 
   test("label create with caller UUID and if-absent creates when both identities are absent", async () => {

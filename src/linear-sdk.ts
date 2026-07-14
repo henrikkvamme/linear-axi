@@ -354,18 +354,20 @@ const updateIssueDescription = async (
   input: UpdateIssueDescriptionInput
 ): Promise<MutationResult<IssueDetail>> => {
   const issue = await resolveIssue(client, input.id)
-  const current = await issueDetail(issue)
+  const currentDescription = issue.description ?? ""
+  const currentUpdatedAt = issue.updatedAt.toISOString()
   const desiredDescription = normalizeDescription(input.description)
-  if (Date.parse(current.updatedAt) !== Date.parse(input.ifUpdatedAt)) {
+  if (Date.parse(currentUpdatedAt) !== Date.parse(input.ifUpdatedAt)) {
     throw conflict(
-      `${current.identifier} changed since --if-updated-at; description was not updated (current updatedAt: ${current.updatedAt})`,
-      `Refetch with \`linear-axi issues view --id ${current.identifier} --full\`, merge the current description, and retry with its updatedAt.`
+      `${issue.identifier} changed since --if-updated-at; description was not updated (current updatedAt: ${currentUpdatedAt})`,
+      `Refetch with \`linear-axi issues view --id ${issue.identifier} --full\`, merge the current description, and retry with its updatedAt.`
     )
   }
-  if (richTextEqual(current.description, desiredDescription)) {
+  if (richTextEqual(currentDescription, desiredDescription)) {
+    const current = await issueDetail(issue)
     return unchanged(
       current,
-      current.description === desiredDescription
+      currentDescription === desiredDescription
         ? "description already matches (no-op)"
         : "description already matches after Linear normalization (no-op)"
     )
@@ -375,27 +377,29 @@ const updateIssueDescription = async (
   const accepted = await requirePayload(payload.success, payload.issue, "update the issue description")
   const acceptedDescription = accepted.description ?? ""
   const acceptedUpdatedAt = accepted.updatedAt.toISOString()
-  const verified = await issueDetail(await resolveIssue(client, issue.id))
+  const verifiedIssue = await resolveIssue(client, issue.id)
+  const verifiedDescription = verifiedIssue.description ?? ""
+  const verifiedUpdatedAt = verifiedIssue.updatedAt.toISOString()
   if (
-    verified.description !== acceptedDescription ||
-    verified.updatedAt !== acceptedUpdatedAt ||
-    !richTextEqual(verified.description, desiredDescription)
+    verifiedDescription !== acceptedDescription ||
+    verifiedUpdatedAt !== acceptedUpdatedAt ||
+    !richTextEqual(verifiedDescription, desiredDescription)
   ) {
     throw conflict(
-      `${current.identifier} description update could not be verified`,
+      `${issue.identifier} description update could not be verified`,
       "Refetch and merge before retrying. Linear does not provide atomic compare-and-swap for descriptions."
     )
   }
-  if (acceptedDescription === current.description && acceptedUpdatedAt === current.updatedAt) {
-    return unchanged(verified, "description already matches after Linear normalization (no-op)")
+  if (acceptedDescription === currentDescription && acceptedUpdatedAt === currentUpdatedAt) {
+    return unchanged(await issueDetail(verifiedIssue), "description already matches after Linear normalization (no-op)")
   }
-  if (acceptedUpdatedAt === current.updatedAt) {
+  if (acceptedUpdatedAt === currentUpdatedAt) {
     throw conflict(
-      `${current.identifier} description changed without a verifiable timestamp advance`,
+      `${issue.identifier} description changed without a verifiable timestamp advance`,
       "Refetch and merge before retrying."
     )
   }
-  return changed(verified, "description updated and verified")
+  return changed(await issueDetail(verifiedIssue), "description updated and verified")
 }
 
 const listLabels = async (client: LinearClient, input: ListLabelsInput): Promise<PageResult<LabelSummary>> => {
@@ -445,7 +449,16 @@ const createLabel = async (
   const callerId = input.id ? normalizeUuid(input.id) : undefined
   const team = input.team ? await resolveTeam(client, input.team) : undefined
   const teamId = team?.id ?? null
+  const requireOrdinaryLabel = (label: IssueLabel): void => {
+    if (label.isGroup) {
+      throw conflict(
+        `label group ${label.name} conflicts with the requested ordinary label`,
+        "Choose an ordinary label name and caller-retained UUID."
+      )
+    }
+  }
   const classify = async (label: IssueLabel): Promise<MutationResult<LabelSummary>> => {
+    requireOrdinaryLabel(label)
     const summary = await labelSummary(label, team?.key)
     if (
       summary.name.toLowerCase() !== input.name.toLowerCase() ||
@@ -471,8 +484,15 @@ const createLabel = async (
       )
     }
 
+    if (idMatch) {
+      requireOrdinaryLabel(idMatch)
+    }
+
     if (callerId && input.ifAbsent) {
       const nameMatch = await findLabelByNameInScope(client, input.name, teamId)
+      if (nameMatch) {
+        requireOrdinaryLabel(nameMatch)
+      }
       if (!nameMatch && !idMatch) {
         return undefined
       }

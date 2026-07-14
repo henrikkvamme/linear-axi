@@ -177,4 +177,22 @@ describe("linear-axi process", () => {
     expect(stdoutText(result)).toContain("--color must use #RRGGBB")
     expect(stdoutText(result)).not.toContain("Linear credentials are not configured")
   })
+
+  test("rejects empty identity and control flags before authentication", () => {
+    for (const args of [
+      ["issues", "create", "--team=", "--title", "Child"],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--parent="],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--label="],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--id="],
+      ["issues", "close", "--id", "ENG-123", "--state="]
+    ]) {
+      const result = runCli(...args)
+      const stdout = stdoutText(result)
+
+      expect(result.exitCode).toBe(2)
+      expect(stderrText(result)).toBe("")
+      expect(stdout).toContain("cannot be empty")
+      expect(stdout).not.toContain("Linear credentials are not configured")
+    }
+  })
 })
