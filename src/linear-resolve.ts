@@ -79,8 +79,27 @@ export const resolveUser = async (client: LinearClient, idOrMe: string): Promise
   }
 
   const identity = normalizeUuid(idOrMe)
-  const users = await fetchAllPages(await client.users({ first: 50, filter: { id: { eq: identity } } }))
+  const users = await fetchAllPages(
+    await client.users({ first: 50, includeDisabled: true, filter: { id: { eq: identity } } })
+  )
   return exactlyOne(`user ${idOrMe}`, users.filter((user) => uuidEqual(user.id, identity)), (user) => user.id)
+}
+
+export const resolveAssignableUser = async (client: LinearClient, idOrMe: string): Promise<User> => {
+  const user = await resolveUser(client, idOrMe)
+  if (!user.active) {
+    throw new LinearDomainError({
+      message: `Linear user ${user.id} is disabled and cannot be assigned issues`,
+      help: "Choose an active assignable user."
+    })
+  }
+  if (!user.isAssignable) {
+    throw new LinearDomainError({
+      message: `Linear user ${user.id} cannot be assigned issues`,
+      help: "Choose an active assignable user."
+    })
+  }
+  return user
 }
 
 export const resolveLabelForTeam = async (

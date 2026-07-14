@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { Comment, Issue, IssueLabel, LinearClient } from "@linear/sdk"
+import type { Comment, Issue, IssueLabel, LinearClient, User } from "@linear/sdk"
 import { Effect } from "effect"
 import { makeLinearGateway } from "../src/linear"
 import type { ConnectionLike } from "../src/linear-pagination"
@@ -45,6 +45,14 @@ const team = {
   key: "BEN",
   name: "Bender"
 }
+
+const user = (overrides: Record<string, unknown> = {}): User => ({
+  id: "33333333-3333-4333-8333-333333333333",
+  name: "Henrik",
+  active: true,
+  isAssignable: true,
+  ...overrides
+} as unknown as User)
 
 const comment = (overrides: Record<string, unknown> = {}): Comment => ({
   id: "44444444-4444-4444-8444-444444444444",
@@ -551,7 +559,7 @@ describe("SDK LinearGateway conflict contracts", () => {
 
   test("already terminal close and same-assignee assignment are satisfied no-ops", async () => {
     let updates = 0
-    const viewer = { id: "33333333-3333-4333-8333-333333333333", name: "Henrik" }
+    const viewer = user()
     const terminal = issue({
       state: Promise.resolve({ id: "done", name: "Done", type: "completed" }),
       assigneeId: viewer.id,
@@ -564,6 +572,58 @@ describe("SDK LinearGateway conflict contracts", () => {
     const gateway = makeLinearGateway({}, { client })
     expect((await Effect.runPromise(gateway.closeIssue({ id: "BEN-1" }))).changed).toBe(false)
     expect((await Effect.runPromise(gateway.assignIssue({ id: "BEN-1", assignee: "me", replace: false }))).changed).toBe(false)
+    expect(updates).toBe(0)
+  })
+
+  test("disabled users remain resolvable for issue filters and unassign preconditions", async () => {
+    const disabled = user({ active: false, isAssignable: false })
+    const before = issue({ assigneeId: disabled.id, assignee: Promise.resolve(disabled) })
+    const after = issue({ assigneeId: undefined, assignee: undefined })
+    const userQueries: Array<{ includeDisabled?: boolean }> = []
+    let issueReads = 0
+    const client = clientWithIssues([], {
+      users: async (variables: { includeDisabled?: boolean }) => {
+        userQueries.push(variables)
+        return page([disabled])
+      },
+      issues: async () => page([issueReads++ < 2 ? before : after]),
+      updateIssue: async () => ({ success: true, issue: Promise.resolve(after) })
+    })
+    const gateway = makeLinearGateway({}, { client })
+
+    const listed = await Effect.runPromise(gateway.listIssues({
+      assignee: disabled.id,
+      limit: 20,
+      fields: ["assignee"]
+    }))
+    const released = await Effect.runPromise(gateway.unassignIssue({
+      id: "BEN-1",
+      ifAssignee: disabled.id
+    }))
+
+    expect(listed.items[0]?.assigneeId).toBe(disabled.id)
+    expect(released.changed).toBe(true)
+    expect(userQueries.map((query) => query.includeDisabled)).toEqual([true, true])
+  })
+
+  test("assignment requires an active assignable user", async () => {
+    let updates = 0
+    for (const unavailable of [
+      user({ active: false, isAssignable: true }),
+      user({ id: "44444444-4444-4444-8444-444444444444", active: true, isAssignable: false })
+    ]) {
+      const client = clientWithIssues([issue()], {
+        users: async (variables: { includeDisabled?: boolean }) => {
+          expect(variables.includeDisabled).toBe(true)
+          return page([unavailable])
+        },
+        updateIssue: async () => { updates += 1; return { success: true } }
+      })
+      const error = await Effect.runPromise(Effect.flip(
+        makeLinearGateway({}, { client }).assignIssue({ id: "BEN-1", assignee: unavailable.id, replace: false })
+      ))
+      expect(error.message).toContain("cannot be assigned issues")
+    }
     expect(updates).toBe(0)
   })
 
@@ -1056,13 +1116,14 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(queried).toEqual([mixedId, mixedId])
   })
 
-  test("issue summaries fetch truthful label names across every page", async () => {
+  test("issue summaries fetch active and archived label names across every page", async () => {
     let labelPages = 0
+    const labelOptions: Array<boolean | undefined> = []
     const secondPage = page([
       { id: "label-1", name: "wayfinder:map" },
-      { id: "label-2", name: "wayfinder:task" }
+      { id: "label-2", name: "wayfinder:task", archivedAt: new Date("2026-07-13T13:00:00.000Z") }
     ])
-    const firstPage: ConnectionLike<{ id: string; name: string }> = {
+    const firstPage: ConnectionLike<{ id: string; name: string; archivedAt?: Date }> = {
       nodes: [{ id: "label-1", name: "wayfinder:map" }],
       pageInfo: { hasNextPage: true, endCursor: "next" },
       fetchNext: async () => {
@@ -1072,7 +1133,10 @@ describe("SDK LinearGateway conflict contracts", () => {
     }
     const labeled = issue({
       labelIds: ["label-1", "label-2"],
-      labels: async () => firstPage
+      labels: async (variables: { includeArchived?: boolean }) => {
+        labelOptions.push(variables.includeArchived)
+        return firstPage
+      }
     })
     const result = await Effect.runPromise(
       makeLinearGateway({}, { client: clientWithIssues([labeled]) }).listIssues({ limit: 20, fields: ["labels"] })
@@ -1082,7 +1146,38 @@ describe("SDK LinearGateway conflict contracts", () => {
       { id: "label-1", name: "wayfinder:map" },
       { id: "label-2", name: "wayfinder:task" }
     ])
+    expect(labelOptions).toEqual([true])
     expect(labelPages).toBe(1)
+  })
+
+  test("issue details and mutation results retain attached archived labels", async () => {
+    const viewer = user()
+    const active = issueLabel({ name: "active" })
+    const archived = issueLabel({
+      id: "66666666-6666-4666-8666-666666666666",
+      name: "archived",
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    const labelOptions: Array<boolean | undefined> = []
+    const assigned = issue({
+      assigneeId: viewer.id,
+      assignee: Promise.resolve(viewer),
+      labelIds: [active.id, archived.id],
+      labels: async (variables: { includeArchived?: boolean }) => {
+        labelOptions.push(variables.includeArchived)
+        return page(variables.includeArchived ? [active, archived] : [active])
+      }
+    })
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([assigned], { viewer: Promise.resolve(viewer) })
+    })
+
+    const detail = await Effect.runPromise(gateway.viewIssue("BEN-1"))
+    const noOp = await Effect.runPromise(gateway.assignIssue({ id: "BEN-1", assignee: "me", replace: false }))
+
+    expect(detail.labels.map((label) => label.name)).toEqual(["active", "archived"])
+    expect(noOp.value.labels.map((label) => label.name)).toEqual(["active", "archived"])
+    expect(labelOptions).toEqual([true, true])
   })
 
   test("label lists are active-only by default and include archived labels on every path when requested", async () => {
@@ -1388,8 +1483,17 @@ describe("SDK LinearGateway conflict contracts", () => {
       id: "66666666-6666-4666-8666-666666666666",
       name: "wayfinder:map"
     })
+    const archivedMapLabel = issueLabel({
+      id: "66666666-6666-4666-8666-666666666667",
+      name: "other:map",
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    const mapLabelOptions: Array<boolean | undefined> = []
     const map = issue({
-      labels: async () => page([mapLabel])
+      labels: async (variables: { includeArchived?: boolean }) => {
+        mapLabelOptions.push(variables.includeArchived)
+        return page(variables.includeArchived ? [mapLabel, archivedMapLabel] : [mapLabel])
+      }
     })
     Object.defineProperties(map, {
       state: { configurable: true, get: () => { throw new Error("frontier must not load map state") } },
@@ -1428,6 +1532,7 @@ describe("SDK LinearGateway conflict contracts", () => {
       title: candidate.title,
       type: "task"
     }])
+    expect(mapLabelOptions).toEqual([false])
     expect(maxActiveLabelReads).toBe(4)
   })
 

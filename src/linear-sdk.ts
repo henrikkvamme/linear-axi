@@ -50,6 +50,7 @@ import {
   findLabelByUuid,
   findRelationByUuid,
   normalizeUuid,
+  resolveAssignableUser,
   resolveIssue,
   resolveLabelForTeam,
   resolveLabelGlobally,
@@ -249,7 +250,7 @@ const assignIssue = async (
   input: AssignIssueInput
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.id)
-  const assignee = await resolveUser(client, input.assignee)
+  const assignee = await resolveAssignableUser(client, input.assignee)
   if (issue.assigneeId !== undefined && uuidEqual(issue.assigneeId, assignee.id)) {
     return unchanged(await issueSummary(issue), "already assigned to requested user (no-op)")
   }
@@ -733,7 +734,7 @@ const frontier = async (
     validateFrontierCursor(after)
   }
   const map = await resolveIssue(client, mapId)
-  const mapLabels = await loadIssueLabels(map)
+  const mapLabels = await loadIssueLabels(map, false)
   const prefix = resolveWayfinderPrefix(map.identifier, mapLabels)
   const teamId = requireTeamId(map)
   const resolvedTypeLabels = await Promise.all(
@@ -811,7 +812,7 @@ const issueSummary = async (
     requested("state") ? issue.state : undefined,
     requested("assignee") ? issue.assignee : undefined,
     requested("parent") ? issue.parent : undefined,
-    requested("labels") ? loadIssueLabels(issue) : []
+    requested("labels") ? loadIssueLabels(issue, true) : []
   ])
   const labelRefs = labels
     .map((label) => ({ id: label.id, name: label.name }))
@@ -834,8 +835,8 @@ const issueSummary = async (
   }
 }
 
-const loadIssueLabels = async (issue: Issue): Promise<ReadonlyArray<IssueLabel>> =>
-  fetchAllPages(await issue.labels({ first: 100, includeArchived: false }))
+const loadIssueLabels = async (issue: Issue, includeArchived: boolean): Promise<ReadonlyArray<IssueLabel>> =>
+  fetchAllPages(await issue.labels({ first: 100, includeArchived }))
 
 const issueDetail = async (issue: Issue): Promise<IssueDetail> => {
   const summary = await issueSummary(issue)
