@@ -82,8 +82,38 @@ describe("Wayfinder frontier projection", () => {
     expect(paginateFrontier(candidates, labels, 20, cursor).items.map((item) => item.identifier)).toEqual(["BEN-3"])
   })
 
-  test("rejects malformed frontier cursors", () => {
-    expect(() => paginateFrontier([], labels, 20, "not-a-frontier-cursor")).toThrow("invalid frontier cursor")
+  test("rejects malformed and non-canonically encoded frontier cursors", () => {
+    const candidate = {
+      id: "11111111-1111-4111-8111-111111111111",
+      createdAt: "2026-01-01T00:00:00Z",
+      subIssueSortOrder: 1
+    }
+    const canonical = encodeFrontierCursor(candidate)
+    const reorderedPayload = JSON.stringify({
+      id: candidate.id,
+      createdAt: candidate.createdAt,
+      order: candidate.subIssueSortOrder,
+      v: 1
+    })
+    const regularBase64Payload = JSON.stringify({
+      v: 1,
+      order: candidate.subIssueSortOrder,
+      createdAt: candidate.createdAt,
+      id: candidate.id,
+      x: ">"
+    })
+    const regularBase64 = Buffer.from(regularBase64Payload, "utf8").toString("base64")
+    expect(regularBase64).toContain("+")
+
+    for (const cursor of [
+      "not-a-frontier-cursor",
+      `${canonical}=`,
+      `${canonical}\n`,
+      `wf1.${Buffer.from(reorderedPayload, "utf8").toString("base64url")}`,
+      `wf1.${regularBase64}`
+    ]) {
+      expect(() => paginateFrontier([], labels, 20, cursor)).toThrow("invalid frontier cursor")
+    }
   })
 
   test("rejects children with zero or multiple type labels", () => {

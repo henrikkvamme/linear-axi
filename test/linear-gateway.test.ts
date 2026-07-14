@@ -720,6 +720,34 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(creates).toBe(0)
   })
 
+  test.each([
+    { operation: "issue create", identity: "name" },
+    { operation: "issue create", identity: "UUID" },
+    { operation: "label apply", identity: "name" },
+    { operation: "label apply", identity: "UUID" }
+  ])("$operation rejects a label group resolved by exact $identity", async ({ operation, identity }) => {
+    const group = issueLabel({ isGroup: true })
+    let issueCreates = 0
+    let labelApplies = 0
+    const client = clientWithIssues([issue()], {
+      teams: async () => page([team]),
+      issueLabels: async () => page([group]),
+      createIssue: async () => { issueCreates += 1; return { success: true } },
+      issueAddLabel: async () => { labelApplies += 1; return { success: true } }
+    })
+    const gateway = makeLinearGateway({}, { client })
+    const label = identity === "UUID" ? group.id : group.name
+    const mutation = operation === "issue create"
+      ? gateway.createIssue({ team: team.key, title: "Child", label })
+      : gateway.applyLabel({ issue: "BEN-1", label })
+
+    const error = await Effect.runPromise(Effect.flip(mutation))
+
+    expect(error.message).toContain("label group")
+    expect(issueCreates).toBe(0)
+    expect(labelApplies).toBe(0)
+  })
+
   test("label create with caller UUID and if-absent creates when both identities are absent", async () => {
     const id = "55555555-5555-4555-8555-555555555555"
     const created = issueLabel({ id })

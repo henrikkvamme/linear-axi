@@ -198,6 +198,9 @@ const createIssue = async (
     throw conflict(`parent ${parent.identifier} belongs to another team`, "Use the parent's team when creating a child issue.")
   }
   const label = input.label ? await resolveLabelForTeam(client, input.label, team.id) : undefined
+  if (label) {
+    requireOrdinaryLabel(label)
+  }
 
   const classifyExisting = async (existing: Issue): Promise<MutationResult<IssueSummary>> => {
     const detail = await issueDetail(existing)
@@ -449,14 +452,6 @@ const createLabel = async (
   const callerId = input.id ? normalizeUuid(input.id) : undefined
   const team = input.team ? await resolveTeam(client, input.team) : undefined
   const teamId = team?.id ?? null
-  const requireOrdinaryLabel = (label: IssueLabel): void => {
-    if (label.isGroup) {
-      throw conflict(
-        `label group ${label.name} conflicts with the requested ordinary label`,
-        "Choose an ordinary label name and caller-retained UUID."
-      )
-    }
-  }
   const classify = async (label: IssueLabel): Promise<MutationResult<LabelSummary>> => {
     requireOrdinaryLabel(label)
     const summary = await labelSummary(label, team?.key)
@@ -557,6 +552,7 @@ const applyLabel = async (
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.issue)
   const label = await resolveLabelForTeam(client, input.label, requireTeamId(issue))
+  requireOrdinaryLabel(label)
   if (issue.labelIds.some((id) => uuidEqual(id, label.id))) {
     return unchanged(await issueSummary(issue), "label already applied (no-op)")
   }
@@ -929,6 +925,15 @@ const commentSummary = async (comment: Comment, issueId: string): Promise<Commen
     updatedAt: comment.updatedAt.toISOString(),
     author: user?.name || (botActor ? botActor.name || botActor.type : externalUser?.name) || "unknown",
     url: comment.url
+  }
+}
+
+const requireOrdinaryLabel = (label: IssueLabel): void => {
+  if (label.isGroup) {
+    throw conflict(
+      `label group ${label.name} conflicts with the requested ordinary label`,
+      "Choose an ordinary label name and caller-retained UUID."
+    )
   }
 }
 

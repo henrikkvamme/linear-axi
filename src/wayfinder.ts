@@ -118,6 +118,13 @@ const decodeFrontierCursor = (cursor: string): FrontierCursor => {
     if (!Number.isFinite(decoded.order ?? 0) || Number.isNaN(Date.parse(decoded.createdAt)) || !isUuid(decoded.id)) {
       throw new Error("shape")
     }
+    if (encodeFrontierCursor({
+      id: decoded.id,
+      createdAt: decoded.createdAt,
+      subIssueSortOrder: decoded.order
+    }) !== cursor) {
+      throw new Error("encoding")
+    }
     return decoded
   } catch {
     throw new LinearDomainError({
