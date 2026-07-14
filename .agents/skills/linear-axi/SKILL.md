@@ -1,11 +1,11 @@
 ---
 name: linear-axi
-description: Linear AXI CLI workflow. Use when agents need to inspect or mutate Linear teams, issues, or comments through the standalone `linear-axi` CLI, or when updating that CLI's agent-facing behavior.
+description: Linear AXI CLI workflow. Use when agents need to inspect or mutate Linear teams, issues, labels, relations, or comments, or project a Wayfinder frontier through the standalone `linear-axi` CLI.
 ---
 
 # Linear AXI
 
-Use `linear-axi` as the Linear interface for agents. It prints TOON on stdout and uses AXI exits: `0` success, `1` runtime/auth/API failure, `2` usage error.
+Use `linear-axi` as the Linear interface for agents. It prints data and errors as TOON on stdout and uses AXI exits: `0` success, empty, or no-op; `1` runtime, auth, API, not-found, ambiguity, or conflict error; `2` pre-dependency usage error.
 
 Invoke it as `linear-axi <command>` when the binary is on PATH. If you are working inside the source checkout before installing a binary, use `bun src/main.ts <command>`.
 
@@ -21,6 +21,7 @@ linear-axi teams list --limit 50
 linear-axi issues list --assignee me --limit 20
 linear-axi issues list --team <key-or-id> --limit 20
 linear-axi issues list --parent <issue-id-or-key> --label <id-or-name> --assignee none --state open --limit 100
+linear-axi issues list --fields id,identifier,title,assignee,labels,updatedAt --after <cursor>
 linear-axi issues view --id <issue-id-or-key>
 linear-axi issues create --team <key-or-id> --title "..." --description-file <path> --parent <issue> --label <label>
 linear-axi issues assign --id <issue-id-or-key> --assignee me
@@ -28,12 +29,13 @@ linear-axi issues unassign --id <issue-id-or-key> --if-assignee me
 linear-axi issues close --id <issue-id-or-key>
 linear-axi issues update --id <issue-id-or-key> --description-file <path> --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ>
 linear-axi labels list --workspace --name <exact-name>
-linear-axi labels list --workspace --include-archived --fields id,name,archivedAt
+linear-axi labels list --team <key-or-id> --name <exact-name>
+linear-axi labels list --issue <issue-id-or-key> --include-archived --fields id,name,archivedAt
 linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
 linear-axi labels apply --issue <issue> --label <label>
 linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks
-linear-axi relations list --issue <issue> --direction both
-linear-axi comments list --issue <issue> --limit 50
+linear-axi relations list --issue <issue> --type blocks --direction both
+linear-axi comments list --issue <issue> --limit 50 --full
 linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
 linear-axi wayfinder frontier --map <map-issue> --first 20
 ```
@@ -52,29 +54,41 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
 4. Treat every mutating command as a live mutation.
    Completion criterion: run issue create, assign, unassign, close, or description update; label create or apply; relation create; and comment create only after explicit user intent identifies the target and desired change. Auth status, team, issue, label, relation, and comment reads plus Wayfinder frontier remain read-only.
 
-5. Read TOON stdout directly.
+5. Resolve ambiguity explicitly.
+   Completion criterion: treat missing, archived, and ambiguous identity errors as authoritative. Never pick the first team, issue, label, workflow state, or user candidate. Retry with the intended UUID. Assign only to an active, unarchived, assignable user.
+
+6. Read TOON stdout directly.
    Completion criterion: do not rerun only to confirm an empty state or error; structured output is authoritative unless the command exits non-zero.
 
-6. Let usage errors self-correct.
+7. Let usage errors self-correct.
    Completion criterion: after exit `2`, use the `help` field from stdout to repair the command in one step.
 
-7. Do not leave stale OAuth listeners running.
+8. Do not leave stale OAuth listeners running.
    Completion criterion: if a browser handoff times out, is interrupted, or the user lands on `This site can't be reached`, stop the old `auth login` process and restart with a fresh authorize URL. OAuth codes and state are one-use.
 
-8. Handle remote-browser loopback callbacks.
+9. Handle remote-browser loopback callbacks.
    Completion criterion: if the user approves Linear OAuth and the live browser lands on `http://127.0.0.1:14582/oauth/callback?...` with `This site can't be reached`, keep the still-running `auth login` process alive and paste that full callback URL into the CLI stdin. Then read the waiting CLI output and verify the configured credentials file was written. Do not paste the callback code or resulting tokens in the final answer.
 
-9. Preserve directed blocking semantics.
-   Completion criterion: for `relations create --type blocks`, pass the blocker as `--issue` and the blocked issue as `--related-issue`. A reverse relation is distinct.
+10. Preserve directed relation semantics.
+    Completion criterion: treat source, target, and type as the relation identity. For `relations create --type blocks`, pass the blocker as `--issue` and the blocked issue as `--related-issue`. A reverse relation is distinct.
 
-10. Treat assignment as a non-atomic claim convention.
+11. Treat assignment as a non-atomic claim convention.
     Completion criterion: claim only an unassigned issue, never pass `--replace` for a Wayfinder claim, and release with `--if-assignee me`. Read-after-write verification narrows but cannot eliminate concurrent claim races.
 
-11. Replace descriptions only from the latest version.
+12. Replace descriptions only from the latest version.
     Completion criterion: fetch the full issue, merge locally, then pass the exact canonical `updatedAt` emitted by the CLI to `issues update --if-updated-at`. On conflict, refetch and merge again. Linear has no atomic compare-and-swap, so keep resolution comments canonical and do not claim that the final read/write race is eliminated.
 
-12. Treat frontier pages as current-state projections.
-    Completion criterion: follow `pageInfo.endCursor` with `--after`, but restart without `--after` when current membership or ordering matters. Frontier pagination does not provide snapshot isolation.
+13. Reuse caller-retained mutation UUIDs safely.
+    Completion criterion: pass a UUID v4 with `--id` when issue, label, relation, or comment creation must be retryable. Reuse it only for the same intended content and scope. Treat `changed: false` as a successful no-op and any UUID/content conflict as a stop condition.
+
+14. Follow every list cursor exactly.
+    Completion criterion: for issue, label, relation, and comment lists, replay the same filters with the returned `page.endCursor` as `--after`. For Wayfinder frontier, use `pageInfo.endCursor`. Never construct or edit a cursor.
+
+15. Validate the Wayfinder projection before claiming.
+    Completion criterion: require exactly one `wayfinder:map` label on the map and exactly one ordinary `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, or `wayfinder:task` label on every direct open, unblocked, unassigned child. Treat any projection error as a metadata repair task, not as an empty frontier.
+
+16. Treat frontier pages as current-state projections.
+    Completion criterion: restart without `--after` when current membership or ordering matters. Frontier pagination does not provide snapshot isolation.
 
 ## Updating The CLI
 
