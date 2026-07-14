@@ -22,7 +22,7 @@ linear-axi issues list --assignee me --limit 20
 linear-axi issues list --team <key-or-id> --limit 20
 linear-axi issues list --parent <issue-id-or-key> --label <id-or-name> --assignee none --state open --limit 100
 linear-axi issues list --fields id,identifier,title,assignee,labels,updatedAt --after <cursor>
-linear-axi issues view --id <issue-id-or-key>
+linear-axi issues view --id <issue-id-or-key> --full
 linear-axi issues create --team <key-or-id> --title "..." --description-file <path> --parent <issue> --label <label>
 linear-axi issues assign --id <issue-id-or-key> --assignee me
 linear-axi issues unassign --id <issue-id-or-key> --if-assignee me
@@ -55,7 +55,7 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
    Completion criterion: run issue create, assign, unassign, close, or description update; label create or apply; relation create; and comment create only after explicit user intent identifies the target and desired change. Auth status, team, issue, label, relation, and comment reads plus Wayfinder frontier remain read-only.
 
 5. Interpret state filters and resolve ambiguity explicitly.
-   Completion criterion: treat completed, canceled, and duplicate as the three terminal workflow types. `issues list --state open` excludes all three, while `--state closed` includes all three. Treat missing, archived, and ambiguous identity errors as authoritative. Never pick the first team, issue, label, workflow state, or user candidate. Retry with the intended UUID. Assign only to an active, unarchived, assignable user.
+   Completion criterion: treat completed, canceled, and duplicate as the three terminal workflow types. `issues list --state open` excludes all three, while `--state closed` includes all three. Treat missing, archived, and ambiguous identity errors as authoritative. Never pick the first team, issue, label, workflow state, or user candidate. Retry with the intended UUID. Assign only to an active, unarchived, assignable user. Issue summaries retain attached archived label names, so use `labels list --issue <issue> --include-archived --fields id,name,archivedAt` when label status matters.
 
 6. Read TOON stdout directly.
    Completion criterion: do not rerun only to confirm an empty state or error; structured output is authoritative unless the command exits non-zero.
@@ -79,13 +79,13 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
     Completion criterion: fetch the full issue, merge locally, then pass the exact canonical `updatedAt` emitted by the CLI to `issues update --if-updated-at`. On conflict, refetch and merge again. Linear has no atomic compare-and-swap, so keep resolution comments canonical and do not claim that the final read/write race is eliminated.
 
 13. Reuse caller-retained mutation UUIDs safely.
-    Completion criterion: pass a UUID v4 with `--id` when issue, label, relation, or comment creation must be retryable. Reuse it only for the same intended content and scope. Treat `changed: false` as a successful no-op and any UUID/content conflict as a stop condition.
+    Completion criterion: pass a UUID v4 with `--id` when issue, label, relation, or comment creation must be retryable. Reuse it only for the same intended content and scope. Rich-text comparisons tolerate normalized newlines and Linear's angle-bracket form for HTTP(S) Markdown links. Treat `changed: false` as a successful no-op and any UUID/content conflict as a stop condition.
 
 14. Follow every list cursor exactly.
-    Completion criterion: for issue, label, relation, and comment lists, replay the same filters with the returned `page.endCursor` as `--after`. For Wayfinder frontier, use `pageInfo.endCursor`. Never construct or edit a cursor.
+    Completion criterion: for issue, label, relation, and comment lists, replay the same filters with the returned `page.endCursor` as `--after`. For Wayfinder frontier, use `pageInfo.endCursor`. Never construct or edit a cursor. Relation pages and issue-scoped exact-name label pages are current-state projections, so restart without `--after` when current membership matters.
 
 15. Validate the Wayfinder projection before claiming.
-    Completion criterion: require exactly one active `wayfinder:map` label on the map. Before candidate loading, require all four active, ordinary, non-group labels to resolve uniquely for the map's team, even when the map has no candidates: `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, and `wayfinder:task`. Then require exactly one of those labels on every direct open, unblocked, unassigned child. Treat any projection error as a metadata repair task, not as an empty frontier.
+    Completion criterion: require exactly one active production `wayfinder:map` label, or for isolated verification one `WF-VERIFY-<run>:map` label whose type labels use the same prefix. Before candidate loading, require all four active, ordinary, non-group labels to resolve uniquely among workspace and map-team labels, even when the map has no candidates: `<prefix>:research`, `<prefix>:prototype`, `<prefix>:grilling`, and `<prefix>:task`. Then require exactly one of those labels on every direct open, unblocked, unassigned child. Treat any projection error as a metadata repair task, not as an empty frontier.
 
 16. Treat frontier pages as current-state projections.
     Completion criterion: restart without `--after` when current membership or ordering matters. Frontier pagination does not provide snapshot isolation.

@@ -66,7 +66,7 @@ linear-axi teams list --limit 50
 linear-axi issues list --assignee me --limit 20
 linear-axi issues list --team BEN --label wayfinder:map --state open --limit 100
 linear-axi issues list --parent BEN-100 --assignee none --state open --limit 100
-linear-axi issues view --id <issue-id-or-key>
+linear-axi issues view --id <issue-id-or-key> [--full]
 linear-axi issues create --team <key-or-id> --title "..." --description-file <path> --parent <issue> --label <label>
 linear-axi issues assign --id <issue> --assignee me
 linear-axi issues unassign --id <issue> --if-assignee me
@@ -84,21 +84,21 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
 linear-axi <command> --help
 ```
 
-`--description-file -` and `--body-file -` read from stdin. Data, help, errors, no-ops, and definitive empty states are TOON on stdout. Successful mutations include `changed` and `result`; an already-satisfied mutation is a no-op with exit code `0`.
+`--description-file -` and `--body-file -` read from stdin. `issues view` truncates descriptions to 1,200 characters by default and reports the original length; pass `--full` before merging or replacing a description. Data, help, errors, no-ops, and definitive empty states are TOON on stdout. Successful mutations include `changed` and `result`; an already-satisfied mutation is a no-op with exit code `0`.
 
 ### Resolution, filters, and pagination
 
-Team keys, issue identifiers, and label names are matched exactly without case sensitivity. UUIDs identify one exact object. Identity resolvers scan every matching page and never select the first match: active teams, issues, labels, and workflow states must be unique, while missing, archived, and ambiguous matches fail. Retry an ambiguity with the intended UUID. Archived or disabled users remain valid for issue filters and unassign preconditions, but assignment requires an active, unarchived, assignable user.
+Team keys, issue identifiers, and label names are matched exactly without case sensitivity. UUIDs identify one exact object. Identity resolvers scan every matching page and never select the first match: active teams, issues, labels, and workflow states must be unique, while missing, archived, and ambiguous matches fail. Retry an ambiguity with the intended UUID. Archived or disabled users remain valid for issue filters and unassign preconditions, but assignment requires an active, unarchived, assignable user. When `--team` and `--parent` are combined for listing or creation, the parent must belong to that team. Label names used with an issue resolve uniquely among active workspace labels and labels for the issue's team.
 
 `issues list` supports team, exact label, direct parent, assignee (`me`, `none`, or a user UUID), and open or closed state filters. Open excludes the three terminal workflow types: completed, canceled, and duplicate. Closed includes all three. Its default fields are `id,identifier,title,state`; `--fields` accepts `id,identifier,title,state,assignee,parent,labels,updatedAt,url,subIssueSortOrder`.
 
-`labels list` can search all labels or select workspace, team, or issue scope. Label lists return active labels by default. Pass `--include-archived` to include archived labels. The default fields are `id,name,scope`; `--fields` also accepts `color,description,isGroup,archivedAt`.
+`labels list` can search all labels or select workspace, team, or issue scope. Label lists return active labels by default. Pass `--include-archived` to include archived labels. The default fields are `id,name,scope`; `--fields` also accepts `color,description,isGroup,archivedAt`. In contrast, issue details, mutation results, and `issues list --fields labels` retain the names of all attached labels, including archived labels; use `labels list --issue <issue> --include-archived --fields id,name,archivedAt` to inspect their status.
 
-`issues list`, `labels list`, `relations list`, and `comments list` return `page.endCursor` when another page exists. Pass that exact value to the same command with `--after`. Wayfinder frontier instead returns `pageInfo.endCursor` and uses `--first`; `--limit` remains an alias for `--first`, but the two flags cannot be combined.
+`issues list`, `labels list`, `relations list`, and `comments list` return `page.endCursor` when another page exists. Pass that exact value to the same command with `--after`. Wayfinder frontier instead returns `pageInfo.endCursor` and uses `--first`; `--limit` remains an alias for `--first`, but the two flags cannot be combined. Relation pages and issue-scoped exact-name label pages are recomputed from current data and are not snapshot-isolated, so restart without `--after` when current membership matters.
 
 ### Mutation safety
 
-Issue, label, relation, and comment creation accept a caller-retained UUID v4 with `--id`. Repeating the same request with the same UUID is a no-op, while reuse for different content or scope is a conflict. `labels create --if-absent` also treats a same-name label with matching color and description in the requested scope as a no-op. Label creation and application accept ordinary labels only, not label groups.
+Issue, label, relation, and comment creation accept a caller-retained UUID v4 with `--id`. Repeating the same request with the same UUID is a no-op, while reuse for different content or scope is a conflict. Rich-text retry comparisons tolerate normalized line endings, trailing newlines, and Linear's angle-bracket form for HTTP(S) Markdown links. `labels create --if-absent` also treats a case-insensitive same-name label with matching color and description in the requested scope as a no-op. A directed relation is a no-op when its source, target, and type already exist, even without `--id`. Label creation and application accept ordinary labels only, not label groups.
 
 Assignment is a verified claim convention, not an atomic claim. By default, assigning an already-assigned issue conflicts; `--replace` permits a deliberate overwrite. Wayfinder agents must not use `--replace` to claim work and should release only their own assignment with `--if-assignee`. Another writer can still race between the read and update.
 
@@ -112,7 +112,7 @@ Comment bodies are truncated to 500 characters in lists unless `--full` is passe
 
 ### Wayfinder frontier
 
-`wayfinder frontier` is the single Wayfinder-specific projection. The map must have exactly one active `wayfinder:map` label. Before loading candidates, frontier requires all four active, ordinary, non-group type labels to resolve uniquely for the map's team, even when the map has no candidates: `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, and `wayfinder:task`. Its active, direct children enter the frontier only when they are open, unblocked, and unassigned. Every current frontier candidate must have exactly one of those four type labels.
+`wayfinder frontier` is the single Wayfinder-specific projection. A production map must have exactly one active `wayfinder:map` label. An isolated verification map may instead use one `WF-VERIFY-<run>:map` label, where `<run>` contains only letters, digits, dots, underscores, or hyphens; its four type labels use that same prefix. Before loading candidates, frontier requires all four active, ordinary, non-group type labels to resolve uniquely among workspace and map-team labels, even when the map has no candidates: `<prefix>:research`, `<prefix>:prototype`, `<prefix>:grilling`, and `<prefix>:task`. Its active, direct children enter the frontier only when they are open, unblocked, and unassigned. Every current frontier candidate must have exactly one of those four type labels.
 
 Results are ordered by Linear's manual sub-issue order with unset order last, then creation time, then UUID. Every page recomputes current Linear state and does not provide snapshot isolation, so membership or ordering changes can move issues across the cursor. Restart without `--after` when a fresh frontier is required.
 
