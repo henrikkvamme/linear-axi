@@ -1361,6 +1361,44 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(maxActiveLabelReads).toBe(4)
   })
 
+  test.each(["research", "prototype", "grilling", "task"])(
+    "frontier rejects a %s label group before candidate evaluation",
+    async (groupType) => {
+      const typeLabels = ["research", "prototype", "grilling", "task"].map((type, index) => issueLabel({
+        id: `55555555-5555-4555-8555-55555555555${index + 1}`,
+        name: `wayfinder:${type}`,
+        isGroup: type === groupType
+      }))
+      const map = issue({
+        labels: async () => page([issueLabel({
+          id: "66666666-6666-4666-8666-666666666666",
+          name: "wayfinder:map"
+        })])
+      })
+      let candidateReads = 0
+      const client = clientWithIssues([], {
+        issues: async (variables: { filter: unknown }) => {
+          if (JSON.stringify(variables.filter).includes('"parent"')) {
+            candidateReads += 1
+            return page([])
+          }
+          return page([map])
+        },
+        issueLabels: async (variables: { filter: { name: { eqIgnoreCase: string } } }) =>
+          page(typeLabels.filter((label) => label.name === variables.filter.name.eqIgnoreCase))
+      })
+
+      const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).frontier({
+        map: "BEN-1",
+        first: 20
+      })))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain(`label group wayfinder:${groupType} conflicts with the requested ordinary label`)
+      expect(candidateReads).toBe(0)
+    }
+  )
+
   test("invalid local cursors fail before Linear access", async () => {
     let issueReads = 0
     const client = clientWithIssues([], {

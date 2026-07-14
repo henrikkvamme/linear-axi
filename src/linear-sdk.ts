@@ -735,10 +735,11 @@ const frontier = async (
   const prefix = resolveWayfinderPrefix(map.identifier, mapLabels)
   const teamId = requireTeamId(map)
   const resolvedTypeLabels = await Promise.all(
-    WAYFINDER_TYPES.map(async (type) => ({
-      label: await resolveLabelForTeam(client, `${prefix}:${type}`, teamId),
-      type
-    }))
+    WAYFINDER_TYPES.map(async (type) => {
+      const label = await resolveLabelForTeam(client, `${prefix}:${type}`, teamId)
+      requireOrdinaryLabel(label)
+      return { label, type }
+    })
   )
   const typeLabels = new Map<string, { name: string; type: WayfinderType }>(
     resolvedTypeLabels.map(({ label, type }) => [label.id, { name: label.name, type }])
