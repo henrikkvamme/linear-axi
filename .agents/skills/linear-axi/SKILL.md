@@ -54,8 +54,8 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
 4. Treat every mutating command as a live mutation.
    Completion criterion: run issue create, assign, unassign, close, or description update; label create or apply; relation create; and comment create only after explicit user intent identifies the target and desired change. Auth status, team, issue, label, relation, and comment reads plus Wayfinder frontier remain read-only.
 
-5. Resolve ambiguity explicitly.
-   Completion criterion: treat missing, archived, and ambiguous identity errors as authoritative. Never pick the first team, issue, label, workflow state, or user candidate. Retry with the intended UUID. Assign only to an active, unarchived, assignable user.
+5. Interpret state filters and resolve ambiguity explicitly.
+   Completion criterion: treat completed, canceled, and duplicate as the three terminal workflow types. `issues list --state open` excludes all three, while `--state closed` includes all three. Treat missing, archived, and ambiguous identity errors as authoritative. Never pick the first team, issue, label, workflow state, or user candidate. Retry with the intended UUID. Assign only to an active, unarchived, assignable user.
 
 6. Read TOON stdout directly.
    Completion criterion: do not rerun only to confirm an empty state or error; structured output is authoritative unless the command exits non-zero.
@@ -85,7 +85,7 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
     Completion criterion: for issue, label, relation, and comment lists, replay the same filters with the returned `page.endCursor` as `--after`. For Wayfinder frontier, use `pageInfo.endCursor`. Never construct or edit a cursor.
 
 15. Validate the Wayfinder projection before claiming.
-    Completion criterion: require exactly one `wayfinder:map` label on the map and exactly one ordinary `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, or `wayfinder:task` label on every direct open, unblocked, unassigned child. Treat any projection error as a metadata repair task, not as an empty frontier.
+    Completion criterion: require exactly one active `wayfinder:map` label on the map. Before candidate loading, require all four active, ordinary, non-group labels to resolve uniquely for the map's team, even when the map has no candidates: `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, and `wayfinder:task`. Then require exactly one of those labels on every direct open, unblocked, unassigned child. Treat any projection error as a metadata repair task, not as an empty frontier.
 
 16. Treat frontier pages as current-state projections.
     Completion criterion: restart without `--after` when current membership or ordering matters. Frontier pagination does not provide snapshot isolation.
