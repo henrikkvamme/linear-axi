@@ -280,7 +280,8 @@ const labelsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
     team,
     name: readStringFlag(parsed.flags, "name"),
     issue,
-    includeArchived: readBooleanFlag(parsed.flags, "include-archived")
+    includeArchived: readBooleanFlag(parsed.flags, "include-archived"),
+    fields
   }).pipe(Effect.map((result) => ({
     count: `${result.items.length} labels shown`,
     page: result.page,

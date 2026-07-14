@@ -187,6 +187,7 @@ describe("runCommand", () => {
     const gateway = fakeGateway({
       listLabels: (input) => {
         expect(input.includeArchived).toBe(true)
+        expect(input.fields).toEqual(["id", "name", "color"])
         return Effect.succeed(page([{ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }]))
       }
     })

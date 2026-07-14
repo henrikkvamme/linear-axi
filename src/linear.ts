@@ -174,6 +174,7 @@ export interface ListLabelsInput {
   readonly name?: string
   readonly issue?: string
   readonly includeArchived: boolean
+  readonly fields?: ReadonlyArray<string>
 }
 
 export interface CreateLabelInput {

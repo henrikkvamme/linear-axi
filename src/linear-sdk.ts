@@ -410,7 +410,7 @@ const listLabels = async (client: LinearClient, input: ListLabelsInput): Promise
       const selected = matches.slice(localOffset, localOffset + input.limit)
       const nextOffset = localOffset + selected.length
       return {
-        items: await Promise.all(selected.map((label) => labelSummary(label))),
+        items: await labelSummaries(selected, input.fields),
         page: {
           hasNext: nextOffset < matches.length,
           endCursor: nextOffset < matches.length ? `label:${nextOffset}` : null
@@ -422,7 +422,7 @@ const listLabels = async (client: LinearClient, input: ListLabelsInput): Promise
       after: input.after,
       includeArchived: input.includeArchived
     })
-    return pageResult(connection, await Promise.all(connection.nodes.map((label) => labelSummary(label))))
+    return pageResult(connection, await labelSummaries(connection.nodes, input.fields))
   }
 
   const team = input.team ? await resolveTeam(client, input.team) : undefined
@@ -435,7 +435,7 @@ const listLabels = async (client: LinearClient, input: ListLabelsInput): Promise
       ...(input.workspace ? { team: { null: true } } : team ? { team: { id: { eq: team.id } } } : {})
     }
   })
-  return pageResult(connection, await Promise.all(connection.nodes.map((label) => labelSummary(label, team?.key))))
+  return pageResult(connection, await labelSummaries(connection.nodes, input.fields, team?.key))
 }
 
 const createLabel = async (
@@ -833,8 +833,37 @@ const issueDetail = async (issue: Issue): Promise<IssueDetail> => {
   }
 }
 
-const labelSummary = async (label: IssueLabel, knownTeamKey?: string): Promise<LabelSummary> => {
-  const team = label.teamId && !knownTeamKey ? await label.team : undefined
+const labelSummaries = async (
+  labels: ReadonlyArray<IssueLabel>,
+  fields?: ReadonlyArray<string>,
+  knownTeamKey?: string
+): Promise<ReadonlyArray<LabelSummary>> => {
+  const projectsScope = fields === undefined || fields.includes("scope")
+  if (!projectsScope) {
+    return Promise.all(labels.map((label) => labelSummary(label, undefined, false)))
+  }
+
+  const teamKeys = new Map<string, Promise<string | undefined>>()
+  return Promise.all(labels.map(async (label) => {
+    if (!label.teamId || knownTeamKey) {
+      return labelSummary(label, knownTeamKey, false)
+    }
+    const teamId = label.teamId.toLowerCase()
+    let teamKey = teamKeys.get(teamId)
+    if (!teamKey) {
+      teamKey = Promise.resolve(label.team).then((team) => team?.key)
+      teamKeys.set(teamId, teamKey)
+    }
+    return labelSummary(label, await teamKey, false)
+  }))
+}
+
+const labelSummary = async (
+  label: IssueLabel,
+  knownTeamKey?: string,
+  resolveTeam = true
+): Promise<LabelSummary> => {
+  const team = label.teamId && !knownTeamKey && resolveTeam ? await label.team : undefined
   return {
     id: label.id,
     name: label.name,
@@ -871,14 +900,14 @@ const relationSummary = async (
 const commentSummary = async (comment: Comment, issueId: string): Promise<CommentSummary> => {
   const user = await comment.user
   const botActor = comment.botActor
-  const externalUser = user || botActor?.name ? undefined : await comment.externalUser
+  const externalUser = user || botActor ? undefined : await comment.externalUser
   return {
     id: comment.id,
     issueId,
     body: comment.body,
     createdAt: comment.createdAt.toISOString(),
     updatedAt: comment.updatedAt.toISOString(),
-    author: user?.name || botActor?.name || externalUser?.name || "unknown",
+    author: user?.name || (botActor ? botActor.name || botActor.type : externalUser?.name) || "unknown",
     url: comment.url
   }
 }

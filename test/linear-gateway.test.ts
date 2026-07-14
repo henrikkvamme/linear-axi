@@ -443,11 +443,17 @@ describe("SDK LinearGateway conflict contracts", () => {
       comment({
         id: "44444444-4444-4444-8444-444444444443",
         user: undefined,
+        botActor: { name: undefined, type: "workflow", userDisplayName: "Ignored Human Name" },
+        externalUser: Promise.resolve({ name: "Ignored External User" })
+      }),
+      comment({
+        id: "44444444-4444-4444-8444-444444444444",
+        user: undefined,
         botActor: undefined,
         externalUser: Promise.resolve({ name: "Slack Guest" })
       }),
       comment({
-        id: "44444444-4444-4444-8444-444444444444",
+        id: "44444444-4444-4444-8444-444444444445",
         user: undefined,
         botActor: undefined,
         externalUser: undefined
@@ -462,6 +468,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(result.items.map((item) => item.author)).toEqual([
       "Workspace User",
       "Automation",
+      "workflow",
       "Slack Guest",
       "unknown"
     ])
@@ -1022,6 +1029,41 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(issueNameArchived.items[0]?.archivedAt).toBe("2026-07-13T13:00:00.000Z")
     expect(globalOptions).toEqual([false, true])
     expect(issueOptions).toEqual([true, true])
+  })
+
+  test("label lists load projected team scopes once per unique team", async () => {
+    const labels = [
+      issueLabel({ id: "55555555-5555-4555-8555-555555555551", name: "first" }),
+      issueLabel({ id: "55555555-5555-4555-8555-555555555552", name: "second" })
+    ]
+    let teamReads = 0
+    for (const label of labels) {
+      Object.defineProperty(label, "team", {
+        configurable: true,
+        get: () => {
+          teamReads += 1
+          return Promise.resolve(team)
+        }
+      })
+    }
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([], { issueLabels: async () => page(labels) })
+    })
+
+    await Effect.runPromise(gateway.listLabels({
+      limit: 20,
+      includeArchived: false,
+      fields: ["id", "name"]
+    }))
+    expect(teamReads).toBe(0)
+
+    const scoped = await Effect.runPromise(gateway.listLabels({
+      limit: 20,
+      includeArchived: false,
+      fields: ["scope"]
+    }))
+    expect(scoped.items.map((label) => label.scope)).toEqual(["BEN", "BEN"])
+    expect(teamReads).toBe(1)
   })
 
   test("label summaries use locale-independent ordering", async () => {
