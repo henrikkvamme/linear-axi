@@ -7,6 +7,7 @@ export const resolveTeam = async (client: LinearClient, keyOrId: string): Promis
   const teams = await fetchAllPages(
     await client.teams({
       first: 50,
+      includeArchived: true,
       filter: isUuid(identity)
         ? { id: { eq: identity } }
         : { key: { eqIgnoreCase: identity } }
@@ -15,7 +16,12 @@ export const resolveTeam = async (client: LinearClient, keyOrId: string): Promis
   const matches = teams.filter((team) =>
     isUuid(identity) ? uuidEqual(team.id, identity) : team.key.toLowerCase() === identity.toLowerCase()
   )
-  return exactlyOne(`team ${keyOrId}`, matches, (team) => `${team.id} (${team.key})`)
+  return exactlyOneActive(
+    `team ${keyOrId}`,
+    matches,
+    (team) => `${team.id} (${team.key})`,
+    (team) => team.archivedAt
+  )
 }
 
 export const resolveIssue = async (client: LinearClient, idOrKey: string): Promise<Issue> => {
@@ -287,12 +293,17 @@ export const resolveWorkflowState = async (
   const identity = normalizeUuid(id)
   const normalizedTeamId = normalizeUuid(teamId)
   const states = await fetchAllPages(
-    await client.workflowStates({ first: 50, filter: { id: { eq: identity }, team: { id: { eq: normalizedTeamId } } } })
+    await client.workflowStates({
+      first: 50,
+      includeArchived: true,
+      filter: { id: { eq: identity }, team: { id: { eq: normalizedTeamId } } }
+    })
   )
-  return exactlyOne(
+  return exactlyOneActive(
     `workflow state ${id}`,
     states.filter((state) => uuidEqual(state.id, identity)),
-    (state) => `${state.id} (${state.name})`
+    (state) => `${state.id} (${state.name})`,
+    (state) => state.archivedAt
   )
 }
 
@@ -300,6 +311,7 @@ export const completedStates = async (client: LinearClient, teamId: string): Pro
   fetchAllPages(
     await client.workflowStates({
       first: 50,
+      includeArchived: false,
       filter: { team: { id: { eq: normalizeUuid(teamId) } }, type: { eq: "completed" } }
     })
   )

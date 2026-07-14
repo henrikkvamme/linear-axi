@@ -162,6 +162,33 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect([issueCreates, commentCreates, labelCreates]).toEqual([0, 0, 0])
   })
 
+  test.each([team.key, team.id])("archived team identity %s is classified before issue creation", async (identity) => {
+    const archivedTeam = {
+      ...team,
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    }
+    const teamQueries: Array<{ includeArchived?: boolean }> = []
+    let creates = 0
+    const client = clientWithIssues([], {
+      teams: async (variables: { includeArchived?: boolean }) => {
+        teamQueries.push(variables)
+        return page([archivedTeam])
+      },
+      createIssue: async () => {
+        creates += 1
+        return { success: false }
+      }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client }).createIssue({ team: identity, title: "Map" })
+    ))
+
+    expect(error.message).toContain("archived")
+    expect(teamQueries.map((query) => query.includeArchived)).toEqual([true])
+    expect(creates).toBe(0)
+  })
+
   test("active exact matches win over archived duplicates", async () => {
     const active = issueLabel()
     const archived = issueLabel({
@@ -671,15 +698,26 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(updates).toBe(0)
   })
 
-  test("close without state selects the only completed state", async () => {
+  test("close without state selects the only active completed state", async () => {
     const selectedState = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Done", type: "completed", position: 1 }
+    const archivedState = {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      name: "Retired Done",
+      type: "completed",
+      position: 2,
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    }
     const before = issue()
     const after = issue({ state: Promise.resolve(selectedState) })
+    const stateQueries: Array<{ includeArchived?: boolean }> = []
     let reads = 0
     let selected: string | undefined
     const client = clientWithIssues([], {
       issues: async () => page([reads++ === 0 ? before : after]),
-      workflowStates: async () => page([selectedState]),
+      workflowStates: async (variables: { includeArchived?: boolean }) => {
+        stateQueries.push(variables)
+        return page(variables.includeArchived ? [selectedState, archivedState] : [selectedState])
+      },
       updateIssue: async (_id: string, input: { stateId?: string }) => {
         selected = input.stateId
         return { success: true, issue: Promise.resolve(after) }
@@ -690,6 +728,37 @@ describe("SDK LinearGateway conflict contracts", () => {
 
     expect(result.changed).toBe(true)
     expect(selected).toBe(selectedState.id)
+    expect(stateQueries.map((query) => query.includeArchived)).toEqual([false])
+  })
+
+  test("explicit close classifies an archived workflow state before mutation", async () => {
+    const archivedState = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      name: "Retired Done",
+      type: "completed",
+      position: 1,
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    }
+    const stateQueries: Array<{ includeArchived?: boolean }> = []
+    let updates = 0
+    const client = clientWithIssues([issue()], {
+      workflowStates: async (variables: { includeArchived?: boolean }) => {
+        stateQueries.push(variables)
+        return page([archivedState])
+      },
+      updateIssue: async () => {
+        updates += 1
+        return { success: false }
+      }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client }).closeIssue({ id: "BEN-1", state: archivedState.id })
+    ))
+
+    expect(error.message).toContain("archived")
+    expect(stateQueries.map((query) => query.includeArchived)).toEqual([true])
+    expect(updates).toBe(0)
   })
 
   test("close without state rejects multiple completed states", async () => {
