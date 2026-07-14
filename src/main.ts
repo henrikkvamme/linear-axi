@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { Cause, Effect, Exit, Result } from "effect"
 import { commandSpecs, parseArgs } from "./args"
-import { AuthError, type CliError, LinearApiError, UsageError } from "./errors"
+import { AuthError, type CliError, LinearApiError, LinearDomainError, UsageError } from "./errors"
 import { loadEnv } from "./env"
 import { makeLinearGateway } from "./linear"
 import { errorOutput, writeToon } from "./output"
@@ -30,7 +30,7 @@ const exitCodeFor = (error: unknown): number => {
     return 2
   }
 
-  if (error instanceof AuthError || error instanceof LinearApiError) {
+  if (error instanceof AuthError || error instanceof LinearApiError || error instanceof LinearDomainError) {
     return 1
   }
 

@@ -2,8 +2,10 @@ import { encode } from "@toon-format/toon"
 
 export type OutputValue = Record<string, unknown>
 
+export const encodeToon = (value: OutputValue): string => encode(value)
+
 export const writeToon = (value: OutputValue): void => {
-  process.stdout.write(encode(value))
+  process.stdout.write(encodeToon(value))
   process.stdout.write("\n")
 }
 

@@ -52,7 +52,18 @@ describe("linear-axi process", () => {
     ["issues", "list"],
     ["issues", "view"],
     ["issues", "create"],
-    ["comments", "create"]
+    ["issues", "assign"],
+    ["issues", "unassign"],
+    ["issues", "close"],
+    ["issues", "update"],
+    ["labels", "list"],
+    ["labels", "create"],
+    ["labels", "apply"],
+    ["relations", "list"],
+    ["relations", "create"],
+    ["comments", "list"],
+    ["comments", "create"],
+    ["wayfinder", "frontier"]
   ]) {
     test(`prints command help for ${command.join(" ")}`, () => {
       const result = runCli(...command, "--help")
@@ -116,6 +127,28 @@ describe("linear-axi process", () => {
     expect(stdoutText(result)).toContain("--limit must be an integer")
   })
 
+  test("invalid local cursors exit as usage errors before authentication", () => {
+    const offsetTimestampCursor = `wf1.${Buffer.from(JSON.stringify({
+      v: 1,
+      order: 1,
+      createdAt: "2026-01-01T01:00:00.000+01:00",
+      id: "11111111-1111-4111-8111-111111111111"
+    }), "utf8").toString("base64url")}`
+    for (const args of [
+      ["labels", "list", "--issue", "ENG-123", "--name", "fixture", "--after", "label:01"],
+      ["relations", "list", "--issue", "ENG-123", "--after", "invalid"],
+      ["relations", "list", "--issue", "ENG-123", "--after="],
+      ["wayfinder", "frontier", "--map", "ENG-123", "--after", offsetTimestampCursor]
+    ]) {
+      const result = runCli(...args)
+
+      expect(result.exitCode).toBe(2)
+      expect(stderrText(result)).toBe("")
+      expect(stdoutText(result)).toMatch(/invalid|not a valid/)
+      expect(stdoutText(result)).not.toContain("Linear credentials are not configured")
+    }
+  })
+
   test("help with a value exits as a usage error", () => {
     const result = runCli("--help", "auth")
 
@@ -140,7 +173,48 @@ describe("linear-axi process", () => {
 
     expect(result.exitCode).toBe(2)
     expect(stderrText(result)).toBe("")
-    expect(stdout).toContain("--body is required")
+    expect(stdout).toContain("exactly one of --body or --body-file is required")
     expect(stdout).not.toContain("Linear credentials are not configured")
+  })
+
+  test("reports the invalid assignee option before authentication", () => {
+    for (const [args, flag] of [
+      [["issues", "assign", "--id", "ENG-123", "--assignee", "invalid"], "--assignee"],
+      [["issues", "unassign", "--id", "ENG-123", "--if-assignee", "invalid"], "--if-assignee"]
+    ] as const) {
+      const result = runCli(...args)
+      const stdout = stdoutText(result)
+
+      expect(result.exitCode).toBe(2)
+      expect(stderrText(result)).toBe("")
+      expect(stdout).toContain(`${flag} must be me or a user UUID`)
+      expect(stdout).not.toContain("Linear credentials are not configured")
+    }
+  })
+
+  test("rejects malformed mutation flags before authentication", () => {
+    const result = runCli("labels", "create", "--workspace", "--name", "fixture", "--color", "red")
+    expect(result.exitCode).toBe(2)
+    expect(stderrText(result)).toBe("")
+    expect(stdoutText(result)).toContain("--color must use #RRGGBB")
+    expect(stdoutText(result)).not.toContain("Linear credentials are not configured")
+  })
+
+  test("rejects empty identity and control flags before authentication", () => {
+    for (const args of [
+      ["issues", "create", "--team=", "--title", "Child"],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--parent="],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--label="],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--id="],
+      ["issues", "close", "--id", "ENG-123", "--state="]
+    ]) {
+      const result = runCli(...args)
+      const stdout = stdoutText(result)
+
+      expect(result.exitCode).toBe(2)
+      expect(stderrText(result)).toBe("")
+      expect(stdout).toContain("cannot be empty")
+      expect(stdout).not.toContain("Linear credentials are not configured")
+    }
   })
 })

@@ -1,74 +1,241 @@
-import { LinearClient, type Issue, type Team } from "@linear/sdk"
-import { Effect } from "effect"
-import { AuthError, LinearApiError } from "./errors"
+import type { LinearClient } from "@linear/sdk"
+import { type Effect } from "effect"
+import type { AuthError, LinearApiError, LinearDomainError } from "./errors"
+import { makeSdkLinearGateway } from "./linear-sdk"
+import type { FrontierIssue } from "./wayfinder"
+
+export const DESCRIPTION_CONCURRENCY_WARNING =
+  "Known-stale writes are rejected and the result is refetched, but Linear has no atomic compare-and-swap; a final read/write race remains."
 
 export interface Credentials {
-  kind: "apiKey" | "accessToken"
-  value: string
+  readonly kind: "apiKey" | "accessToken"
+  readonly value: string
 }
 
+export type GatewayError = AuthError | LinearApiError | LinearDomainError
+
 export interface LinearGateway {
-  authStatus(): Effect.Effect<AuthStatus, AuthError | LinearApiError>
-  listTeams(limit: number): Effect.Effect<ReadonlyArray<TeamSummary>, AuthError | LinearApiError>
-  listIssues(input: ListIssuesInput): Effect.Effect<ReadonlyArray<IssueSummary>, AuthError | LinearApiError>
-  viewIssue(id: string): Effect.Effect<IssueDetail, AuthError | LinearApiError>
-  createIssue(input: CreateIssueInput): Effect.Effect<IssueSummary, AuthError | LinearApiError>
-  createComment(input: CreateCommentInput): Effect.Effect<CommentSummary, AuthError | LinearApiError>
+  authStatus(): Effect.Effect<AuthStatus, GatewayError>
+  listTeams(limit: number): Effect.Effect<ReadonlyArray<TeamSummary>, GatewayError>
+  listIssues(input: ListIssuesInput): Effect.Effect<PageResult<IssueSummary>, GatewayError>
+  viewIssue(id: string): Effect.Effect<IssueDetail, GatewayError>
+  createIssue(input: CreateIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  assignIssue(input: AssignIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  unassignIssue(input: UnassignIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  closeIssue(input: CloseIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  updateIssueDescription(input: UpdateIssueDescriptionInput): Effect.Effect<MutationResult<IssueDetail>, GatewayError>
+  listLabels(input: ListLabelsInput): Effect.Effect<PageResult<LabelSummary>, GatewayError>
+  createLabel(input: CreateLabelInput): Effect.Effect<MutationResult<LabelSummary>, GatewayError>
+  applyLabel(input: ApplyLabelInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  listRelations(input: ListRelationsInput): Effect.Effect<PageResult<RelationSummary>, GatewayError>
+  createRelation(input: CreateRelationInput): Effect.Effect<MutationResult<RelationSummary>, GatewayError>
+  listComments(input: ListCommentsInput): Effect.Effect<PageResult<CommentSummary>, GatewayError>
+  createComment(input: CreateCommentInput): Effect.Effect<MutationResult<CommentSummary>, GatewayError>
+  frontier(input: FrontierInput): Effect.Effect<FrontierResult, GatewayError>
 }
 
 export interface AuthStatus {
-  authenticated: boolean
-  method: "apiKey" | "accessToken" | "none"
-  viewer?: {
-    id: string
-    name: string
+  readonly authenticated: boolean
+  readonly method: "apiKey" | "accessToken" | "none"
+  readonly viewer?: {
+    readonly id: string
+    readonly name: string
   }
 }
 
 export interface TeamSummary {
-  id: string
-  key: string
-  name: string
+  readonly id: string
+  readonly key: string
+  readonly name: string
+}
+
+export interface LabelRef {
+  readonly id: string
+  readonly name: string
 }
 
 export interface IssueSummary {
-  id: string
-  identifier: string
-  title: string
-  state: string
-  assignee: string
-  updatedAt: string
-  url: string
+  readonly id: string
+  readonly identifier: string
+  readonly title: string
+  readonly state: string
+  readonly stateType: string
+  readonly assignee: string
+  readonly assigneeId: string | null
+  readonly parent: string | null
+  readonly parentId: string | null
+  readonly labels: ReadonlyArray<LabelRef>
+  readonly updatedAt: string
+  readonly createdAt: string
+  readonly url: string
+  readonly subIssueSortOrder: number | null
 }
 
 export interface IssueDetail extends IssueSummary {
-  description: string
-  priority: number
-  team: string
+  readonly description: string
+  readonly priority: number
+  readonly team: string
+  readonly teamId: string
+}
+
+export interface LabelSummary {
+  readonly id: string
+  readonly name: string
+  readonly scope: string
+  readonly teamId: string | null
+  readonly color: string
+  readonly description: string
+  readonly isGroup: boolean
+  readonly archivedAt: string | null
+}
+
+export interface RelationSummary {
+  readonly id: string
+  readonly type: RelationType
+  readonly direction: RelationDirection
+  readonly identifier: string
+  readonly title: string
+  readonly state: string
+  readonly sourceId: string
+  readonly targetId: string
 }
 
 export interface CommentSummary {
-  id: string
-  issueId: string
-  body: string
-  url: string
+  readonly id: string
+  readonly issueId: string
+  readonly body: string
+  readonly createdAt: string
+  readonly updatedAt: string
+  readonly author: string
+  readonly url: string
+}
+
+export interface PageResult<Value> {
+  readonly items: ReadonlyArray<Value>
+  readonly page: {
+    readonly hasNext: boolean
+    readonly endCursor: string | null
+  }
+}
+
+export interface MutationResult<Value> {
+  readonly value: Value
+  readonly changed: boolean
+  readonly result: string
 }
 
 export interface ListIssuesInput {
-  limit: number
-  assignee?: string
-  team?: string
+  readonly limit: number
+  readonly after?: string
+  readonly assignee?: string
+  readonly team?: string
+  readonly label?: string
+  readonly parent?: string
+  readonly state?: "open" | "closed"
+  readonly fields: ReadonlyArray<string>
 }
 
 export interface CreateIssueInput {
-  team: string
-  title: string
-  description?: string
+  readonly team: string
+  readonly title: string
+  readonly description?: string
+  readonly parent?: string
+  readonly label?: string
+  readonly id?: string
+}
+
+export interface AssignIssueInput {
+  readonly id: string
+  readonly assignee: string
+  readonly replace: boolean
+}
+
+export interface UnassignIssueInput {
+  readonly id: string
+  readonly ifAssignee?: string
+}
+
+export interface CloseIssueInput {
+  readonly id: string
+  readonly state?: string
+}
+
+export interface UpdateIssueDescriptionInput {
+  readonly id: string
+  readonly description: string
+  readonly ifUpdatedAt: string
+}
+
+export interface ListLabelsInput {
+  readonly limit: number
+  readonly after?: string
+  readonly workspace?: boolean
+  readonly team?: string
+  readonly name?: string
+  readonly issue?: string
+  readonly includeArchived: boolean
+  readonly fields?: ReadonlyArray<string>
+}
+
+export interface CreateLabelInput {
+  readonly name: string
+  readonly color: string
+  readonly workspace: boolean
+  readonly team?: string
+  readonly description?: string
+  readonly id?: string
+  readonly ifAbsent: boolean
+}
+
+export interface ApplyLabelInput {
+  readonly issue: string
+  readonly label: string
+}
+
+export type RelationType = "blocks" | "related" | "duplicate" | "similar"
+export type RelationDirection = "outgoing" | "incoming"
+
+export interface ListRelationsInput {
+  readonly issue: string
+  readonly type?: RelationType
+  readonly direction: RelationDirection | "both"
+  readonly after?: string
+  readonly limit: number
+}
+
+export interface CreateRelationInput {
+  readonly issue: string
+  readonly relatedIssue: string
+  readonly type: RelationType
+  readonly id?: string
+}
+
+export interface ListCommentsInput {
+  readonly issue: string
+  readonly after?: string
+  readonly limit: number
 }
 
 export interface CreateCommentInput {
-  issue: string
-  body: string
+  readonly issue: string
+  readonly body: string
+  readonly id?: string
+}
+
+export interface FrontierInput {
+  readonly map: string
+  readonly first: number
+  readonly after?: string
+}
+
+export interface FrontierResult {
+  readonly map: Pick<IssueSummary, "id" | "identifier" | "title">
+  readonly total: number
+  readonly items: ReadonlyArray<FrontierIssue>
+  readonly pageInfo: {
+    readonly hasNextPage: boolean
+    readonly endCursor: string | null
+  }
 }
 
 export const credentialsFromEnv = (env: NodeJS.ProcessEnv): Credentials | undefined => {
@@ -85,188 +252,7 @@ export const credentialsFromEnv = (env: NodeJS.ProcessEnv): Credentials | undefi
   return undefined
 }
 
-export const makeLinearGateway = (env: NodeJS.ProcessEnv): LinearGateway => {
-  const credentials = credentialsFromEnv(env)
-
-  const getClient = (): Effect.Effect<LinearClient, AuthError> => {
-    if (!credentials) {
-      return Effect.fail(new AuthError({
-        message: "Linear credentials are not configured",
-        help: "Set LINEAR_API_KEY or LINEAR_ACCESS_TOKEN."
-      }))
-    }
-
-    return Effect.succeed(
-      credentials.kind === "apiKey"
-        ? new LinearClient({ apiKey: credentials.value })
-        : new LinearClient({ accessToken: credentials.value })
-    )
-  }
-
-  const call = <A>(name: string, run: (client: LinearClient) => Promise<A>) =>
-    Effect.gen(function*() {
-      const client = yield* getClient()
-      return yield* Effect.tryPromise({
-        try: () => run(client),
-        catch: (cause) =>
-          new LinearApiError({
-            message: readableError(cause),
-            help: `Retry \`linear-axi ${name}\` after checking Linear access.`
-          })
-      })
-    })
-
-  return {
-    authStatus: () =>
-      credentials === undefined
-        ? Effect.succeed({ authenticated: false, method: "none" })
-        : call("auth status", async (client) => {
-            const viewer = await client.viewer
-            return {
-              authenticated: true,
-              method: credentials.kind,
-              viewer: {
-                id: viewer.id,
-                name: viewer.name
-              }
-            }
-          }),
-
-    listTeams: (limit) =>
-      call("teams list", async (client) => {
-        const teams = await client.teams({ first: limit })
-        return teams.nodes.map(teamSummary)
-      }),
-
-    listIssues: (input) =>
-      call("issues list", async (client) => {
-        if (input.team) {
-          const team = await findTeam(client, input.team)
-          const issues = await team.issues({ first: input.limit })
-          return Promise.all(issues.nodes.map(issueSummary))
-        }
-
-        if (input.assignee === "me") {
-          const viewer = await client.viewer
-          const issues = await viewer.assignedIssues({ first: input.limit })
-          return Promise.all(issues.nodes.map(issueSummary))
-        }
-
-        const issues = await client.issues({ first: input.limit })
-        return Promise.all(issues.nodes.map(issueSummary))
-      }),
-
-    viewIssue: (id) =>
-      call("issues view", async (client) => {
-        const issue = await findIssue(client, id)
-        return issueDetail(issue)
-      }),
-
-    createIssue: (input) =>
-      call("issues create", async (client) => {
-        const team = await findTeam(client, input.team)
-        const payload = await client.createIssue({
-          teamId: team.id,
-          title: input.title,
-          description: input.description
-        })
-
-        if (!payload.success || !payload.issue) {
-          throw new Error("Linear did not create the issue")
-        }
-
-        return issueSummary(await payload.issue)
-      }),
-
-    createComment: (input) =>
-      call("comments create", async (client) => {
-        const issue = await findIssue(client, input.issue)
-        const payload = await client.createComment({
-          issueId: issue.id,
-          body: input.body
-        })
-
-        if (!payload.success || !payload.comment) {
-          throw new Error("Linear did not create the comment")
-        }
-
-        const comment = await payload.comment
-        return {
-          id: comment.id,
-          issueId: issue.id,
-          body: comment.body,
-          url: issue.url
-        }
-      })
-  }
-}
-
-const findTeam = async (client: LinearClient, keyOrId: string): Promise<Team> => {
-  if (isUuid(keyOrId)) {
-    return client.team(keyOrId)
-  }
-
-  const teams = await client.teams({
-    first: 2,
-    filter: {
-      key: { eqIgnoreCase: keyOrId }
-    }
-  })
-  const match = teams.nodes.find(
-    (team) => team.key.toLowerCase() === keyOrId.toLowerCase()
-  )
-
-  if (!match) {
-    throw new Error(`No Linear team matched ${keyOrId}`)
-  }
-
-  return match
-}
-
-const findIssue = async (client: LinearClient, idOrKey: string): Promise<Issue> => {
-  return client.issue(idOrKey)
-}
-
-const teamSummary = (team: Team): TeamSummary => ({
-  id: team.id,
-  key: team.key,
-  name: team.name
-})
-
-const issueSummary = async (issue: Issue): Promise<IssueSummary> => {
-  const state = await issue.state
-  const assignee = await issue.assignee
-
-  return {
-    id: issue.id,
-    identifier: issue.identifier,
-    title: issue.title,
-    state: state?.name ?? "unknown",
-    assignee: assignee?.name ?? "unassigned",
-    updatedAt: issue.updatedAt.toISOString(),
-    url: issue.url
-  }
-}
-
-const issueDetail = async (issue: Issue): Promise<IssueDetail> => {
-  const summary = await issueSummary(issue)
-  const team = await issue.team
-
-  return {
-    ...summary,
-    description: issue.description ?? "",
-    priority: issue.priority,
-    team: team?.key ?? "unknown"
-  }
-}
-
-const readableError = (cause: unknown): string => {
-  if (cause instanceof Error && cause.message.length > 0) {
-    return cause.message.replaceAll(/\s+/g, " ").trim()
-  }
-
-  return "Linear request failed"
-}
-
-const isUuid = (value: string): boolean =>
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+export const makeLinearGateway = (
+  env: NodeJS.ProcessEnv,
+  options: { readonly client?: LinearClient } = {}
+): LinearGateway => makeSdkLinearGateway(credentialsFromEnv(env), options)

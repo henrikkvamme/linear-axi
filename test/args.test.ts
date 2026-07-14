@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { commandSpecs, parseArgs } from "../src/args"
+import { commandSpecs, ISSUE_FIELDS, LABEL_FIELDS, parseArgs } from "../src/args"
 import { UsageError } from "../src/errors"
 
 describe("parseArgs", () => {
@@ -55,6 +55,19 @@ describe("parseArgs", () => {
 
   test("rejects invalid limits during parsing", () => {
     expect(() => parseArgs(["teams", "list", "--limit", "0"], commandSpecs)).toThrow(UsageError)
+  })
+
+  test("rejects empty values during parsing", () => {
+    for (const args of [
+      ["issues", "create", "--team=", "--title", "Child"],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--parent="],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--label="],
+      ["issues", "create", "--team", "ENG", "--title", "Child", "--id="],
+      ["issues", "close", "--id", "ENG-123", "--state="],
+      ["relations", "list", "--issue", "ENG-123", "--after="]
+    ]) {
+      expect(() => parseArgs(args, commandSpecs)).toThrow(UsageError)
+    }
   })
 
   test("rejects help values", () => {
@@ -115,4 +128,73 @@ describe("parseArgs", () => {
     expect(parsed.flags.get("notify")).toBe(true)
     expect(parsed.flags.get("redirect-uri")).toBe("http://127.0.0.1:14582/oauth/callback")
   })
+
+  test("command help documents every accepted option and an example", () => {
+    for (const spec of commandSpecs.filter((candidate) => candidate.path[0] !== "home")) {
+      expect(spec.help).toContain("Example:")
+      for (const flag of spec.flags) {
+        expect(spec.help).toContain(`--${flag}`)
+      }
+    }
+  })
+
+  test("list help derives every accepted field from shared metadata", () => {
+    const issueHelp = commandSpecs.find((spec) => spec.path.join(" ") === "issues list")?.help
+    const labelHelp = commandSpecs.find((spec) => spec.path.join(" ") === "labels list")?.help
+
+    expect(issueHelp).toContain(`<${ISSUE_FIELDS.join(",")}>`)
+    expect(labelHelp).toContain(`<${LABEL_FIELDS.join(",")}>`)
+  })
+
+  test("auth login help includes all credential and OAuth controls", () => {
+    const help = commandSpecs.find((spec) => spec.path.join(" ") === "auth login")?.help
+    for (const flag of ["timeout", "scope", "actor", "env-file", "redirect-uri", "client-id"]) {
+      expect(help).toContain(`--${flag}`)
+    }
+  })
+
+  test("labels list exposes explicit archived-label discovery", () => {
+    const parsed = parseArgs(["labels", "list", "--include-archived"], commandSpecs)
+    const help = commandSpecs.find((spec) => spec.path.join(" ") === "labels list")?.help
+
+    expect(parsed.flags.get("include-archived")).toBe(true)
+    expect(help).toContain("--include-archived")
+  })
+
+  const newCommands: ReadonlyArray<ReadonlyArray<string>> = [
+    ["issues", "assign"],
+    ["issues", "unassign"],
+    ["issues", "close"],
+    ["issues", "update"],
+    ["labels", "list"],
+    ["labels", "create"],
+    ["labels", "apply"],
+    ["relations", "list"],
+    ["relations", "create"],
+    ["comments", "list"],
+    ["wayfinder", "frontier"]
+  ]
+
+  for (const command of newCommands) {
+    test(`rejects unknown flags for ${command.join(" ")} even with help`, () => {
+      expect(() => parseArgs([...command, "--bogus", "--help"], commandSpecs)).toThrow(UsageError)
+    })
+  }
+
+  for (const [command, required] of [
+    [["issues", "assign"], "id"],
+    [["issues", "unassign"], "id"],
+    [["issues", "close"], "id"],
+    [["issues", "update"], "id"],
+    [["labels", "create"], "name"],
+    [["labels", "apply"], "issue"],
+    [["relations", "list"], "issue"],
+    [["relations", "create"], "issue"],
+    [["comments", "list"], "issue"],
+    [["wayfinder", "frontier"], "map"]
+  ] as const) {
+    test(`rejects missing --${required} for ${command.join(" ")}`, () => {
+      expect(() => parseArgs(command, commandSpecs)).toThrow(UsageError)
+    })
+  }
 })
