@@ -240,8 +240,8 @@ const issuesClose = (parsed: ParsedArgs, gateway: LinearGateway) => {
 
 const issuesUpdate = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const timestamp = readStringFlag(parsed.flags, "if-updated-at")!
-  if (!isRfc3339(timestamp)) {
-    return usage("--if-updated-at must be an RFC3339 timestamp", parsed.command)
+  if (!isCanonicalTimestamp(timestamp)) {
+    return usage("--if-updated-at must be the exact canonical timestamp emitted by the CLI (YYYY-MM-DDTHH:mm:ss.sssZ)", parsed.command)
   }
   return readRequiredText(readStringFlag(parsed.flags, "description-file")!, "description-file", parsed.command).pipe(
     Effect.flatMap((description) => gateway.updateIssueDescription({
@@ -595,8 +595,13 @@ const helpFor = (path: ReadonlyArray<string>): string => findSpec(path, commandS
 const isUuidV4 = (value: string): boolean =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 
-const isRfc3339 = (value: string): boolean =>
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) && !Number.isNaN(Date.parse(value))
+const isCanonicalTimestamp = (value: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+    return false
+  }
+  const timestamp = new Date(value)
+  return !Number.isNaN(timestamp.getTime()) && timestamp.toISOString() === value
+}
 
 const collapseHome = (path: string): string => {
   const home = process.env.HOME

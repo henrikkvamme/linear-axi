@@ -26,7 +26,7 @@ linear-axi issues create --team <key-or-id> --title "..." --description-file <pa
 linear-axi issues assign --id <issue-id-or-key> --assignee me
 linear-axi issues unassign --id <issue-id-or-key> --if-assignee me
 linear-axi issues close --id <issue-id-or-key>
-linear-axi issues update --id <issue-id-or-key> --description-file <path> --if-updated-at <RFC3339>
+linear-axi issues update --id <issue-id-or-key> --description-file <path> --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ>
 linear-axi labels list --workspace --name <exact-name>
 linear-axi labels list --workspace --include-archived --fields id,name,archivedAt
 linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
@@ -71,7 +71,7 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
     Completion criterion: claim only an unassigned issue, never pass `--replace` for a Wayfinder claim, and release with `--if-assignee me`. Read-after-write verification narrows but cannot eliminate concurrent claim races.
 
 11. Replace descriptions only from the latest version.
-    Completion criterion: fetch the full issue, merge locally, then pass that exact `updatedAt` to `issues update --if-updated-at`. On conflict, refetch and merge again. Linear has no atomic compare-and-swap, so keep resolution comments canonical and do not claim that the final read/write race is eliminated.
+    Completion criterion: fetch the full issue, merge locally, then pass the exact canonical `updatedAt` emitted by the CLI to `issues update --if-updated-at`. On conflict, refetch and merge again. Linear has no atomic compare-and-swap, so keep resolution comments canonical and do not claim that the final read/write race is eliminated.
 
 12. Treat frontier pages as current-state projections.
     Completion criterion: follow `pageInfo.endCursor` with `--after`, but restart without `--after` when current membership or ordering matters. Frontier pagination does not provide snapshot isolation.

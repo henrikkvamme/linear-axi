@@ -360,7 +360,7 @@ const updateIssueDescription = async (
   const currentDescription = issue.description ?? ""
   const currentUpdatedAt = issue.updatedAt.toISOString()
   const desiredDescription = normalizeDescription(input.description)
-  if (Date.parse(currentUpdatedAt) !== Date.parse(input.ifUpdatedAt)) {
+  if (currentUpdatedAt !== input.ifUpdatedAt) {
     throw conflict(
       `${issue.identifier} changed since --if-updated-at; description was not updated (current updatedAt: ${currentUpdatedAt})`,
       `Refetch with \`linear-axi issues view --id ${issue.identifier} --full\`, merge the current description, and retry with its updatedAt.`

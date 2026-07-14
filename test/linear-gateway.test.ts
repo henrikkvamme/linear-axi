@@ -254,6 +254,24 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(updates).toBe(0)
   })
 
+  test("sub-millisecond timestamp differences reject before mutation", async () => {
+    let updates = 0
+    const client = clientWithIssues([issue()], {
+      updateIssue: async () => { updates += 1; return { success: true } }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client }).updateIssueDescription({
+        id: "BEN-1",
+        description: "replacement",
+        ifUpdatedAt: "2026-07-13T12:00:00.0001Z"
+      })
+    ))
+
+    expect(error.message).toContain("changed since --if-updated-at")
+    expect(updates).toBe(0)
+  })
+
   test("stale description rejects before loading unrelated issue relations", async () => {
     let labelReads = 0
     const staleIssue = issue({

@@ -176,7 +176,7 @@ export const topLevelHelp = [
   "  linear-axi issues assign --id <issue> --assignee me|<user-uuid> [--replace]",
   "  linear-axi issues unassign --id <issue> [--if-assignee me|<user-uuid>]",
   "  linear-axi issues close --id <issue> [--state <state-uuid>]",
-  "  linear-axi issues update --id <issue> --description-file <path|-> --if-updated-at <RFC3339>",
+  "  linear-axi issues update --id <issue> --description-file <path|-> --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ>",
   "  linear-axi labels list [--workspace | --team <team>] [--name <exact-name>] [--issue <issue>] [--include-archived] [--after <cursor>] [--limit 100] [--fields <fields>]",
   "  linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <team>) [--description \"...\"] [--id <uuid-v4>] [--if-absent]",
   "  linear-axi labels apply --issue <issue> --label <id-or-name>",
@@ -291,7 +291,7 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
     flags: new Set(["help", "id", "description-file", "if-updated-at"]),
     valueFlags: new Set(["id", "description-file", "if-updated-at"]),
     required: new Set(["id", "description-file", "if-updated-at"]),
-    help: "Usage: linear-axi issues update --id <issue-id-or-key> --description-file <path|-> --if-updated-at <RFC3339>\nKnown-stale updates are rejected and writes are verified, but Linear has no atomic compare-and-swap; an edit can still race between the final read and write."
+    help: "Usage: linear-axi issues update --id <issue-id-or-key> --description-file <path|-> --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ>\nPass the exact updatedAt emitted by the CLI. Known-stale updates are rejected and writes are verified, but Linear has no atomic compare-and-swap; an edit can still race between the final read and write."
   },
   {
     path: ["labels", "list"],
@@ -363,7 +363,7 @@ const commandExamples: Readonly<Record<string, ReadonlyArray<string>>> = {
   "issues assign": ["linear-axi issues assign --id ENG-123 --assignee me"],
   "issues unassign": ["linear-axi issues unassign --id ENG-123 --if-assignee me"],
   "issues close": ["linear-axi issues close --id ENG-123"],
-  "issues update": ["linear-axi issues update --id ENG-123 --description-file issue.md --if-updated-at 2026-07-13T12:00:00Z"],
+  "issues update": ["linear-axi issues update --id ENG-123 --description-file issue.md --if-updated-at 2026-07-13T12:00:00.000Z"],
   "labels list": ["linear-axi labels list --team ENG --name wayfinder:task", "linear-axi labels list --workspace --include-archived --fields id,name,archivedAt"],
   "labels create": ["linear-axi labels create --team ENG --name wayfinder:task --color '#123456'"],
   "labels apply": ["linear-axi labels apply --issue ENG-123 --label wayfinder:task"],
@@ -392,7 +392,7 @@ const optionValues: Readonly<Record<string, string>> = {
   state: "<state>",
   assignee: "<assignee>",
   "if-assignee": "<assignee>",
-  "if-updated-at": "<RFC3339>",
+  "if-updated-at": "<YYYY-MM-DDTHH:mm:ss.sssZ>",
   "description-file": "<path|->",
   "body-file": "<path|->",
   "related-issue": "<issue>",

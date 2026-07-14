@@ -71,7 +71,7 @@ linear-axi issues create --team <key-or-id> --title "..." --description-file <pa
 linear-axi issues assign --id <issue> --assignee me
 linear-axi issues unassign --id <issue> --if-assignee me
 linear-axi issues close --id <issue>
-linear-axi issues update --id <issue> --description-file <path> --if-updated-at <RFC3339>
+linear-axi issues update --id <issue> --description-file <path> --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ>
 linear-axi labels list --workspace --name <exact-name>
 linear-axi labels list --workspace --include-archived --fields id,name,archivedAt
 linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
@@ -91,7 +91,7 @@ Wayfinder frontier pagination uses `--first` and the returned `pageInfo.endCurso
 
 Assignment is a verified claim convention, not an atomic claim. Another writer can race between the read and update. Wayfinder agents must not use `--replace` to claim work and should release only their own assignment with `--if-assignee`.
 
-Full-description replacement requires `--if-updated-at`. The CLI rejects timestamps that are already stale, refetches after a write, and verifies the desired description and a changed timestamp. Linear does not expose an atomic compare-and-swap precondition, so an edit can still land in the final read/write window. Keep resolution comments as the canonical decision records, refetch and merge after any conflict, and never retry an old full description.
+Full-description replacement requires `--if-updated-at` with the exact canonical `updatedAt` timestamp emitted by the CLI. The CLI rejects timestamps that are malformed or already stale, refetches after a write, and verifies the desired description and a changed timestamp. Linear does not expose an atomic compare-and-swap precondition, so an edit can still land in the final read/write window. Keep resolution comments as the canonical decision records, refetch and merge after any conflict, and never retry an old full description.
 
 Exit codes:
 

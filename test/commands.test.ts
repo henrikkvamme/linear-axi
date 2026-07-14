@@ -178,7 +178,7 @@ describe("runCommand", () => {
     await run(["issues", "assign", "--id", "ENG-123", "--assignee", assignee, "--replace"], gateway)
     await run(["issues", "unassign", "--id", "ENG-123", "--if-assignee", assignee], gateway)
     await run(["issues", "close", "--id", "ENG-123", "--state", "66666666-6666-4666-8666-666666666666"], gateway)
-    const updated = await run(["issues", "update", "--id", "ENG-100", "--description-file", file, "--if-updated-at", "2026-07-08T00:00:00Z"], gateway)
+    const updated = await run(["issues", "update", "--id", "ENG-100", "--description-file", file, "--if-updated-at", "2026-07-08T00:00:00.000Z"], gateway)
     expect(calls).toHaveLength(4)
     expect(updated.concurrency).toContain("no atomic compare-and-swap")
   })
@@ -292,6 +292,31 @@ describe("runCommand", () => {
     }))
     expect(empty.frontier).toBe("0 frontier issues found after the supplied cursor for ENG-100")
     expect(empty.pageInfo).toEqual({ hasNextPage: false, endCursor: null })
+  })
+
+  test("noncanonical update timestamps fail before gateway access", async () => {
+    let calls = 0
+    const gateway = fakeGateway({
+      updateIssueDescription: () => {
+        calls += 1
+        return Effect.succeed(mutation(detail()))
+      }
+    })
+
+    for (const timestamp of [
+      "2026-07-08T00:00:00Z",
+      "2026-07-08T00:00:00.0001Z",
+      "2026-07-08T00:00:00.000+00:00",
+      "2026-02-30T00:00:00.000Z"
+    ]) {
+      const parsed = parseArgs([
+        "issues", "update", "--id", "ENG-100", "--description-file", "x", "--if-updated-at", timestamp
+      ], commandSpecs)
+      const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/repo/src/main.ts")))
+      expect(error._tag).toBe("UsageError")
+      expect(error.message).toContain("canonical timestamp")
+    }
+    expect(calls).toBe(0)
   })
 
   test("malformed and conflicting flags fail before gateway access", async () => {
