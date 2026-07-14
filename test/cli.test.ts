@@ -170,6 +170,21 @@ describe("linear-axi process", () => {
     expect(stdout).not.toContain("Linear credentials are not configured")
   })
 
+  test("reports the invalid assignee option before authentication", () => {
+    for (const [args, flag] of [
+      [["issues", "assign", "--id", "ENG-123", "--assignee", "invalid"], "--assignee"],
+      [["issues", "unassign", "--id", "ENG-123", "--if-assignee", "invalid"], "--if-assignee"]
+    ] as const) {
+      const result = runCli(...args)
+      const stdout = stdoutText(result)
+
+      expect(result.exitCode).toBe(2)
+      expect(stderrText(result)).toBe("")
+      expect(stdout).toContain(`${flag} must be me or a user UUID`)
+      expect(stdout).not.toContain("Linear credentials are not configured")
+    }
+  })
+
   test("rejects malformed mutation flags before authentication", () => {
     const result = runCli("labels", "create", "--workspace", "--name", "fixture", "--color", "red")
     expect(result.exitCode).toBe(2)

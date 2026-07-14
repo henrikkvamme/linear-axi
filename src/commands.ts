@@ -130,7 +130,7 @@ const teamsList = (parsed: ParsedArgs, gateway: LinearGateway) =>
 const issuesList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const assignee = readStringFlag(parsed.flags, "assignee")
   const state = readStringFlag(parsed.flags, "state")
-  validateAssignee(assignee, true, helpFor(parsed.command))
+  validateAssignee(assignee, "assignee", true, helpFor(parsed.command))
   if (state !== undefined && state !== "open" && state !== "closed") {
     return usage("--state must be `open` or `closed`", parsed.command)
   }
@@ -213,7 +213,7 @@ const issuesCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
 
 const issuesAssign = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const assignee = readStringFlag(parsed.flags, "assignee")!
-  validateAssignee(assignee, false, helpFor(parsed.command))
+  validateAssignee(assignee, "assignee", false, helpFor(parsed.command))
   return gateway.assignIssue({
     id: readStringFlag(parsed.flags, "id")!,
     assignee,
@@ -223,7 +223,7 @@ const issuesAssign = (parsed: ParsedArgs, gateway: LinearGateway) => {
 
 const issuesUnassign = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const expected = readStringFlag(parsed.flags, "if-assignee")
-  validateAssignee(expected, false, helpFor(parsed.command))
+  validateAssignee(expected, "if-assignee", false, helpFor(parsed.command))
   return gateway.unassignIssue({
     id: readStringFlag(parsed.flags, "id")!,
     ifAssignee: expected
@@ -514,11 +514,16 @@ const readRequiredText = (
     catch: () => new UsageError({ message: `could not read --${flag} ${file}`, help: helpFor(command) })
   })
 
-const validateAssignee = (value: string | undefined, allowNone: boolean, help: string): void => {
+const validateAssignee = (
+  value: string | undefined,
+  flag: "assignee" | "if-assignee",
+  allowNone: boolean,
+  help: string
+): void => {
   if (value === undefined || value === "me" || (allowNone && value === "none") || isUuidV4(value)) {
     return
   }
-  throw new UsageError({ message: `--assignee must be ${allowNone ? "me, none, or" : "me or"} a user UUID`, help })
+  throw new UsageError({ message: `--${flag} must be ${allowNone ? "me, none, or" : "me or"} a user UUID`, help })
 }
 
 const readFields = (
