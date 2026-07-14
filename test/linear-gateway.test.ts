@@ -426,6 +426,47 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(exit._tag).toBe("Failure")
   })
 
+  test("comment authors prefer users, then bots, then external users", async () => {
+    const comments = [
+      comment({
+        id: "44444444-4444-4444-8444-444444444441",
+        user: Promise.resolve({ name: "Workspace User" }),
+        botActor: { name: "Ignored Bot" },
+        externalUser: Promise.resolve({ name: "Ignored External User" })
+      }),
+      comment({
+        id: "44444444-4444-4444-8444-444444444442",
+        user: undefined,
+        botActor: { name: "Automation" },
+        externalUser: Promise.resolve({ name: "Ignored External User" })
+      }),
+      comment({
+        id: "44444444-4444-4444-8444-444444444443",
+        user: undefined,
+        botActor: undefined,
+        externalUser: Promise.resolve({ name: "Slack Guest" })
+      }),
+      comment({
+        id: "44444444-4444-4444-8444-444444444444",
+        user: undefined,
+        botActor: undefined,
+        externalUser: undefined
+      })
+    ]
+    const source = issue({ comments: async () => page(comments) })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, {
+      client: clientWithIssues([source])
+    }).listComments({ issue: "BEN-1", limit: 20 }))
+
+    expect(result.items.map((item) => item.author)).toEqual([
+      "Workspace User",
+      "Automation",
+      "Slack Guest",
+      "unknown"
+    ])
+  })
+
   test("post-write mismatch is a conflict", async () => {
     const before = issue()
     const accepted = issue({ description: "replacement", updatedAt: new Date("2026-07-13T12:01:00.000Z") })
@@ -651,8 +692,8 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(result.changed).toBe(true)
     expect(sent).toMatchObject({ id, name: created.name })
     expect(filters).toEqual([
-      { name: { eqIgnoreCase: created.name }, team: { id: { eq: team.id } } },
-      { id: { eq: id }, team: { id: { eq: team.id } } }
+      { id: { eq: id } },
+      { name: { eqIgnoreCase: created.name }, team: { id: { eq: team.id } } }
     ])
   })
 
@@ -751,6 +792,89 @@ describe("SDK LinearGateway conflict contracts", () => {
 
     expect(error.message).toMatch(/conflict/)
     expect(creates).toBe(0)
+  })
+
+  test.each([
+    { workspace: false, team: "BEN", existingTeamId: undefined, scope: "workspace" },
+    {
+      workspace: false,
+      team: "BEN",
+      existingTeamId: "99999999-9999-4999-8999-999999999999",
+      scope: "team 99999999-9999-4999-8999-999999999999"
+    },
+    {
+      workspace: true,
+      team: undefined,
+      existingTeamId: "99999999-9999-4999-8999-999999999999",
+      scope: "team 99999999-9999-4999-8999-999999999999"
+    }
+  ])("caller label UUIDs are probed globally before $scope scope conflicts", async ({ workspace, team: requestedTeam, existingTeamId }) => {
+    const existing = issueLabel({ teamId: existingTeamId })
+    let labelReads = 0
+    let creates = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async (variables: { filter: unknown }) => {
+        labelReads += 1
+        expect(variables.filter).toEqual({ id: { eq: existing.id } })
+        return page([existing])
+      },
+      createIssueLabel: async () => { creates += 1; return { success: true } }
+    })
+
+    for (const ifAbsent of [false, true]) {
+      const error = await Effect.runPromise(Effect.flip(
+        makeLinearGateway({}, { client }).createLabel({
+          name: existing.name,
+          color: existing.color,
+          description: existing.description ?? undefined,
+          workspace,
+          team: requestedTeam,
+          id: existing.id,
+          ifAbsent
+        })
+      ))
+      expect(error.message).toContain("belongs to")
+    }
+
+    expect(labelReads).toBe(2)
+    expect(creates).toBe(0)
+  })
+
+  test("caller label UUID retry detects a concurrent label in another scope", async () => {
+    const foreign = issueLabel({ teamId: "99999999-9999-4999-8999-999999999999" })
+    let labelReads = 0
+    let creates = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async (variables: { filter: { id?: { eq: string } } }) => {
+        labelReads += 1
+        if (variables.filter.id) {
+          return page(labelReads === 1 ? [] : [foreign])
+        }
+        return page([])
+      },
+      createIssueLabel: async () => {
+        creates += 1
+        throw new Error("caller UUID was created concurrently")
+      }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client }).createLabel({
+        name: foreign.name,
+        color: foreign.color,
+        description: foreign.description ?? undefined,
+        workspace: false,
+        team: "BEN",
+        id: foreign.id,
+        ifAbsent: true
+      })
+    ))
+
+    expect(error.message).toContain("belongs to team 99999999-9999-4999-8999-999999999999")
+    expect(labelReads).toBe(3)
+    expect(creates).toBe(1)
   })
 
   test("issue list fetches only requested relations", async () => {
@@ -1044,6 +1168,58 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(result.changed).toBe(false)
     expect(identityReads).toBe(2)
     expect(connectionReads).toBe(0)
+  })
+
+  test("frontier loads only map labels and resolves type labels concurrently", async () => {
+    const typeLabels = ["research", "prototype", "grilling", "task"].map((type, index) => issueLabel({
+      id: `55555555-5555-4555-8555-55555555555${index + 1}`,
+      name: `wayfinder:${type}`
+    }))
+    const mapLabel = issueLabel({
+      id: "66666666-6666-4666-8666-666666666666",
+      name: "wayfinder:map"
+    })
+    const map = issue({
+      labels: async () => page([mapLabel])
+    })
+    Object.defineProperties(map, {
+      state: { configurable: true, get: () => { throw new Error("frontier must not load map state") } },
+      assignee: { configurable: true, get: () => { throw new Error("frontier must not load map assignee") } },
+      parent: { configurable: true, get: () => { throw new Error("frontier must not load map parent") } },
+      team: { configurable: true, get: () => { throw new Error("frontier must use the map team ID") } }
+    })
+    const candidate = issue({
+      id: "77777777-7777-4777-8777-777777777777",
+      identifier: "BEN-2",
+      title: "Ready task",
+      labelIds: [typeLabels[3]!.id]
+    })
+    let activeLabelReads = 0
+    let maxActiveLabelReads = 0
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"parent"') ? [candidate] : [map]),
+      issueLabels: async (variables: { filter: { name: { eqIgnoreCase: string } } }) => {
+        activeLabelReads += 1
+        maxActiveLabelReads = Math.max(maxActiveLabelReads, activeLabelReads)
+        await Bun.sleep(5)
+        activeLabelReads -= 1
+        return page(typeLabels.filter((label) => label.name === variables.filter.name.eqIgnoreCase))
+      }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).frontier({
+      map: "BEN-1",
+      first: 20
+    }))
+
+    expect(result.items).toEqual([{
+      id: candidate.id,
+      identifier: candidate.identifier,
+      title: candidate.title,
+      type: "task"
+    }])
+    expect(maxActiveLabelReads).toBe(4)
   })
 
   test("invalid local cursors fail before Linear access", async () => {

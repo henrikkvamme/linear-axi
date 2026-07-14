@@ -46,8 +46,8 @@ import { decodeLocalCursorOffset, fetchAllPages, type ConnectionLike, type Local
 import {
   completedStates,
   findIssueByUuid,
-  findLabelByIdInScope,
   findLabelByNameInScope,
+  findLabelByUuid,
   findRelationByUuid,
   normalizeUuid,
   resolveIssue,
@@ -461,11 +461,18 @@ const createLabel = async (
   }
 
   const classifyExisting = async (): Promise<MutationResult<LabelSummary> | undefined> => {
+    const idMatch = callerId ? await findLabelByUuid(client, callerId) : undefined
+    if (idMatch && !labelBelongsToScope(idMatch, teamId)) {
+      const requestedScope = team ? `team ${team.key}` : "the workspace"
+      const actualScope = idMatch.teamId === undefined ? "the workspace" : `team ${idMatch.teamId}`
+      throw conflict(
+        `label caller UUID ${callerId} belongs to ${actualScope}, not ${requestedScope}`,
+        "Use a new caller-retained UUID or create the label in its existing scope."
+      )
+    }
+
     if (callerId && input.ifAbsent) {
-      const [nameMatch, idMatch] = await Promise.all([
-        findLabelByNameInScope(client, input.name, teamId),
-        findLabelByIdInScope(client, callerId, teamId)
-      ])
+      const nameMatch = await findLabelByNameInScope(client, input.name, teamId)
       if (!nameMatch && !idMatch) {
         return undefined
       }
@@ -490,14 +497,14 @@ const createLabel = async (
       return classify(idMatch)
     }
 
-    const lookup = callerId ?? (input.ifAbsent ? input.name : undefined)
-    if (!lookup) {
-      return undefined
+    if (idMatch) {
+      return classify(idMatch)
     }
-    const found = callerId
-      ? await findLabelByIdInScope(client, callerId, teamId)
-      : await findLabelByNameInScope(client, lookup, teamId)
-    return found ? classify(found) : undefined
+    if (input.ifAbsent) {
+      const nameMatch = await findLabelByNameInScope(client, input.name, teamId)
+      return nameMatch ? classify(nameMatch) : undefined
+    }
+    return undefined
   }
 
   const existing = await classifyExisting()
@@ -707,14 +714,19 @@ const frontier = async (
   if (after !== undefined) {
     validateFrontierCursor(after)
   }
-  const mapIssue = await resolveIssue(client, mapId)
-  const map = await issueDetail(mapIssue)
-  const prefix = resolveWayfinderPrefix(map.identifier, map.labels)
-  const typeLabels = new Map<string, { name: string; type: WayfinderType }>()
-  for (const type of WAYFINDER_TYPES) {
-    const label = await resolveLabelForTeam(client, `${prefix}:${type}`, map.teamId)
-    typeLabels.set(label.id, { name: label.name, type })
-  }
+  const map = await resolveIssue(client, mapId)
+  const mapLabels = await loadIssueLabels(map)
+  const prefix = resolveWayfinderPrefix(map.identifier, mapLabels)
+  const teamId = requireTeamId(map)
+  const resolvedTypeLabels = await Promise.all(
+    WAYFINDER_TYPES.map(async (type) => ({
+      label: await resolveLabelForTeam(client, `${prefix}:${type}`, teamId),
+      type
+    }))
+  )
+  const typeLabels = new Map<string, { name: string; type: WayfinderType }>(
+    resolvedTypeLabels.map(({ label, type }) => [label.id, { name: label.name, type }])
+  )
 
   const candidates = await fetchAllPages(
     await client.issues({
@@ -858,16 +870,23 @@ const relationSummary = async (
 
 const commentSummary = async (comment: Comment, issueId: string): Promise<CommentSummary> => {
   const user = await comment.user
+  const botActor = comment.botActor
+  const externalUser = user || botActor?.name ? undefined : await comment.externalUser
   return {
     id: comment.id,
     issueId,
     body: comment.body,
     createdAt: comment.createdAt.toISOString(),
     updatedAt: comment.updatedAt.toISOString(),
-    author: user?.name ?? "unknown",
+    author: user?.name || botActor?.name || externalUser?.name || "unknown",
     url: comment.url
   }
 }
+
+const labelBelongsToScope = (label: IssueLabel, teamId: string | null): boolean =>
+  teamId === null
+    ? label.teamId === undefined
+    : label.teamId !== undefined && uuidEqual(label.teamId, teamId)
 
 const teamSummary = (team: Team): TeamSummary => ({ id: team.id, key: team.key, name: team.name })
 

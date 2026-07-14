@@ -145,11 +145,25 @@ export const resolveLabelInScope = async (
   return exactlyOneActive(`label ${idOrName}`, labels, labelCandidate, (label) => label.archivedAt)
 }
 
-export const findLabelByIdInScope = (
+export const findLabelByUuid = async (
   client: LinearClient,
-  id: string,
-  teamId: string | null
-): Promise<IssueLabel | undefined> => findOneLabelInScope(client, id, teamId, "id")
+  id: string
+): Promise<IssueLabel | undefined> => {
+  const identity = normalizeUuid(id)
+  const labels = await fetchAllPages(
+    await client.issueLabels({
+      first: 50,
+      includeArchived: true,
+      filter: { id: { eq: identity } }
+    })
+  )
+  return findOneActive(
+    `label ${id}`,
+    labels.filter((label) => uuidEqual(label.id, identity)),
+    labelCandidate,
+    (label) => label.archivedAt
+  )
+}
 
 export const findLabelByNameInScope = (
   client: LinearClient,

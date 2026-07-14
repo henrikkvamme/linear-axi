@@ -49,8 +49,8 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
 3. Use the shared browser flow when the CLI runs remotely.
    Completion criterion: start `linear-axi auth login --notify` in a persistent exec session, copy the exact authorize URL from stderr, use `chrome-devtools-axi open <authorize-url>`, and verify the snapshot shows `axi-cli is requesting access`. Hand the browser to the user so they can select the intended workspace and click Authorize. The live WebRTC URL mirrors the shared browser's current tab and does not navigate by itself.
 
-4. Treat create/comment commands as live mutations.
-   Completion criterion: only run them after explicit user intent names the issue/team/title/body or asks for that exact mutation.
+4. Treat every mutating command as a live mutation.
+   Completion criterion: run issue create, assign, unassign, close, or description update; label create or apply; relation create; and comment create only after explicit user intent identifies the target and desired change. Auth status, team, issue, label, relation, and comment reads plus Wayfinder frontier remain read-only.
 
 5. Read TOON stdout directly.
    Completion criterion: do not rerun only to confirm an empty state or error; structured output is authoritative unless the command exits non-zero.
