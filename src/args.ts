@@ -321,14 +321,14 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
     flags: new Set(["help", "issue", "blocked-by", "type", "direction", "after", "limit"]),
     valueFlags: new Set(["issue", "type", "direction", "after", "limit"]),
     required: new Set(["issue"]),
-    help: "Usage: linear-axi relations list --issue <blocked-issue> --blocked-by [--after <cursor>] [--limit 100]\n   or: linear-axi relations list --issue <issue-id-or-key> [--type blocks|related|duplicate|similar] [--direction outgoing|incoming|both] [--after <cursor>] [--limit 100]\n--blocked-by lists blockers of --issue by selecting incoming blocks relations."
+    help: "Usage: linear-axi relations list --issue <blocked-issue> --blocked-by [--after <cursor>] [--limit 100]\n   or: linear-axi relations list --issue <issue-id-or-key> [--type blocks|related|duplicate|similar] [--direction outgoing|incoming|both] [--after <cursor>] [--limit 100]\n--blocked-by lists blockers of --issue by selecting incoming blocks relations. Output names the query as blockedIssue and each counterpart as blockerIssue. Do not combine --blocked-by with --type or --direction."
   },
   {
     path: ["relations", "create"],
     flags: new Set(["help", "issue", "blocked-by", "related-issue", "type", "id"]),
     valueFlags: new Set(["issue", "blocked-by", "related-issue", "type", "id"]),
     required: new Set(["issue"]),
-    help: "Usage: linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> [--id <uuid-v4>]\n   or: linear-axi relations create --issue <source-issue> --related-issue <target-issue> --type blocks|related|duplicate|similar [--id <uuid-v4>]\n--blocked-by is the blocker (source); --issue is the blocked issue (target).\nFor generic --type blocks, --issue is the blocker and --related-issue is the blocked issue."
+    help: "Usage: linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> [--id <uuid-v4>]\n   or: linear-axi relations create --issue <source-issue> --related-issue <target-issue> --type blocks|related|duplicate|similar [--id <uuid-v4>]\n--blocked-by is the blocker (source); --issue is the blocked issue (target). Do not combine --blocked-by with --related-issue or --type.\nFor generic --type blocks, --issue is the blocker and --related-issue is the blocked issue. Blocks relations cannot use two references that resolve to the same issue."
   },
   {
     path: ["comments", "list"],
