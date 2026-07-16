@@ -356,7 +356,7 @@ const relationsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
       ? { relations: blockedBy ? `0 blockers found for ${blockedIssue}` : "0 relations matched this issue and direction" }
       : {
           relations: blockedBy
-            ? result.items.map((relation) => ({ ...relation, blockerIssue: relation.identifier, blockedIssue }))
+            ? result.items.map(({ identifier, ...relation }) => ({ ...relation, blockerIssue: identifier }))
             : result.items
         }),
     ...(blockedBy ? { blockedIssue } : {}),
@@ -384,9 +384,6 @@ const relationsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
   }
   const relationSource = blockerIssue ?? blockedIssue
   const relationTarget = blockerIssue === undefined ? readStringFlag(parsed.flags, "related-issue")! : blockedIssue
-  if (type === "blocks" && relationSource.trim().toLowerCase() === relationTarget.trim().toLowerCase()) {
-    return usage("an issue cannot block itself", parsed.command)
-  }
   const id = readStringFlag(parsed.flags, "id")
   if (id && !isUuidV4(id)) {
     return usage("--id must be a UUID v4", parsed.command)

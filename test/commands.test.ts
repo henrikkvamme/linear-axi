@@ -211,7 +211,7 @@ describe("runCommand", () => {
   })
 
   test("relations preserve directed blocker and target inputs", async () => {
-    const relation = { id: "relation-id", type: "blocks" as const, direction: "outgoing" as const, identifier: "ENG-124", title: "Target", state: "Todo", sourceId: baseIssue.id, targetId: "target-id" }
+    const relation = baseRelation
     const gateway = fakeGateway({
       createRelation: (input) => {
         expect(input).toEqual({ issue: "ENG-123", relatedIssue: "ENG-124", type: "blocks", id: undefined })
@@ -292,7 +292,8 @@ describe("runCommand", () => {
     const output = await run(["relations", "list", "--issue", "ENG-124", "--blocked-by"], gateway)
 
     expect(output).toMatchObject({ blockedIssue: "ENG-124" })
-    expect((output.relations as Array<{ identifier: string }>)[0]?.identifier).toBe("ENG-123")
+    expect((output.relations as Array<{ blockerIssue: string }>)[0]?.blockerIssue).toBe("ENG-123")
+    expect((output.relations as Array<{ identifier?: string }>)[0]?.identifier).toBeUndefined()
     expect((output.help as string[])[0]).toContain("relations list --issue 'ENG-124' --blocked-by --after 'next-cursor'")
   })
 
@@ -331,25 +332,6 @@ describe("runCommand", () => {
       const parsed = parseArgs(argv, commandSpecs)
       const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/repo/src/main.ts")))
       expect(error).toBeInstanceOf(UsageError)
-    }
-
-    expect(calls).toBe(0)
-  })
-
-  test("rejects self-blocking through shorthand and generic forms before gateway access", async () => {
-    let calls = 0
-    const gateway = fakeGateway({
-      createRelation: () => { calls += 1; return Effect.succeed(mutation(baseRelation)) }
-    })
-
-    for (const argv of [
-      ["relations", "create", "--issue", "ENG-123", "--blocked-by", "eng-123"],
-      ["relations", "create", "--issue", "ENG-123", "--related-issue", "eng-123", "--type", "blocks"]
-    ]) {
-      const parsed = parseArgs(argv, commandSpecs)
-      const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/repo/src/main.ts")))
-      expect(error).toBeInstanceOf(UsageError)
-      expect(error.message).toContain("cannot block itself")
     }
 
     expect(calls).toBe(0)
