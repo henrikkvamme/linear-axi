@@ -33,6 +33,8 @@ linear-axi labels list --team <key-or-id> --name <exact-name>
 linear-axi labels list --issue <issue-id-or-key> --include-archived --fields id,name,archivedAt
 linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
 linear-axi labels apply --issue <issue> --label <label>
+linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue>
+linear-axi relations list --issue <blocked-issue> --blocked-by
 linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks
 linear-axi relations list --issue <issue> --type blocks --direction both
 linear-axi comments list --issue <issue> --limit 50 --full
@@ -70,7 +72,7 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
    Completion criterion: if the user approves Linear OAuth and the live browser lands on `http://127.0.0.1:14582/oauth/callback?...` with `This site can't be reached`, keep the still-running `auth login` process alive and paste that full callback URL into the CLI stdin. Then read the waiting CLI output and verify the configured credentials file was written. Do not paste the callback code or resulting tokens in the final answer.
 
 10. Preserve directed relation semantics.
-    Completion criterion: treat source, target, and type as the relation identity. For `relations create --type blocks`, pass the blocker as `--issue` and the blocked issue as `--related-issue`. A reverse relation is distinct.
+    Completion criterion: prefer `relations create --issue <blocked> --blocked-by <blocker>` and `relations list --issue <blocked> --blocked-by` for blocking relationships. Create maps the blocker to the source and the blocked issue to the target, and names both in its output. List maps to incoming `blocks`, reports the query as top-level `blockedIssue`, and names each row's counterpart `blockerIssue`. Do not combine the shorthand with generic relation flags. For the generic `relations create --type blocks` form, pass the source blocker as `--issue` and the target blocked issue as `--related-issue`. Treat source, target, and type as the relation identity; a reverse relation is distinct. Never create a self-block, including through two references that resolve to the same issue.
 
 11. Treat assignment as a non-atomic claim convention.
     Completion criterion: claim only an unassigned issue, never pass `--replace` for a Wayfinder claim, and release with `--if-assignee me`. Read-after-write verification narrows but cannot eliminate concurrent claim races.

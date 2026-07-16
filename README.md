@@ -76,6 +76,8 @@ linear-axi labels list --workspace --name <exact-name>
 linear-axi labels list --workspace --include-archived --fields id,name,archivedAt
 linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
 linear-axi labels apply --issue <issue> --label <label>
+linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue>
+linear-axi relations list --issue <blocked-issue> --blocked-by
 linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks
 linear-axi relations list --issue <issue> --type blocks --direction both
 linear-axi comments list --issue <issue> --limit 50
@@ -106,7 +108,9 @@ Without `--state`, `issues close` is a no-op for an already terminal issue and o
 
 Full-description replacement requires `--if-updated-at` with the exact canonical `updatedAt` timestamp emitted by the CLI. The CLI rejects timestamps that are malformed or already stale, normalizes line endings and trailing newlines, refetches after a write, and verifies the desired description and a changed timestamp. Linear does not expose an atomic compare-and-swap precondition, so an edit can still land in the final read/write window. Keep resolution comments as the canonical decision records, refetch and merge after any conflict, and never retry an old full description.
 
-Relations are directed tuples of source, target, and type (`blocks`, `related`, `duplicate`, or `similar`). For `--type blocks`, `--issue` is the blocker and `--related-issue` is the blocked issue. Relation lists report each match as `outgoing` or `incoming`; `--direction` defaults to `both`.
+Use `relations create --issue <blocked-issue> --blocked-by <blocker-issue>` when one issue blocks another. The shorthand deliberately reads from the blocked issue's perspective: it maps the blocker to Linear's source, the blocked issue to Linear's target, and the type to `blocks`. Create output names both `blockedIssue` and `blockerIssue`. `relations list --issue <blocked-issue> --blocked-by` lists incoming `blocks` relations, names the query once as top-level `blockedIssue`, and uses `blockerIssue` instead of the generic `identifier` in each relation row. The shorthand cannot be mixed with the generic relation flags.
+
+The generic API remains available for every directed relation type. Relations are tuples of source, target, and type (`blocks`, `related`, `duplicate`, or `similar`). In `relations create --issue <blocker> --related-issue <blocked> --type blocks`, `--issue` is the source blocker and `--related-issue` is the target blocked issue. Generic relation lists report each match as `outgoing` or `incoming`; `--direction` defaults to `both`. Both create forms preserve caller-retained UUID and natural-key idempotency. Every `blocks` creation rejects self-blocking after issue references resolve, including when two different references identify the same issue.
 
 Comment bodies are truncated to 500 characters in lists unless `--full` is passed. `--body-file` avoids shell quoting for canonical resolution comments.
 

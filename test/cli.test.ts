@@ -95,6 +95,24 @@ describe("linear-axi process", () => {
     expect(stdoutText(result)).toContain("unknown flag --bogus")
   })
 
+  test("relation shorthand usage errors include repaired help before authentication", () => {
+    for (const [args, message] of [
+      [["relations", "create", "--issue", "ENG-124", "--blocked-by"], "--blocked-by requires a value"],
+      [["relations", "create", "--issue", "ENG-124", "--blockd-by", "ENG-123"], "unknown flag --blockd-by"],
+      [["relations", "create", "--issue", "ENG-124", "--blocked-by", "ENG-123", "--type", "blocks"], "must not combine"],
+      [["relations", "list", "--issue", "ENG-124", "--blocked-by", "--direction", "incoming"], "must not combine"]
+    ] as const) {
+      const result = runCli(...args)
+      const stdout = stdoutText(result)
+
+      expect(result.exitCode).toBe(2)
+      expect(stderrText(result)).toBe("")
+      expect(stdout).toContain(message)
+      expect(stdout).toContain("--issue <blocked-issue>")
+      expect(stdout).not.toContain("Linear credentials are not configured")
+    }
+  })
+
   test("rejects unknown commands with usage exit", () => {
     const result = runCli("issues", "delete", "--id", "ENG-123")
 

@@ -15,6 +15,18 @@ describe("parseArgs", () => {
     expect(parsed.flags.get("limit")).toBe("5")
   })
 
+  test("parses blocked-by relation shorthands with command-specific flag shapes", () => {
+    const create = parseArgs([
+      "relations", "create", "--issue", "ENG-124", "--blocked-by", "ENG-123"
+    ], commandSpecs)
+    const list = parseArgs([
+      "relations", "list", "--issue", "ENG-124", "--blocked-by"
+    ], commandSpecs)
+
+    expect(create.flags.get("blocked-by")).toBe("ENG-123")
+    expect(list.flags.get("blocked-by")).toBe(true)
+  })
+
   test("rejects unknown flags", () => {
     expect(() => parseArgs(["issues", "list", "--stat", "open"], commandSpecs)).toThrow(UsageError)
   })
@@ -159,6 +171,14 @@ describe("parseArgs", () => {
 
     expect(parsed.flags.get("include-archived")).toBe(true)
     expect(help).toContain("--include-archived")
+  })
+
+  test("relation help makes blocked and blocker roles explicit", () => {
+    const createHelp = commandSpecs.find((spec) => spec.path.join(" ") === "relations create")?.help
+    const listHelp = commandSpecs.find((spec) => spec.path.join(" ") === "relations list")?.help
+
+    expect(createHelp).toContain("--issue <blocked-issue> --blocked-by <blocker-issue>")
+    expect(listHelp).toContain("--issue <blocked-issue> --blocked-by")
   })
 
   const newCommands: ReadonlyArray<ReadonlyArray<string>> = [

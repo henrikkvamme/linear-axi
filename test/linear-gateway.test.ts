@@ -1424,6 +1424,82 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(counterpartReads).toBe(1)
   })
 
+  test("relation creation sends the directed source and target tuple to Linear", async () => {
+    const source = issue({ relations: async () => page([]) })
+    const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
+    const payloads: unknown[] = []
+    const relation = {
+      id: "77777777-7777-4777-8777-777777777777",
+      type: "blocks",
+      issueId: source.id,
+      relatedIssueId: target.id,
+      relatedIssue: Promise.resolve(target)
+    }
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source]),
+      createIssueRelation: async (input: unknown) => {
+        payloads.push(input)
+        return { success: true, issueRelation: Promise.resolve(relation) }
+      }
+    })
+
+    await Effect.runPromise(makeLinearGateway({}, { client }).createRelation({
+      issue: "BEN-1",
+      relatedIssue: "BEN-2",
+      type: "blocks"
+    }))
+
+    expect(payloads).toEqual([{
+      issueId: source.id,
+      relatedIssueId: target.id,
+      type: "blocks",
+      id: undefined
+    }])
+  })
+
+  test("relation creation rejects self-blocking after resolving aliases", async () => {
+    const sameIssue = issue({ relations: async () => { throw new Error("must not inspect relations") } })
+    let creates = 0
+    const client = clientWithIssues([sameIssue], {
+      createIssueRelation: async () => { creates += 1; throw new Error("must not create") }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createRelation({
+      issue: "BEN-1",
+      relatedIssue: sameIssue.id,
+      type: "blocks"
+    })))
+
+    expect(error.message).toContain("cannot block itself")
+    expect(creates).toBe(0)
+  })
+
+  test("relation natural key remains an idempotent no-op without a caller UUID", async () => {
+    const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
+    const naturalRelation = {
+      id: "77777777-7777-4777-8777-777777777777",
+      type: "blocks",
+      issueId: issue().id,
+      relatedIssueId: target.id,
+      relatedIssue: Promise.resolve(target)
+    }
+    const source = issue({ relations: async () => page([naturalRelation]) })
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source]),
+      createIssueRelation: async () => { throw new Error("must not create") }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).createRelation({
+      issue: "BEN-1",
+      relatedIssue: "BEN-2",
+      type: "blocks"
+    }))
+
+    expect(result).toMatchObject({ changed: false, result: "directed relation already exists (no-op)" })
+  })
+
   test("starts outgoing and incoming relation pagination concurrently", async () => {
     let outgoingStarted = false
     let incomingStarted = false

@@ -616,6 +616,12 @@ const createRelation = async (
   const callerId = input.id ? normalizeUuid(input.id) : undefined
   const source = await resolveIssue(client, input.issue)
   const target = await resolveIssue(client, input.relatedIssue)
+  if (input.type === "blocks" && uuidEqual(source.id, target.id)) {
+    throw new LinearDomainError({
+      message: `${source.identifier} cannot block itself`,
+      help: "Choose two different issues for the blocker and blocked issue."
+    })
+  }
 
   const classifyExisting = async (): Promise<MutationResult<RelationSummary> | undefined> => {
     const [relations, idMatch] = await Promise.all([
