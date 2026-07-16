@@ -59,7 +59,14 @@ test("standalone binary runs without a source checkout", () => {
       })
       expect(helpResult.exitCode).toBe(0)
       expect(new TextDecoder().decode(helpResult.stderr)).toBe("")
-      expect(new TextDecoder().decode(helpResult.stdout)).toContain(`linear-axi ${command.join(" ")}`)
+      const helpStdout = new TextDecoder().decode(helpResult.stdout)
+      expect(helpStdout).toContain(`linear-axi ${command.join(" ")}`)
+      if (command.join(" ") === "relations create") {
+        expect(helpStdout).toContain("--issue <blocked-issue> --blocked-by <blocker-issue>")
+      }
+      if (command.join(" ") === "relations list") {
+        expect(helpStdout).toContain("--issue <blocked-issue> --blocked-by")
+      }
     }
 
     const homeResult = Bun.spawnSync({

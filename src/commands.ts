@@ -326,8 +326,13 @@ const labelsApply = (parsed: ParsedArgs, gateway: LinearGateway) =>
   }).pipe(Effect.map(issueMutationOutput))
 
 const relationsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
-  const type = readStringFlag(parsed.flags, "type") as RelationType | undefined
-  const direction = readStringFlag(parsed.flags, "direction") ?? "both"
+  const blockedBy = readBooleanFlag(parsed.flags, "blocked-by")
+  const blockedIssue = readStringFlag(parsed.flags, "issue")!
+  if (blockedBy && (parsed.flags.has("type") || parsed.flags.has("direction"))) {
+    return usage("--blocked-by must not combine with --type or --direction", parsed.command)
+  }
+  const type = (blockedBy ? "blocks" : readStringFlag(parsed.flags, "type")) as RelationType | undefined
+  const direction = blockedBy ? "incoming" : (readStringFlag(parsed.flags, "direction") ?? "both")
   if (type && !RELATION_TYPES.has(type)) {
     return usage("--type must be blocks, related, duplicate, or similar", parsed.command)
   }
@@ -339,7 +344,7 @@ const relationsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
     return usage("invalid relation cursor", parsed.command)
   }
   return gateway.listRelations({
-    issue: readStringFlag(parsed.flags, "issue")!,
+    issue: blockedIssue,
     type,
     direction: direction as RelationDirection | "both",
     after,
@@ -347,7 +352,14 @@ const relationsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   }).pipe(Effect.map((result) => ({
     count: `${result.items.length} relations shown`,
     page: result.page,
-    ...(result.items.length === 0 ? { relations: "0 relations matched this issue and direction" } : { relations: result.items }),
+    ...(result.items.length === 0
+      ? { relations: blockedBy ? `0 blockers found for ${blockedIssue}` : "0 relations matched this issue and direction" }
+      : {
+          relations: blockedBy
+            ? result.items.map((relation) => ({ ...relation, blockerIssue: relation.identifier, blockedIssue }))
+            : result.items
+        }),
+    ...(blockedBy ? { blockedIssue } : {}),
     help: result.page.hasNext && result.page.endCursor
       ? [continuationCommand("relations list", parsed, result.page.endCursor)]
       : []
@@ -355,20 +367,41 @@ const relationsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
 }
 
 const relationsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
-  const type = readStringFlag(parsed.flags, "type") as RelationType
+  const blockedIssue = readStringFlag(parsed.flags, "issue")!
+  const blockerIssue = readStringFlag(parsed.flags, "blocked-by")
+  if (blockerIssue !== undefined && (parsed.flags.has("related-issue") || parsed.flags.has("type"))) {
+    return usage("--blocked-by must not combine with --related-issue or --type", parsed.command)
+  }
+  if (blockerIssue === undefined && !parsed.flags.has("related-issue")) {
+    return usage("--related-issue is required unless --blocked-by is used", parsed.command)
+  }
+  if (blockerIssue === undefined && !parsed.flags.has("type")) {
+    return usage("--type is required unless --blocked-by is used", parsed.command)
+  }
+  const type = (blockerIssue === undefined ? readStringFlag(parsed.flags, "type") : "blocks") as RelationType
   if (!RELATION_TYPES.has(type)) {
     return usage("--type must be blocks, related, duplicate, or similar", parsed.command)
+  }
+  const relationSource = blockerIssue ?? blockedIssue
+  const relationTarget = blockerIssue === undefined ? readStringFlag(parsed.flags, "related-issue")! : blockedIssue
+  if (type === "blocks" && relationSource.trim().toLowerCase() === relationTarget.trim().toLowerCase()) {
+    return usage("an issue cannot block itself", parsed.command)
   }
   const id = readStringFlag(parsed.flags, "id")
   if (id && !isUuidV4(id)) {
     return usage("--id must be a UUID v4", parsed.command)
   }
   return gateway.createRelation({
-    issue: readStringFlag(parsed.flags, "issue")!,
-    relatedIssue: readStringFlag(parsed.flags, "related-issue")!,
+    issue: relationSource,
+    relatedIssue: relationTarget,
     type,
     id
-  }).pipe(Effect.map((result) => ({ relation: result.value, changed: result.changed, result: result.result })))
+  }).pipe(Effect.map((result) => ({
+    relation: result.value,
+    changed: result.changed,
+    result: result.result,
+    ...(blockerIssue === undefined ? {} : { blockedIssue, blockerIssue })
+  })))
 }
 
 const commentsList = (parsed: ParsedArgs, gateway: LinearGateway) => {

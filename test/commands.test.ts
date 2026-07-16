@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { Effect } from "effect"
 import { commandSpecs, parseArgs } from "../src/args"
 import { runCommand } from "../src/commands"
+import { UsageError } from "../src/errors"
 import type { IssueDetail, IssueSummary, LinearGateway } from "../src/linear"
 import { encodeFrontierCursor } from "../src/wayfinder"
 
@@ -38,6 +39,16 @@ const page = <Value>(items: ReadonlyArray<Value>, hasNext = false) => ({
 })
 
 const mutation = <Value>(value: Value, changed = true, result = "changed") => ({ value, changed, result })
+const baseRelation = {
+  id: "relation-id",
+  type: "blocks" as const,
+  direction: "outgoing" as const,
+  identifier: "ENG-124",
+  title: "Target",
+  state: "Todo",
+  sourceId: baseIssue.id,
+  targetId: "target-id"
+}
 
 const fakeGateway = (overrides: Partial<LinearGateway> = {}): LinearGateway => ({
   authStatus: () => Effect.succeed({
@@ -200,14 +211,148 @@ describe("runCommand", () => {
   })
 
   test("relations preserve directed blocker and target inputs", async () => {
+    const relation = { id: "relation-id", type: "blocks" as const, direction: "outgoing" as const, identifier: "ENG-124", title: "Target", state: "Todo", sourceId: baseIssue.id, targetId: "target-id" }
     const gateway = fakeGateway({
       createRelation: (input) => {
         expect(input).toEqual({ issue: "ENG-123", relatedIssue: "ENG-124", type: "blocks", id: undefined })
-        return Effect.succeed(mutation({ id: "relation-id", type: "blocks", direction: "outgoing", identifier: "ENG-124", title: "Target", state: "Todo", sourceId: baseIssue.id, targetId: "target-id" }))
+        return Effect.succeed(mutation(relation))
       }
     })
     const output = await run(["relations", "create", "--issue", "ENG-123", "--related-issue", "ENG-124", "--type", "blocks"], gateway)
-    expect((output.relation as { direction: string }).direction).toBe("outgoing")
+    expect(output).toEqual({ relation, changed: true, result: "changed" })
+  })
+
+  test("generic relation list preserves explicit filters and output", async () => {
+    const relation = { id: "relation-id", type: "blocks" as const, direction: "incoming" as const, identifier: "ENG-123", title: "Blocker", state: "Todo", sourceId: baseIssue.id, targetId: "target-id" }
+    const gateway = fakeGateway({
+      listRelations: (input) => {
+        expect(input).toEqual({ issue: "ENG-124", type: "blocks", direction: "incoming", after: undefined, limit: 100 })
+        return Effect.succeed(page([relation]))
+      }
+    })
+
+    const output = await run(["relations", "list", "--issue", "ENG-124", "--type", "blocks", "--direction", "incoming"], gateway)
+
+    expect(output).toEqual({
+      count: "1 relations shown",
+      page: { hasNext: false, endCursor: null },
+      relations: [relation],
+      help: []
+    })
+  })
+
+  test("blocked-by create normalizes blocker as source and blocked issue as target", async () => {
+    const id = "88888888-8888-4888-8888-888888888888"
+    const gateway = fakeGateway({
+      createRelation: (input) => {
+        expect(input).toEqual({ issue: "ENG-123", relatedIssue: "ENG-124", type: "blocks", id })
+        return Effect.succeed(mutation({
+          id,
+          type: "blocks",
+          direction: "outgoing",
+          identifier: "ENG-124",
+          title: "Blocked issue",
+          state: "Todo",
+          sourceId: baseIssue.id,
+          targetId: "target-id"
+        }))
+      }
+    })
+
+    const output = await run([
+      "relations", "create", "--issue", "ENG-124", "--blocked-by", "ENG-123", "--id", id
+    ], gateway)
+
+    expect(output).toMatchObject({ blockedIssue: "ENG-124", blockerIssue: "ENG-123" })
+  })
+
+  test("blocked-by list normalizes to incoming blocks centered on the blocked issue", async () => {
+    const gateway = fakeGateway({
+      listRelations: (input) => {
+        expect(input).toEqual({
+          issue: "ENG-124",
+          type: "blocks",
+          direction: "incoming",
+          after: undefined,
+          limit: 100
+        })
+        return Effect.succeed(page([{
+          id: "relation-id",
+          type: "blocks",
+          direction: "incoming",
+          identifier: "ENG-123",
+          title: "Blocker",
+          state: "Todo",
+          sourceId: baseIssue.id,
+          targetId: "target-id"
+        }], true))
+      }
+    })
+
+    const output = await run(["relations", "list", "--issue", "ENG-124", "--blocked-by"], gateway)
+
+    expect(output).toMatchObject({ blockedIssue: "ENG-124" })
+    expect((output.relations as Array<{ identifier: string }>)[0]?.identifier).toBe("ENG-123")
+    expect((output.help as string[])[0]).toContain("relations list --issue 'ENG-124' --blocked-by --after 'next-cursor'")
+  })
+
+  test("blocked-by shorthands reject generic relation flags before gateway access", async () => {
+    let calls = 0
+    const gateway = fakeGateway({
+      createRelation: () => { calls += 1; return Effect.succeed(mutation(baseRelation)) },
+      listRelations: () => { calls += 1; return Effect.succeed(page([])) }
+    })
+
+    for (const argv of [
+      ["relations", "create", "--issue", "ENG-124", "--blocked-by", "ENG-123", "--related-issue", "ENG-125"],
+      ["relations", "create", "--issue", "ENG-124", "--blocked-by", "ENG-123", "--type", "blocks"],
+      ["relations", "list", "--issue", "ENG-124", "--blocked-by", "--type", "blocks"],
+      ["relations", "list", "--issue", "ENG-124", "--blocked-by", "--direction", "incoming"]
+    ]) {
+      const parsed = parseArgs(argv, commandSpecs)
+      const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/repo/src/main.ts")))
+      expect(error).toBeInstanceOf(UsageError)
+      expect(error.message).toContain("must not combine")
+    }
+
+    expect(calls).toBe(0)
+  })
+
+  test("generic relation create still requires both related issue and type before gateway access", async () => {
+    let calls = 0
+    const gateway = fakeGateway({
+      createRelation: () => { calls += 1; return Effect.succeed(mutation(baseRelation)) }
+    })
+
+    for (const argv of [
+      ["relations", "create", "--issue", "ENG-123", "--related-issue", "ENG-124"],
+      ["relations", "create", "--issue", "ENG-123", "--type", "blocks"]
+    ]) {
+      const parsed = parseArgs(argv, commandSpecs)
+      const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/repo/src/main.ts")))
+      expect(error).toBeInstanceOf(UsageError)
+    }
+
+    expect(calls).toBe(0)
+  })
+
+  test("rejects self-blocking through shorthand and generic forms before gateway access", async () => {
+    let calls = 0
+    const gateway = fakeGateway({
+      createRelation: () => { calls += 1; return Effect.succeed(mutation(baseRelation)) }
+    })
+
+    for (const argv of [
+      ["relations", "create", "--issue", "ENG-123", "--blocked-by", "eng-123"],
+      ["relations", "create", "--issue", "ENG-123", "--related-issue", "eng-123", "--type", "blocks"]
+    ]) {
+      const parsed = parseArgs(argv, commandSpecs)
+      const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/repo/src/main.ts")))
+      expect(error).toBeInstanceOf(UsageError)
+      expect(error.message).toContain("cannot block itself")
+    }
+
+    expect(calls).toBe(0)
   })
 
   test("comments list truncates with total and create reads body files with caller UUID", async () => {

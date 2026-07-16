@@ -180,7 +180,9 @@ export const topLevelHelp = [
   "  linear-axi labels list [--workspace | --team <team>] [--name <exact-name>] [--issue <issue>] [--include-archived] [--after <cursor>] [--limit 100] [--fields <fields>]",
   "  linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <team>) [--description \"...\"] [--id <uuid-v4>] [--if-absent]",
   "  linear-axi labels apply --issue <issue> --label <id-or-name>",
+  "  linear-axi relations list --issue <blocked-issue> --blocked-by [--after <cursor>] [--limit 100]",
   "  linear-axi relations list --issue <issue> [--type <type>] [--direction outgoing|incoming|both] [--after <cursor>] [--limit 100]",
+  "  linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> [--id <uuid-v4>]",
   "  linear-axi relations create --issue <source> --related-issue <target> --type <type> [--id <uuid-v4>]",
   "  linear-axi comments list --issue <issue> [--after <cursor>] [--limit 50] [--full]",
   "  linear-axi comments create --issue <issue> (--body \"...\" | --body-file <path|->) [--id <uuid-v4>]",
@@ -316,17 +318,17 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
   },
   {
     path: ["relations", "list"],
-    flags: new Set(["help", "issue", "type", "direction", "after", "limit"]),
+    flags: new Set(["help", "issue", "blocked-by", "type", "direction", "after", "limit"]),
     valueFlags: new Set(["issue", "type", "direction", "after", "limit"]),
     required: new Set(["issue"]),
-    help: "Usage: linear-axi relations list --issue <issue-id-or-key> [--type blocks|related|duplicate|similar] [--direction outgoing|incoming|both] [--after <cursor>] [--limit 100]"
+    help: "Usage: linear-axi relations list --issue <blocked-issue> --blocked-by [--after <cursor>] [--limit 100]\n   or: linear-axi relations list --issue <issue-id-or-key> [--type blocks|related|duplicate|similar] [--direction outgoing|incoming|both] [--after <cursor>] [--limit 100]\n--blocked-by lists blockers of --issue by selecting incoming blocks relations."
   },
   {
     path: ["relations", "create"],
-    flags: new Set(["help", "issue", "related-issue", "type", "id"]),
-    valueFlags: new Set(["issue", "related-issue", "type", "id"]),
-    required: new Set(["issue", "related-issue", "type"]),
-    help: "Usage: linear-axi relations create --issue <source-issue> --related-issue <target-issue> --type blocks|related|duplicate|similar [--id <uuid-v4>]\nFor --type blocks, --issue is the blocker and --related-issue is the blocked issue."
+    flags: new Set(["help", "issue", "blocked-by", "related-issue", "type", "id"]),
+    valueFlags: new Set(["issue", "blocked-by", "related-issue", "type", "id"]),
+    required: new Set(["issue"]),
+    help: "Usage: linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> [--id <uuid-v4>]\n   or: linear-axi relations create --issue <source-issue> --related-issue <target-issue> --type blocks|related|duplicate|similar [--id <uuid-v4>]\n--blocked-by is the blocker (source); --issue is the blocked issue (target).\nFor generic --type blocks, --issue is the blocker and --related-issue is the blocked issue."
   },
   {
     path: ["comments", "list"],
@@ -367,8 +369,8 @@ const commandExamples: Readonly<Record<string, ReadonlyArray<string>>> = {
   "labels list": ["linear-axi labels list --team ENG --name wayfinder:task", "linear-axi labels list --workspace --include-archived --fields id,name,archivedAt"],
   "labels create": ["linear-axi labels create --team ENG --name wayfinder:task --color '#123456'"],
   "labels apply": ["linear-axi labels apply --issue ENG-123 --label wayfinder:task"],
-  "relations list": ["linear-axi relations list --issue ENG-123 --type blocks --direction outgoing"],
-  "relations create": ["linear-axi relations create --issue ENG-123 --related-issue ENG-124 --type blocks"],
+  "relations list": ["linear-axi relations list --issue ENG-124 --blocked-by", "linear-axi relations list --issue ENG-123 --type blocks --direction outgoing"],
+  "relations create": ["linear-axi relations create --issue ENG-124 --blocked-by ENG-123", "linear-axi relations create --issue ENG-123 --related-issue ENG-124 --type blocks"],
   "comments list": ["linear-axi comments list --issue ENG-123 --full"],
   "comments create": ["linear-axi comments create --issue ENG-123 --body \"Implemented in PR.\""],
   "wayfinder frontier": ["linear-axi wayfinder frontier --map ENG-100 --first 20"]
@@ -396,6 +398,7 @@ const optionValues: Readonly<Record<string, string>> = {
   "description-file": "<path|->",
   "body-file": "<path|->",
   "related-issue": "<issue>",
+  "blocked-by": "<issue>",
   type: "<type>",
   direction: "<direction>",
   color: "<#RRGGBB>",
