@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { chmodSync, mkdtempSync, rmSync } from "node:fs"
+import { chmodSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -80,7 +80,7 @@ test("standalone binary runs without a source checkout", () => {
 
     expect(homeResult.exitCode).toBe(0)
     expect(new TextDecoder().decode(homeResult.stderr)).toBe("")
-    expect(homeStdout).toContain(`bin: ${binary}`)
+    expect(homeStdout).toContain(`bin: ${realpathSync(binary)}`)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
