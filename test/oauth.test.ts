@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
 import {
+  benderBrowserRequestArgs,
   browserOpenCommand,
   createOAuthSession,
   openOAuthUrl,
@@ -117,7 +118,6 @@ describe("writeOAuthEnv", () => {
     expect(readFileSync(envFile, "utf8")).toBe("LINEAR_ACCESS_TOKEN=oauth-token\n")
   })
 })
-
 describe("createOAuthSession", () => {
   test("builds a Linear OAuth PKCE authorization URL", () => {
     const session = createOAuthSession({
@@ -174,5 +174,26 @@ describe("readOAuthCodeFromCallbackUrl", () => {
     ))
 
     expect(exit._tag).toBe("Failure")
+  })
+})
+
+describe("benderBrowserRequestArgs", () => {
+  test("prepares the intended OAuth page before requesting phone takeover", () => {
+    const url = "https://linear.app/oauth/authorize?client_id=client1&state=state1"
+
+    expect(benderBrowserRequestArgs(url, "Authorize Linear OAuth for linear-axi", "task-123")).toEqual([
+      "request",
+      "--service",
+      "Linear",
+      "--domain",
+      "linear.app",
+      "--task-id",
+      "task-123",
+      "--reason",
+      "Authorize Linear OAuth for linear-axi",
+      "--target-url",
+      url,
+      "--wait"
+    ])
   })
 })

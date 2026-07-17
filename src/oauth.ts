@@ -478,18 +478,11 @@ const exchangeCodeForToken = (input: {
 const notifyBender = (url: string, reason: string): Effect.Effect<void, LinearApiError> =>
   Effect.try({
     try: () => {
-      const fullReason = reason.includes(url) ? reason : `${reason} Open: ${url}`
-      const result = spawnSync("bender-browser", [
-        "request",
-        "--service",
-        "Linear",
-        "--domain",
-        "linear.app",
-        "--task-id",
-        `linear-axi-oauth-${Date.now()}`,
-        "--reason",
-        fullReason
-      ], {
+      const result = spawnSync("bender-browser", benderBrowserRequestArgs(
+        url,
+        reason.replace(url, "").replace(/:\s*$/, "").trim(),
+        `linear-axi-oauth-${Date.now()}`
+      ), {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"]
       })
@@ -510,6 +503,21 @@ const notifyBender = (url: string, reason: string): Effect.Effect<void, LinearAp
         help: "Run without --notify, or verify `bender-browser request` works."
       })
   })
+
+export const benderBrowserRequestArgs = (url: string, reason: string, taskId: string): string[] => [
+  "request",
+  "--service",
+  "Linear",
+  "--domain",
+  "linear.app",
+  "--task-id",
+  taskId,
+  "--reason",
+  reason,
+  "--target-url",
+  url,
+  "--wait"
+]
 
 const validateLocalRedirectUri = (redirectUri: string): Effect.Effect<void, UsageError> =>
   Effect.try({
