@@ -62,6 +62,7 @@ import {
   normalizeUuid,
   resolveAssignableUser,
   resolveIssue,
+  resolveLabelForRemoval,
   resolveLabelForTeam,
   resolveLabelGlobally,
   resolveTeam,
@@ -698,7 +699,7 @@ const removeLabel = async (
   input: ApplyLabelInput
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.issue)
-  const label = await resolveLabelForTeam(client, input.label, requireTeamId(issue))
+  const label = await resolveLabelForRemoval(client, issue, input.label, requireTeamId(issue))
   requireOrdinaryLabel(label)
   if (!issue.labelIds.some((id) => uuidEqual(id, label.id))) {
     return unchanged(await issueSummary(issue), "label already absent (no-op)")

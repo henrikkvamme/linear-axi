@@ -34,6 +34,7 @@ const ISSUE_FIELD_SET: ReadonlySet<string> = new Set(ISSUE_FIELDS)
 const LABEL_FIELD_SET: ReadonlySet<string> = new Set(LABEL_FIELDS)
 const RELATION_TYPES = new Set<RelationType>(["blocks", "related", "duplicate", "similar"])
 const RELATION_DIRECTIONS = new Set(["outgoing", "incoming", "both"])
+const MAX_OFFICIAL_PAGES = 1_000
 const decodeStringArray = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)))
 const decodeLinkArray = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.Struct({
   url: Schema.String.check(Schema.isPattern(/^https?:\/\//)),
@@ -271,17 +272,14 @@ const createOfficialIssue = (
   if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialUserSelector(gateway, input.assignee)
   if (typeof input.state === "string") input.state = yield* resolveOfficialStateSelector(gateway, team, input.state)
   yield* resolveOfficialIssueSelectors(gateway, input, team)
-  const candidates: Array<Record<string, unknown>> = []
-  let cursor: string | undefined
-  do {
-    const existing = yield* gateway.callOfficialTool("list_issues", { query: title, team, limit: 100, ...(cursor ? { cursor } : {}) })
-    candidates.push(...officialRows(existing, "issues"))
-    if (!Predicate.isObject(existing) || existing.hasNextPage !== true) break
-    if (typeof existing.cursor !== "string") return yield* officialShapeError("list_issues cursor")
-    cursor = existing.cursor
-  } while (cursor)
+  const candidates = yield* fetchOfficialRows(gateway, "list_issues", {
+    query: title,
+    team,
+    limit: 100,
+    includeArchived: false
+  }, "issues")
   const matches = candidates.filter((issue) =>
-    issue.title === title && officialReferenceMatches(issue.teamId ?? issue.team, team))
+    issue.archivedAt == null && issue.title === title && officialReferenceMatches(issue.teamId ?? issue.team, team))
   if (matches.length > 1) {
     return yield* Effect.fail(new LinearDomainError({
       message: `Multiple issues exactly match title ${title} in team ${teamInput}`,
@@ -421,7 +419,7 @@ const updateOfficialIssue = (
   const input = issuePropertyInput(parsed, description, readStringFlag(parsed.flags, "labels-json"))
   input.id = id
   const before = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(id, input))
-  if (!Predicate.isObject(before)) return yield* officialShapeError("get_issue")
+  if (!Predicate.isObject(before) || !officialEntityMatchesSelector(before, id)) return yield* officialShapeError("get_issue identity")
   if (timestamp !== undefined && before.updatedAt !== timestamp) {
     return yield* Effect.fail(new LinearDomainError({
       message: `Issue changed since ${timestamp}; refusing a known-stale description update`,
@@ -440,8 +438,16 @@ const updateOfficialIssue = (
   if (officialIssueSatisfies(before, input)) {
     return { issue: before, changed: false, result: "requested issue properties already match (no-op)" }
   }
-  const issue = yield* gateway.callOfficialTool("save_issue", input)
-  return { issue, changed: true, result: "requested issue properties saved in one mutation", concurrency: DESCRIPTION_CONCURRENCY_WARNING }
+  yield* gateway.callOfficialTool("save_issue", input)
+  const after = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(id, input))
+  if (!Predicate.isObject(after) || !officialEntityMatchesSelector(after, id)) return yield* officialShapeError("get_issue identity")
+  if (!officialIssueSatisfies(after, input)) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: "save_issue update could not be verified",
+      help: `Run \`linear-axi issues inspect --id ${shellQuote(id)} --full\` before retrying.`
+    }))
+  }
+  return { issue: after, changed: true, result: "requested issue properties saved and verified", concurrency: DESCRIPTION_CONCURRENCY_WARNING }
 })
 
 const issuePropertyInput = (
@@ -511,15 +517,7 @@ const resolveOfficialUserSelector = (
     if (!Predicate.isObject(user) || typeof user.id !== "string") return yield* officialShapeError("get_user")
     return user.id
   }
-  const rows: Array<Record<string, unknown>> = []
-  let cursor: string | undefined
-  do {
-    const result = yield* gateway.callOfficialTool("list_users", { query: selector, limit: 100, ...(cursor ? { cursor } : {}) })
-    rows.push(...officialRows(result, "users"))
-    if (!Predicate.isObject(result) || result.hasNextPage !== true) break
-    if (typeof result.cursor !== "string") return yield* officialShapeError("list_users cursor")
-    cursor = result.cursor
-  } while (cursor)
+  const rows = yield* fetchOfficialRows(gateway, "list_users", { query: selector, limit: 100 }, "users")
   const normalized = selector.toLowerCase()
   const matches = rows.filter((user) =>
     [user.id, user.email, user.name, user.displayName].some((value) => typeof value === "string" && value.toLowerCase() === normalized))
@@ -603,13 +601,7 @@ const resolveOfficialLabels = (
   const result: Array<string> = []
   for (const raw of selectors) {
     const selector = String(raw)
-    const rows: Array<Record<string, unknown>> = []
-    let cursor: string | undefined
-    do {
-      const page = yield* gateway.callOfficialTool("list_issue_labels", { team, limit: 250, ...(cursor ? { cursor } : {}) })
-      rows.push(...officialRows(page, "labels"))
-      cursor = Predicate.isObject(page) && page.hasNextPage === true && typeof page.cursor === "string" ? page.cursor : undefined
-    } while (cursor)
+    const rows = yield* fetchOfficialRows(gateway, "list_issue_labels", { team, limit: 250 }, "labels")
     result.push(yield* uniqueOfficialId("label", selector, rows, ["id", "name"]))
   }
   return result
@@ -622,13 +614,7 @@ const resolveOfficialReleases = (
   const result: Array<string> = []
   for (const raw of selectors) {
     const selector = String(raw)
-    const rows: Array<Record<string, unknown>> = []
-    let cursor: string | undefined
-    do {
-      const page = yield* gateway.callOfficialTool("list_releases", { query: selector, limit: 250, ...(cursor ? { cursor } : {}) })
-      rows.push(...officialRows(page, "releases"))
-      cursor = Predicate.isObject(page) && page.hasNextPage === true && typeof page.cursor === "string" ? page.cursor : undefined
-    } while (cursor)
+    const rows = yield* fetchOfficialRows(gateway, "list_releases", { query: selector, limit: 250 }, "releases")
     result.push(yield* uniqueOfficialId("release", selector, rows, ["id", "name", "version", "slugId"]))
   }
   return result
@@ -725,12 +711,12 @@ const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<st
 const officialCollectionContains = (current: unknown, desired: unknown): boolean => officialCollectionMatches(current, desired, false)
 const officialCollectionEqual = (current: unknown, desired: unknown): boolean => officialCollectionMatches(current, desired, true)
 const officialCollectionAbsent = (current: unknown, desired: unknown): boolean => Array.isArray(desired) &&
-  desired.every((value) => !officialCollectionReferences(current).some((references) => references.includes(String(value))))
+  desired.every((value) => !officialCollectionReferences(current).some((references) => references.some((reference) => officialTextEqual(reference, String(value)))))
 const officialCollectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
   if (!Array.isArray(desired)) return false
   const remaining = officialCollectionReferences(current).map((references) => [...references])
   for (const value of desired) {
-    const index = remaining.findIndex((references) => references.includes(String(value)))
+    const index = remaining.findIndex((references) => references.some((reference) => officialTextEqual(reference, String(value))))
     if (index === -1) return false
     remaining.splice(index, 1)
   }
@@ -748,10 +734,18 @@ const officialLinksContain = (current: unknown, desired: unknown): boolean => Ar
 
 const officialReferenceMatches = (current: unknown, desired: unknown): boolean => {
   if (desired === null) return current === null || current === undefined
-  if (Predicate.isObject(current)) return [current.id, current.key, current.name, current.email, current.displayName]
-    .some((value) => value === desired)
-  return current === desired
+  if (Predicate.isObject(current)) return [current.id, current.identifier, current.key, current.name, current.email, current.displayName, current.slugId, current.version]
+    .some((value) => typeof value === "string" && officialTextEqual(value, String(desired)))
+  return typeof current === "string" && typeof desired === "string"
+    ? officialTextEqual(current, desired)
+    : current === desired
 }
+
+const officialEntityMatchesSelector = (entity: Readonly<Record<string, unknown>>, selector: string): boolean =>
+  [entity.id, entity.identifier]
+    .some((value) => typeof value === "string" && officialTextEqual(value, selector))
+
+const officialTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
 
 const labelsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const workspace = readBooleanFlag(parsed.flags, "workspace")
@@ -1186,6 +1180,43 @@ const replayCommand = (
 }
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
+
+const fetchOfficialRows = Effect.fn("fetchOfficialRows")(function*(
+  gateway: LinearGateway,
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+  key: string
+): Effect.fn.Return<ReadonlyArray<Record<string, unknown>>, CliError> {
+  const rows: Array<Record<string, unknown>> = []
+  const seenCursors = new Set<string>()
+  let cursor: string | undefined
+  let pages = 0
+  do {
+    const page = yield* gateway.callOfficialTool(tool, { ...args, ...(cursor === undefined ? {} : { cursor }) })
+    rows.push(...officialRows(page, key))
+    pages += 1
+    if (!Predicate.isObject(page) || (page.hasNextPage !== undefined && typeof page.hasNextPage !== "boolean")) {
+      return yield* officialShapeError(`${tool} pagination`)
+    }
+    if (page.hasNextPage !== true) return rows
+    if (pages >= MAX_OFFICIAL_PAGES) {
+      return yield* Effect.fail(new LinearDomainError({
+        message: `Official Linear MCP ${tool} pagination exceeded the ${MAX_OFFICIAL_PAGES}-page safety limit`,
+        help: "Narrow the selector and retry."
+      }))
+    }
+    if (typeof page.cursor !== "string" || page.cursor.length === 0) return yield* officialShapeError(`${tool} cursor`)
+    if (seenCursors.has(page.cursor)) {
+      return yield* Effect.fail(new LinearDomainError({
+        message: `Official Linear MCP ${tool} pagination cursor did not advance`,
+        help: "Retry after Linear pagination recovers."
+      }))
+    }
+    seenCursors.add(page.cursor)
+    cursor = page.cursor
+  } while (cursor !== undefined)
+  return rows
+})
 
 const officialRows = (value: unknown, key: string): ReadonlyArray<Record<string, unknown>> => {
   if (!Predicate.isObject(value) || !Array.isArray(value[key])) {

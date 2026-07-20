@@ -222,7 +222,7 @@ const runVerifiedMutation = (
   if (!mutationSatisfied(after, canonicalArgs, entry.tool)) {
     return yield* Effect.fail(new LinearDomainError({
       message: `${entry.tool} update could not be verified`,
-      help: `Run \`linear-axi ${entry.path[0]} view --id ${String(args.id)} --full\` before retrying.`
+      help: `Run \`${mutationRecoveryCommand(entry.tool, canonicalArgs)}\` before retrying.`
     }))
   }
   return detailOutput(entry, after, parsed, true, `official ${entry.tool} update verified`)
@@ -233,10 +233,25 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
   args: Readonly<Record<string, unknown>>,
   gateway: LinearGateway
 ) {
-  if (tool !== "save_project" || typeof args.lead !== "string") return args
-  const user = yield* gateway.callOfficialTool("get_user", { query: args.lead })
-  if (!Predicate.isObject(user) || typeof user.id !== "string") return yield* mutationShapeDrift(tool)
-  return { ...args, lead: user.id }
+  if (tool === "save_project" && typeof args.lead === "string") {
+    const user = yield* gateway.callOfficialTool("get_user", { query: args.lead })
+    if (!Predicate.isObject(user) || typeof user.id !== "string" || (args.lead !== "me" && !userEntityMatches(user, args.lead))) {
+      return yield* mutationShapeDrift(tool)
+    }
+    return { ...args, lead: user.id }
+  }
+  if (tool === "save_milestone" && typeof args.project === "string" && typeof args.id === "string") {
+    const project = yield* gateway.callOfficialTool("get_project", { query: args.project })
+    if (!Predicate.isObject(project) || typeof project.id !== "string" || !mutationEntityMatches(project, args.project, "save_project")) {
+      return yield* mutationShapeDrift(tool)
+    }
+    const milestone = yield* gateway.callOfficialTool("get_milestone", { project: project.id, query: args.id })
+    if (!Predicate.isObject(milestone) || typeof milestone.id !== "string" || !mutationEntityMatches(milestone, args.id, "save_milestone")) {
+      return yield* mutationShapeDrift(tool)
+    }
+    return { ...args, project: project.id, id: milestone.id }
+  }
+  return args
 })
 
 const mutationReadTool = (tool: string): string => ({
@@ -266,10 +281,13 @@ const extractMutationObject = (
 ): Effect.Effect<Record<string, unknown>, LinearDomainError> => {
   if (tool === "save_status_update") {
     if (!Predicate.isObject(value) || !Array.isArray(value.statusUpdates)) return mutationShapeDrift(tool)
-    const matches = value.statusUpdates.filter(Predicate.isObject).filter((item) => item.id === args.id)
+    const matches = value.statusUpdates.filter(Predicate.isObject).filter((item) =>
+      mutationEntityMatches(item, args.id, tool) && referenceEqual(item.type, args.type))
     return matches.length === 1 ? Effect.succeed(matches[0]!) : mutationShapeDrift(tool)
   }
-  return Predicate.isObject(value) ? Effect.succeed(value) : mutationShapeDrift(tool)
+  return Predicate.isObject(value) && Object.keys(value).length > 0 && mutationEntityMatches(value, args.id, tool)
+    ? Effect.succeed(value)
+    : mutationShapeDrift(tool)
 }
 
 const mutationShapeDrift = (tool: string): Effect.Effect<never, LinearDomainError> => Effect.fail(new LinearDomainError({
@@ -296,12 +314,12 @@ const mutationSatisfied = (
 const collectionEqual = (current: unknown, desired: unknown): boolean => collectionMatches(current, desired, true)
 const collectionContains = (current: unknown, desired: unknown): boolean => collectionMatches(current, desired, false)
 const collectionAbsent = (current: unknown, desired: unknown): boolean => Array.isArray(desired) &&
-  desired.every((value) => !collectionReferences(current).some((references) => references.includes(String(value))))
+  desired.every((value) => !collectionReferences(current).some((references) => references.some((reference) => referenceTextEqual(reference, String(value)))))
 const collectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
   if (!Array.isArray(desired)) return false
   const remaining = collectionReferences(current).map((references) => [...references])
   for (const value of desired) {
-    const index = remaining.findIndex((references) => references.includes(String(value)))
+    const index = remaining.findIndex((references) => references.some((reference) => referenceTextEqual(reference, String(value))))
     if (index === -1) return false
     remaining.splice(index, 1)
   }
@@ -317,10 +335,42 @@ const referenceValues = (value: unknown): ReadonlyArray<string> => Predicate.isO
   : [String(value)]
 const referenceEqual = (current: unknown, desired: unknown): boolean => {
   if (desired === null) return current == null
-  if (Predicate.isObject(current)) return referenceValues(current).includes(String(desired))
-  return current === desired
+  if (Predicate.isObject(current)) return referenceValues(current).some((reference) => referenceTextEqual(reference, String(desired)))
+  return typeof current === "string" && typeof desired === "string"
+    ? referenceTextEqual(current, desired)
+    : current === desired
 }
+const mutationEntityMatches = (
+  entity: Readonly<Record<string, unknown>>,
+  selector: unknown,
+  tool: string
+): boolean => {
+  if (typeof selector !== "string") return false
+  const references = tool === "save_project"
+    ? [entity.id, entity.name, entity.slugId]
+    : tool === "save_milestone"
+      ? [entity.id, entity.name]
+      : [entity.id, entity.slugId]
+  return references.some((reference) => typeof reference === "string" && referenceTextEqual(reference, selector))
+}
+const userEntityMatches = (entity: Readonly<Record<string, unknown>>, selector: string): boolean =>
+  [entity.id, entity.name, entity.email, entity.displayName]
+    .some((reference) => typeof reference === "string" && referenceTextEqual(reference, selector))
+const referenceTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
 const lowerFirst = (value: string): string => `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`
+
+const mutationRecoveryCommand = (tool: string, args: Readonly<Record<string, unknown>>): string => {
+  const id = shellQuote(String(args.id))
+  if (tool === "save_project") return `linear-axi projects view --query ${id} --full`
+  if (tool === "save_milestone") return `linear-axi milestones view --project ${shellQuote(String(args.project))} --query ${id} --full`
+  if (tool === "save_status_update") return `linear-axi status-updates view --type ${shellQuote(String(args.type))} --id ${id} --full`
+  const noun = tool === "save_document"
+    ? "documents"
+    : tool === "save_release_note"
+      ? "release-notes"
+      : "releases"
+  return `linear-axi ${noun} view --id ${id} --full`
+}
 
 const detailOutput = (
   entry: OfficialCommand,

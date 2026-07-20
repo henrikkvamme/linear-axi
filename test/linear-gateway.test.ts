@@ -1390,6 +1390,34 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(labelPages).toBe(1)
   })
 
+  test("label removal can safely detach an attached archived label", async () => {
+    const archived = issueLabel({
+      id: "66666666-6666-4666-8666-666666666666",
+      name: "archived",
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    let attached = true
+    const labeled = issue({
+      labels: async () => page(attached ? [archived] : [])
+    })
+    Object.defineProperty(labeled, "labelIds", { get: () => attached ? [archived.id] : [] })
+    const removals: Array<readonly [string, string]> = []
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([labeled], {
+        issueRemoveLabel: async (issueId: string, labelId: string) => {
+          removals.push([issueId, labelId])
+          attached = false
+          return { success: true, issue: Promise.resolve(labeled) }
+        }
+      })
+    })
+
+    const result = await Effect.runPromise(gateway.removeLabel({ issue: "BEN-1", label: "ARCHIVED" }))
+
+    expect(removals).toEqual([[labeled.id, archived.id]])
+    expect(result).toMatchObject({ changed: true, result: "label removed" })
+  })
+
   test("issue details and mutation results retain attached archived labels", async () => {
     const viewer = user()
     const active = issueLabel({ name: "active" })

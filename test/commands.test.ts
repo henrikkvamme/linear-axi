@@ -151,6 +151,56 @@ describe("runCommand", () => {
     expect(calls).toBe(1)
   })
 
+  test("official mutation preflights reject empty and mismatched entities", async () => {
+    for (const value of [{}, { id: "different-project", name: "Other" }]) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "projects", "update", "--id", "project-id", "--state", "started"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "save_project") saves += 1
+          return Effect.succeed(value)
+        }
+      }), "/repo/src/main.ts")))
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("output shape drifted")
+      expect(saves).toBe(0)
+    }
+
+    let statusSaves = 0
+    const statusError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "status-updates", "update", "--type", "project", "--id", "update-id", "--health", "onTrack"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_status_update") statusSaves += 1
+        return Effect.succeed({ statusUpdates: [{ id: "different-update", type: "project", health: "offTrack" }] })
+      }
+    }), "/repo/src/main.ts")))
+    expect(statusError._tag).toBe("LinearDomainError")
+    expect(statusSaves).toBe(0)
+  })
+
+  test("milestone updates canonicalize project and milestone selectors before verification", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const output = await run([
+      "milestones", "update", "--project", "Roadmap", "--id", "Launch", "--target-date", "2026-09-01"
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_project") return Effect.succeed({ id: "project-id", name: "Roadmap", slugId: "roadmap" })
+        if (name === "get_milestone") return Effect.succeed({ id: "milestone-id", name: "Launch", project: { id: "project-id" }, targetDate: "2026-09-01" })
+        throw new Error("must not mutate an already satisfied milestone")
+      }
+    }))
+
+    expect(calls).toEqual([
+      { name: "get_project", args: { query: "Roadmap" } },
+      { name: "get_milestone", args: { project: "project-id", query: "Launch" } },
+      { name: "get_milestone", args: { project: "project-id", query: "milestone-id" } }
+    ])
+    expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
+  })
+
   test("official update commands reject ambiguous parents and send typed arrays", async () => {
     const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
     let projectReads = 0
@@ -202,9 +252,9 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
   })
 
-  test("official collection verification accepts documented selectors", async () => {
+  test("official collection verification accepts documented selectors case-insensitively", async () => {
     let saves = 0
-    const output = await run(["projects", "update", "--id", "project-id", "--teams-json", '["ENG"]'], fakeGateway({
+    const output = await run(["projects", "update", "--id", "PROJECT-ID", "--teams-json", '["eng"]'], fakeGateway({
       callOfficialTool: (name) => {
         if (name === "save_project") saves += 1
         return Effect.succeed({ id: "project-id", teams: [{ id: "team-id", key: "ENG", name: "Engineering" }] })
@@ -222,7 +272,7 @@ describe("runCommand", () => {
       { argv: ["releases", "update", "--id", "release-id", "--description", "[release](https://example.com)\r\n"], read: "get_release", value: { id: "release-id", description: "[release](<https://example.com>)" } },
       { argv: ["release-notes", "update", "--id", "note-id", "--content", "[note](https://example.com)\r\n"], read: "get_release_note", value: { id: "note-id", content: "[note](<https://example.com>)" } },
       { argv: ["milestones", "update", "--project", "Roadmap", "--id", "milestone-id", "--description", "[milestone](https://example.com)\r\n"], read: "get_milestone", value: { id: "milestone-id", description: "[milestone](<https://example.com>)" } },
-      { argv: ["status-updates", "update", "--type", "project", "--id", "update-id", "--body", "[status](https://example.com)\r\n"], read: "get_status_updates", value: { statusUpdates: [{ id: "update-id", body: "[status](<https://example.com>)" }] } }
+      { argv: ["status-updates", "update", "--type", "project", "--id", "update-id", "--body", "[status](https://example.com)\r\n"], read: "get_status_updates", value: { statusUpdates: [{ id: "update-id", type: "project", body: "[status](<https://example.com>)" }] } }
     ] as const
 
     for (const entry of cases) {
@@ -230,11 +280,14 @@ describe("runCommand", () => {
       const output = await run(entry.argv, fakeGateway({
         callOfficialTool: (name) => {
           calls.push(name)
+          if (entry.read === "get_milestone" && name === "get_project") return Effect.succeed({ id: "project-id", name: "Roadmap" })
           if (name !== entry.read) throw new Error("must not repeat an equivalent rich-text mutation")
           return Effect.succeed(entry.value)
         }
       }))
-      expect(calls).toEqual([entry.read])
+      expect(calls).toEqual(entry.read === "get_milestone"
+        ? ["get_project", "get_milestone", "get_milestone"]
+        : [entry.read])
       expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
     }
   })
@@ -373,6 +426,35 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: true, result: "official save_release_note update verified" })
   })
 
+  test("verification failures provide exact tool-specific inspection commands", async () => {
+    const cases = [
+      { argv: ["documents", "update", "--id", "document-id", "--title", "New"], read: "get_document", before: { id: "document-id", title: "Old" }, help: "linear-axi documents view --id 'document-id' --full" },
+      { argv: ["projects", "update", "--id", "project-id", "--state", "started"], read: "get_project", before: { id: "project-id", state: "planned" }, help: "linear-axi projects view --query 'project-id' --full" },
+      { argv: ["releases", "update", "--id", "release-id", "--name", "New"], read: "get_release", before: { id: "release-id", name: "Old" }, help: "linear-axi releases view --id 'release-id' --full" },
+      { argv: ["release-notes", "update", "--id", "note-id", "--title", "New"], read: "get_release_note", before: { id: "note-id", title: "Old" }, help: "linear-axi release-notes view --id 'note-id' --full" },
+      { argv: ["status-updates", "update", "--type", "project", "--id", "update-id", "--health", "onTrack"], read: "get_status_updates", before: { statusUpdates: [{ id: "update-id", type: "project", health: "offTrack" }] }, help: "linear-axi status-updates view --type 'project' --id 'update-id' --full" }
+    ] as const
+
+    for (const entry of cases) {
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs(entry.argv, commandSpecs), fakeGateway({
+        callOfficialTool: (name) => Effect.succeed(name === entry.read ? entry.before : { id: "ignored" })
+      }), "/repo/src/main.ts")))
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.help).toContain(entry.help)
+    }
+
+    const milestoneError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "milestones", "update", "--project", "Roadmap", "--id", "Launch", "--target-date", "2026-09-01"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_project") return Effect.succeed({ id: "project-id", name: "Roadmap" })
+        if (name === "get_milestone") return Effect.succeed({ id: "milestone-id", name: "Launch", targetDate: "2026-08-01" })
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+    expect(milestoneError.help).toContain("linear-axi milestones view --project 'project-id' --query 'milestone-id' --full")
+  })
+
   test("official detail truncation reports totals and a full escape hatch", async () => {
     const output = await run(["projects", "view", "--query", "Roadmap"], fakeGateway({
       callOfficialTool: () => Effect.succeed({ id: "project-id", name: "Roadmap", description: "x".repeat(1300) })
@@ -491,9 +573,57 @@ describe("runCommand", () => {
       { name: "get_team", args: { query: "ENG" } },
       { name: "list_users", args: { query: "alice@example.com", limit: 100 } },
       { name: "list_issue_labels", args: { team: "team-id", limit: 250 } },
-      { name: "list_issues", args: { query: "Launch", team: "team-id", limit: 100 } },
+      { name: "list_issues", args: { query: "Launch", team: "team-id", limit: 100, includeArchived: false } },
       { name: "save_issue", args: { title: "Launch", assignee: "user-id", priority: 2, labels: ["label-id"], team: "team-id" } }
     ])
+    expect(output).toMatchObject({ changed: true, result: "issue created through official save_issue" })
+  })
+
+  test("internal official pagination rejects repeated cursors across every resolver", async () => {
+    const cases = [
+      { argv: ["issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"], tool: "list_issues" },
+      { argv: ["issues", "create", "--team", "ENG", "--title", "Launch", "--assignee", "alice@example.com", "--if-absent"], tool: "list_users" },
+      { argv: ["issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Bug"]', "--if-absent"], tool: "list_issue_labels" },
+      { argv: ["issues", "create", "--team", "ENG", "--title", "Launch", "--releases-json", '["v1"]', "--if-absent"], tool: "list_releases" }
+    ] as const
+
+    for (const entry of cases) {
+      let pages = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs(entry.argv, commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+          if (name === entry.tool) {
+            pages += 1
+            const key = name === "list_issues" ? "issues" : name === "list_users" ? "users" : name === "list_issue_labels" ? "labels" : "releases"
+            return Effect.succeed({ [key]: [], hasNextPage: true, cursor: "same-cursor" })
+          }
+          return Effect.succeed({})
+        }
+      }), "/repo/src/main.ts")))
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("cursor did not advance")
+      expect(pages).toBe(2)
+    }
+  })
+
+  test("advanced issue create excludes archived title matches from preflight", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const output = await run([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "list_issues") return Effect.succeed({
+          issues: [{ id: "archived-id", title: "Launch", teamId: "team-id", archivedAt: "2026-07-01T00:00:00.000Z" }],
+          hasNextPage: false
+        })
+        if (name === "save_issue") return Effect.succeed({ id: "new-id", title: "Launch", teamId: "team-id", priority: 2 })
+        return Effect.succeed({})
+      }
+    }))
+
+    expect(calls.find(({ name }) => name === "list_issues")?.args).toEqual({ query: "Launch", team: "team-id", limit: 100, includeArchived: false })
     expect(output).toMatchObject({ changed: true, result: "issue created through official save_issue" })
   })
 
@@ -551,6 +681,7 @@ describe("runCommand", () => {
         calls.push({ name, args })
         if (name === "get_issue") return Effect.succeed({
           id: "issue-id",
+          identifier: "ENG-123",
           teamId: "team-id",
           attachments: [{ url: "https://example.com/docs", title: "Docs" }],
           releases: [{ id: "release-id", version: "v1.0" }]
@@ -585,14 +716,69 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: true })
   })
 
+  test("issue updates refetch required associations and verify the mutation", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    let reads = 0
+    const output = await run([
+      "issues", "update", "--id", "eng-123", "--add-releases-json", '["v1"]', "--blocks-json", '["eng-2"]'
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_issue" && args.id === "eng-123") {
+          reads += 1
+          return Effect.succeed(reads === 1
+            ? { id: "issue-id", identifier: "ENG-123", teamId: "team-id", releases: [], relations: { blocks: [] } }
+            : { id: "issue-id", identifier: "ENG-123", teamId: "team-id", releases: [{ id: "release-id" }], relations: { blocks: [{ id: "blocked-id", identifier: "ENG-2" }] } })
+        }
+        if (name === "get_issue") return Effect.succeed({ id: "blocked-id", identifier: "ENG-2", teamId: "team-id" })
+        if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1" }], hasNextPage: false })
+        return Effect.succeed({ id: "issue-id" })
+      }
+    }))
+
+    expect(calls.filter(({ name, args }) => name === "get_issue" && args.id === "eng-123")).toEqual([
+      { name: "get_issue", args: { id: "eng-123", includeReleases: true, includeRelations: true } },
+      { name: "get_issue", args: { id: "eng-123", includeReleases: true, includeRelations: true } }
+    ])
+    expect(output).toMatchObject({ changed: true, result: "requested issue properties saved and verified" })
+  })
+
+  test("issue updates fail closed when readback does not satisfy the request", async () => {
+    let reads = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "update", "--id", "ENG-123", "--priority", "2"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_issue") {
+          reads += 1
+          return Effect.succeed({ id: "issue-id", identifier: "ENG-123", teamId: "team-id", priority: 1 })
+        }
+        return Effect.succeed({ id: "issue-id" })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(reads).toBe(2)
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.help).toContain("linear-axi issues inspect --id 'ENG-123' --full")
+  })
+
   test("issue update sends explicit clears in one official mutation", async () => {
     const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    let reads = 0
     const gateway = fakeGateway({
       callOfficialTool: (name, args) => {
         calls.push({ name, args })
-        return Effect.succeed(name === "get_issue"
-          ? { id: "issue-id", teamId: "team-id", updatedAt: baseIssue.updatedAt }
-          : { id: "issue-id", title: "Renamed" })
+        if (name === "get_issue") {
+          reads += 1
+          return Effect.succeed({
+            id: "issue-id",
+            identifier: "ENG-123",
+            teamId: "team-id",
+            updatedAt: baseIssue.updatedAt,
+            ...(reads === 1 ? {} : { title: "Renamed", assignee: null, estimate: null, project: null, cycle: null, parentId: null, labels: [] })
+          })
+        }
+        return Effect.succeed({ id: "issue-id", title: "Renamed" })
       }
     })
     const output = await run([
@@ -601,9 +787,10 @@ describe("runCommand", () => {
     ], gateway)
     expect(calls).toEqual([
       { name: "get_issue", args: { id: "ENG-123" } },
-      { name: "save_issue", args: { id: "ENG-123", title: "Renamed", assignee: null, estimate: null, project: null, cycle: null, parentId: null, labels: [] } }
+      { name: "save_issue", args: { id: "ENG-123", title: "Renamed", assignee: null, estimate: null, project: null, cycle: null, parentId: null, labels: [] } },
+      { name: "get_issue", args: { id: "ENG-123" } }
     ])
-    expect(output).toMatchObject({ changed: true, result: "requested issue properties saved in one mutation" })
+    expect(output).toMatchObject({ changed: true, result: "requested issue properties saved and verified" })
   })
 
   test("schema-incompatible issue clears use one verified native mutation", async () => {
@@ -625,7 +812,7 @@ describe("runCommand", () => {
     const output = await run(["issues", "update", "--id", "ENG-123", "--priority", "2"], fakeGateway({
       callOfficialTool: (name) => {
         if (name === "save_issue") saves += 1
-        return Effect.succeed({ id: baseIssue.id, teamId: "team-id", priority: 2, updatedAt: baseIssue.updatedAt })
+        return Effect.succeed({ id: baseIssue.id, identifier: "ENG-123", teamId: "team-id", priority: 2, updatedAt: baseIssue.updatedAt })
       }
     }))
     expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
@@ -643,6 +830,7 @@ describe("runCommand", () => {
         if (name !== "get_issue") throw new Error("must not repeat an equivalent description mutation")
         return Effect.succeed({
           id: baseIssue.id,
+          identifier: "ENG-123",
           teamId: "team-id",
           updatedAt: baseIssue.updatedAt,
           description: "[decision](<https://example.com>)"
@@ -659,7 +847,7 @@ describe("runCommand", () => {
     const output = await run(["issues", "update", "--id", "ENG-123", "--assignee", "me"], fakeGateway({
       callOfficialTool: (name, args) => {
         calls.push({ name, args })
-        if (name === "get_issue") return Effect.succeed({ id: "issue-id", teamId: "team-id", assignee: { id: "user-id", name: "Henrik" } })
+        if (name === "get_issue") return Effect.succeed({ id: "issue-id", identifier: "ENG-123", teamId: "team-id", assignee: { id: "user-id", name: "Henrik" } })
         if (name === "get_user") return Effect.succeed({ id: "user-id", name: "Henrik" })
         throw new Error("must not repeat an already satisfied assignee mutation")
       }

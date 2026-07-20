@@ -1,10 +1,9 @@
 import { mkdir } from "node:fs/promises"
 import { dirname, join } from "node:path"
+import { Effect, Predicate } from "effect"
 import { loadEnv } from "../src/env"
-import { decodeStreamableHttpMessage } from "../src/official-mcp"
-
-const MCP_URL = "https://mcp.linear.app/mcp"
-const PROTOCOL_VERSION = "2025-03-26"
+import { credentialsFromEnv } from "../src/linear"
+import { makeOfficialMcpClient, OFFICIAL_MCP_PROTOCOL_VERSION, OFFICIAL_MCP_URL } from "../src/official-mcp"
 
 const readDate = (argv: ReadonlyArray<string>): string => {
   const index = argv.indexOf("--date")
@@ -18,39 +17,23 @@ const readDate = (argv: ReadonlyArray<string>): string => {
 const main = async (): Promise<void> => {
   const observedAt = readDate(process.argv.slice(2))
   const env = loadEnv(process.cwd())
-  const credential = env.LINEAR_ACCESS_TOKEN ?? env.LINEAR_API_KEY
-  if (!credential) {
+  const credentials = credentialsFromEnv(env)
+  if (!credentials) {
     throw new Error("No local Linear credential is available for read-only MCP schema discovery")
   }
 
-  const response = await fetch(MCP_URL, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${credential}`,
-      accept: "application/json, text/event-stream",
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })
-  })
-  if (!response.ok) {
-    throw new Error(`Official Linear MCP tools/list failed with HTTP ${response.status}`)
+  const result = await Effect.runPromise(makeOfficialMcpClient(credentials).request("tools/list", {}))
+  if (!Predicate.isObject(result) || !Array.isArray(result.tools) || result.tools.some((tool) => !Predicate.isObject(tool))) {
+    throw new Error("Official Linear MCP tools/list returned no tools")
   }
-
-  const message = decodeStreamableHttpMessage(await response.text(), response.headers.get("content-type")) as {
-    readonly result?: { readonly tools?: ReadonlyArray<Record<string, unknown>> }
-    readonly error?: { readonly message?: string }
-  }
-  if (!message.result?.tools) {
-    throw new Error(message.error?.message ?? "Official Linear MCP tools/list returned no tools")
-  }
-
+  const tools = result.tools as ReadonlyArray<Record<string, unknown>>
   const output = {
     generated: true,
     observedAt,
-    source: MCP_URL,
-    protocolVersion: PROTOCOL_VERSION,
-    toolCount: message.result.tools.length,
-    tools: message.result.tools.map(({ name, title, description, inputSchema, annotations }) => ({
+    source: OFFICIAL_MCP_URL,
+    protocolVersion: OFFICIAL_MCP_PROTOCOL_VERSION,
+    toolCount: tools.length,
+    tools: tools.map(({ name, title, description, inputSchema, annotations }) => ({
       name,
       title,
       description,
