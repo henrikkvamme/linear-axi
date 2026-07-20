@@ -328,6 +328,32 @@ describe("runCommand", () => {
     }
   })
 
+  test("official literal casing changes mutate and use read-only truncation recovery", async () => {
+    let reads = 0
+    let saves = 0
+    const output = await run([
+      "documents", "update", "--id", "document-id", "--title", "Launch"
+    ], fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_document") {
+          saves += 1
+          return Effect.succeed({ id: "document-id" })
+        }
+        if (name === "get_document") {
+          reads += 1
+          return Effect.succeed(reads === 1
+            ? { id: "document-id", title: "launch" }
+            : { id: "document-id", title: "Launch", content: "x".repeat(1300) })
+        }
+        throw new Error(`unexpected tool ${name}`)
+      }
+    }))
+
+    expect(saves).toBe(1)
+    expect(output).toMatchObject({ changed: true, result: "official save_document update verified" })
+    expect(output.help).toEqual(["Run `linear-axi documents view --id 'document-id' --full` for complete text fields."])
+  })
+
   test("official rich-text updates accept Linear-normalized readback", async () => {
     const cases = [
       { argv: ["documents", "update", "--id", "document-id", "--content", "[doc](https://example.com)\r\n"], read: "get_document", value: { id: "document-id", content: "[doc](<https://example.com>)" } },
@@ -835,6 +861,26 @@ describe("runCommand", () => {
     expect(saves).toBe(0)
   })
 
+  test("internal official pagination rejects blank cursors before advancing", async () => {
+    let pages = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "list_issues") {
+          pages += 1
+          return Effect.succeed({ issues: [], hasNextPage: true, cursor: "   " })
+        }
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("cursor")
+    expect(pages).toBe(1)
+  })
+
   test("internal official pagination rejects repeated cursors across every resolver", async () => {
     const cases = [
       { argv: ["issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"], tool: "list_issues" },
@@ -1007,6 +1053,34 @@ describe("runCommand", () => {
       { name: "get_issue", args: { id: "eng-123", includeReleases: true, includeRelations: true } },
       { name: "get_issue", args: { id: "eng-123", includeReleases: true, includeRelations: true } }
     ])
+    expect(output).toMatchObject({ changed: true, result: "requested issue properties saved and verified" })
+  })
+
+  test("issue literal casing changes are not suppressed as no-ops", async () => {
+    let reads = 0
+    let saves = 0
+    const output = await run([
+      "issues", "update", "--id", "ENG-123", "--title", "Launch"
+    ], fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_issue") {
+          saves += 1
+          return Effect.succeed({ id: "issue-id" })
+        }
+        if (name === "get_issue") {
+          reads += 1
+          return Effect.succeed({
+            id: "issue-id",
+            identifier: "ENG-123",
+            teamId: "team-id",
+            title: reads === 1 ? "launch" : "Launch"
+          })
+        }
+        throw new Error(`unexpected tool ${name}`)
+      }
+    }))
+
+    expect(saves).toBe(1)
     expect(output).toMatchObject({ changed: true, result: "requested issue properties saved and verified" })
   })
 

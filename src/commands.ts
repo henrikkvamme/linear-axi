@@ -755,8 +755,14 @@ const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<st
     if (key === "description" && typeof issue[key] === "string" && typeof desired === "string") {
       return richTextEqual(issue[key], desired)
     }
-    return officialReferenceMatches(issue[key], desired)
+    return OFFICIAL_ISSUE_REFERENCE_KEYS.has(key)
+      ? officialReferenceMatches(issue[key], desired)
+      : officialLiteralMatches(issue[key], desired)
   })
+
+const OFFICIAL_ISSUE_REFERENCE_KEYS = new Set([
+  "assignee", "delegate", "state", "project", "cycle", "milestone", "parentId"
+])
 
 const officialCollectionContains = (current: unknown, desired: unknown): boolean => officialCollectionMatches(current, desired, false)
 const officialCollectionEqual = (current: unknown, desired: unknown): boolean => officialCollectionMatches(current, desired, true)
@@ -794,6 +800,8 @@ const officialReferenceMatches = (current: unknown, desired: unknown): boolean =
     ? officialTextEqual(current, desired)
     : current === desired
 }
+const officialLiteralMatches = (current: unknown, desired: unknown): boolean =>
+  desired === null ? current === null || current === undefined : current === desired
 
 const officialEntityMatchesSelector = (
   entity: Readonly<Record<string, unknown>>,
@@ -1266,7 +1274,7 @@ const fetchOfficialRows = Effect.fn("fetchOfficialRows")(function*(
         help: "Narrow the selector and retry."
       }))
     }
-    if (typeof page.cursor !== "string" || page.cursor.length === 0) return yield* officialShapeError(`${tool} cursor`)
+    if (typeof page.cursor !== "string" || page.cursor.trim().length === 0) return yield* officialShapeError(`${tool} cursor`)
     if (seenCursors.has(page.cursor)) {
       return yield* Effect.fail(new LinearDomainError({
         message: `Official Linear MCP ${tool} pagination cursor did not advance`,

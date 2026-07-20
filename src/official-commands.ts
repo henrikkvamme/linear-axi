@@ -219,7 +219,14 @@ const runVerifiedMutation = (
   const beforeRaw = yield* gateway.callOfficialTool(mutationReadTool(entry.tool), mutationReadArgs(entry.tool, canonicalArgs))
   const before = yield* extractMutationObject(entry.tool, beforeRaw, canonicalArgs)
   if (mutationSatisfied(before, canonicalArgs, entry.tool)) {
-    return detailOutput(entry, before, parsed, false, "requested properties already match (no-op)")
+    return detailOutput(
+      entry,
+      before,
+      parsed,
+      false,
+      "requested properties already match (no-op)",
+      mutationInspectionCommand(entry.tool, canonicalArgs)
+    )
   }
   yield* gateway.callOfficialTool(entry.tool, canonicalArgs)
   const afterRaw = yield* gateway.callOfficialTool(mutationReadTool(entry.tool), mutationReadArgs(entry.tool, canonicalArgs))
@@ -227,10 +234,17 @@ const runVerifiedMutation = (
   if (!mutationSatisfied(after, canonicalArgs, entry.tool)) {
     return yield* Effect.fail(new LinearDomainError({
       message: `${entry.tool} update could not be verified`,
-      help: `Run \`${mutationRecoveryCommand(entry.tool, canonicalArgs)}\` before retrying.`
+      help: `Run \`${mutationInspectionCommand(entry.tool, canonicalArgs)}\` before retrying.`
     }))
   }
-  return detailOutput(entry, after, parsed, true, `official ${entry.tool} update verified`)
+  return detailOutput(
+    entry,
+    after,
+    parsed,
+    true,
+    `official ${entry.tool} update verified`,
+    mutationInspectionCommand(entry.tool, canonicalArgs)
+  )
 })
 
 const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*(
@@ -287,7 +301,7 @@ const extractMutationObject = (
   if (tool === "save_status_update") {
     if (!Predicate.isObject(value) || !Array.isArray(value.statusUpdates)) return mutationShapeDrift(tool)
     const matches = value.statusUpdates.filter(Predicate.isObject).filter((item) =>
-      mutationEntityMatches(item, args.id, tool) && referenceEqual(item.type, args.type))
+      mutationEntityMatches(item, args.id, tool) && literalEqual(item.type, args.type))
     return matches.length === 1 ? Effect.succeed(matches[0]!) : mutationShapeDrift(tool)
   }
   return Predicate.isObject(value) && Object.keys(value).length > 0 && mutationEntityMatches(value, args.id, tool)
@@ -313,8 +327,19 @@ const mutationSatisfied = (
   if (["body", "content", "description"].includes(key) && typeof current[key] === "string" && typeof desired === "string") {
     return richTextEqual(current[key], desired)
   }
-  return referenceEqual(current[key], desired)
+  return mutationReferenceKeys(tool).includes(key)
+    ? referenceEqual(current[key], desired)
+    : literalEqual(current[key], desired)
 })
+
+const mutationReferenceKeys = (tool: string): ReadonlyArray<string> => ({
+  save_document: ["project", "issue", "initiative", "cycle", "team"],
+  save_project: ["state", "lead"],
+  save_release: ["pipeline", "stage"],
+  save_release_note: ["pipeline", "rangeFromRelease", "rangeToRelease"],
+  save_milestone: [],
+  save_status_update: ["project", "initiative"]
+} as Record<string, ReadonlyArray<string>>)[tool] ?? []
 
 const collectionEqual = (current: unknown, desired: unknown): boolean => collectionMatches(current, desired, true)
 const collectionContains = (current: unknown, desired: unknown): boolean => collectionMatches(current, desired, false)
@@ -349,6 +374,8 @@ const referenceEqual = (current: unknown, desired: unknown): boolean => {
     ? referenceTextEqual(current, desired)
     : current === desired
 }
+const literalEqual = (current: unknown, desired: unknown): boolean =>
+  desired === null ? current == null : current === desired
 const mutationEntityMatches = (
   entity: Readonly<Record<string, unknown>>,
   selector: unknown,
@@ -369,7 +396,7 @@ const referenceTextEqual = (left: string, right: string): boolean => left.toLowe
 const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0
 const lowerFirst = (value: string): string => `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`
 
-const mutationRecoveryCommand = (tool: string, args: Readonly<Record<string, unknown>>): string => {
+const mutationInspectionCommand = (tool: string, args: Readonly<Record<string, unknown>>): string => {
   const id = shellQuote(String(args.id))
   if (tool === "save_project") return `linear-axi projects view --query ${id} --full`
   if (tool === "save_milestone") return `linear-axi milestones view --project ${shellQuote(String(args.project))} --query ${id} --full`
@@ -387,7 +414,8 @@ const detailOutput = (
   detail: unknown,
   parsed: ParsedArgs,
   changed: boolean,
-  result?: string
+  result?: string,
+  fullCommand?: string
 ): OutputValue => {
   const full = parsed.flags.get("full") === true
   const truncated = full ? { value: detail, fields: [] } : truncateDetail(detail)
@@ -396,7 +424,7 @@ const detailOutput = (
     ...(result === undefined ? {} : { changed, result }),
     ...(truncated.fields.length === 0 ? {} : {
       truncated: truncated.fields,
-      help: [`Run \`linear-axi ${entry.path.join(" ")} ${replayFlags(parsed.flags, { full: true })}\` for complete text fields.`]
+      help: [`Run \`${fullCommand ?? `linear-axi ${entry.path.join(" ")} ${replayFlags(parsed.flags, { full: true })}`}\` for complete text fields.`]
     })
   }
 }

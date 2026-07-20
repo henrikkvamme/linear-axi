@@ -1390,7 +1390,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(labelPages).toBe(1)
   })
 
-  test("label removal can safely detach an attached archived label", async () => {
+  test("archived label removal is retry-idempotent without enabling add", async () => {
     const archived = issueLabel({
       id: "66666666-6666-4666-8666-666666666666",
       name: "archived",
@@ -1402,8 +1402,14 @@ describe("SDK LinearGateway conflict contracts", () => {
     })
     Object.defineProperty(labeled, "labelIds", { get: () => attached ? [archived.id] : [] })
     const removals: Array<readonly [string, string]> = []
+    let additions = 0
     const gateway = makeLinearGateway({}, {
       client: clientWithIssues([labeled], {
+        issueLabels: async () => page([archived]),
+        issueAddLabel: async () => {
+          additions += 1
+          return { success: true, issue: Promise.resolve(labeled) }
+        },
         issueRemoveLabel: async (issueId: string, labelId: string) => {
           removals.push([issueId, labelId])
           attached = false
@@ -1413,9 +1419,44 @@ describe("SDK LinearGateway conflict contracts", () => {
     })
 
     const result = await Effect.runPromise(gateway.removeLabel({ issue: "BEN-1", label: "ARCHIVED" }))
+    const retry = await Effect.runPromise(gateway.removeLabel({ issue: "BEN-1", label: "ARCHIVED" }))
+    const addError = await Effect.runPromise(Effect.flip(gateway.applyLabel({ issue: "BEN-1", label: "ARCHIVED" })))
 
     expect(removals).toEqual([[labeled.id, archived.id]])
     expect(result).toMatchObject({ changed: true, result: "label removed" })
+    expect(retry).toMatchObject({ changed: false, result: "label already absent (no-op)" })
+    expect(addError.message.toLowerCase()).toContain("archived")
+    expect(additions).toBe(0)
+  })
+
+  test("detached archived label removal fails closed on ambiguous identities", async () => {
+    const archivedTeam = issueLabel({
+      id: "66666666-6666-4666-8666-666666666666",
+      name: "archived",
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    const archivedWorkspace = issueLabel({
+      id: "77777777-7777-4777-8777-777777777777",
+      name: "archived",
+      teamId: undefined,
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    const unlabeled = issue()
+    let removals = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([unlabeled], {
+        issueLabels: async () => page([archivedTeam, archivedWorkspace]),
+        issueRemoveLabel: async () => {
+          removals += 1
+          return { success: true, issue: Promise.resolve(unlabeled) }
+        }
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.removeLabel({ issue: "BEN-1", label: "ARCHIVED" })))
+
+    expect(error.message).toContain("Ambiguous")
+    expect(removals).toBe(0)
   })
 
   test("issue details and mutation results retain attached archived labels", async () => {
