@@ -693,29 +693,26 @@ const createLabel = async (
       parentId: parent?.id
     })
     created = await requirePayload(payload.success, payload.issueLabel, "create the label")
-  } catch (cause) {
-    const concurrent = await classifyExisting()
-    if (concurrent) {
-      return concurrent
+  } catch {
+    try {
+      const concurrent = await classifyExisting()
+      if (concurrent) return concurrent
+    } catch (reconciliationCause) {
+      if (reconciliationCause instanceof LinearDomainError) throw reconciliationCause
+      throw indeterminateLabelCreation(input, team?.key)
     }
-    throw cause
+    throw indeterminateLabelCreation(input, team?.key)
   }
 
-  const label = await findLabelByUuid(client, created.id)
-  if (!label) {
-    throw conflict(
-      "created label could not be verified",
-      "Refetch labels in the requested scope before retrying."
-    )
+  try {
+    const label = await findLabelByUuid(client, created.id)
+    if (!label) throw new Error("created label was not found")
+    const { summary, matches } = await summarizeRequestedLabel(label)
+    if (!matches) throw new Error("created label properties did not match")
+    return changed(summary, "label created and verified")
+  } catch {
+    throw indeterminateLabelCreation(input, team?.key)
   }
-  const { summary, matches } = await summarizeRequestedLabel(label)
-  if (!matches) {
-    throw conflict(
-      "created label could not be verified",
-      "Inspect the created label before retrying."
-    )
-  }
-  return changed(summary, "label created and verified")
 }
 
 const applyLabel = async (
@@ -1224,6 +1221,20 @@ const pageResult = <Node, Value>(connection: ConnectionLike<Node>, items: Readon
   }
 })
 
+const indeterminateLabelCreation = (
+  input: CreateLabelInput,
+  teamKey: string | undefined
+): LinearApiError => {
+  const scope = input.workspace
+    ? "--workspace"
+    : `--team ${shellQuote(teamKey ?? input.team ?? "")}`
+  const inspection = `linear-axi labels list ${scope} --name ${shellQuote(input.name)} --include-archived --fields id,name,scope,color,description,isGroup,archivedAt`
+  return new LinearApiError({
+    message: `label ${input.name} creation could not be verified after dispatch; mutation outcome is unknown`,
+    help: `Run \`${inspection}\` to inspect the requested scope and name. Do not repeat \`linear-axi labels create\` until the outcome is known.`
+  })
+}
+
 const executeVerifiedIssueMutation = async (
   client: LinearClient,
   issue: Issue,
@@ -1379,6 +1390,8 @@ const parseLocalCursor = (cursor: string | undefined, kind: LocalCursorKind): nu
   }
   return offset
 }
+
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
 
 const readableError = (cause: unknown): string => {
   if (cause instanceof Error && cause.message.length > 0) {

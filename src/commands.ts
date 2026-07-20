@@ -34,6 +34,7 @@ import {
   officialCollectionEqual as collectionEqual
 } from "./official-collection"
 import { runOfficialCommand } from "./official-commands"
+import { indeterminateOfficialMutation, officialMutationInspectionCommand } from "./official-inspection"
 import { validateFrontierCursor } from "./wayfinder"
 
 const ISSUE_FIELD_SET: ReadonlySet<string> = new Set(ISSUE_FIELDS)
@@ -313,20 +314,23 @@ const createOfficialIssue = (
     }))
   }
   const created = yield* gateway.callOfficialTool("save_issue", input)
-  if (!Predicate.isObject(created)) return yield* officialShapeError("save_issue identity")
-  const createdId = officialIssueIdentity(created)
-  if (!createdId) return yield* officialShapeError("save_issue identity")
-  const issue = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(createdId, input))
-  if (!Predicate.isObject(issue) || !officialEntityMatchesSelector(issue, createdId, ["id", "identifier"])) {
-    return yield* officialShapeError("get_issue identity")
-  }
-  if (!officialIssueSatisfies(issue, input)) {
-    return yield* Effect.fail(new LinearDomainError({
-      message: "save_issue create could not be verified",
-      help: `Run \`linear-axi issues inspect --id ${shellQuote(createdId)} --full\` before retrying.`
-    }))
-  }
-  return { issue, changed: true, result: "issue created through official save_issue" }
+  let inspection = officialMutationInspectionCommand("save_issue", input)
+  return yield* Effect.gen(function*() {
+    if (!Predicate.isObject(created)) return yield* officialShapeError("save_issue identity")
+    const createdId = officialIssueIdentity(created)
+    if (!createdId) return yield* officialShapeError("save_issue identity")
+    inspection = officialMutationInspectionCommand("save_issue", { id: createdId })
+    const issue = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(createdId, input))
+    if (!Predicate.isObject(issue) || !officialEntityMatchesSelector(issue, createdId, ["id", "identifier"])) {
+      return yield* officialShapeError("get_issue identity")
+    }
+    if (!officialIssueSatisfies(issue, input)) {
+      return yield* Effect.fail(new LinearDomainError({ message: "save_issue create could not be verified" }))
+    }
+    return { issue, changed: true, result: "issue created through official save_issue" }
+  }).pipe(
+    Effect.mapError(() => indeterminateOfficialMutation("save_issue", inspection))
+  )
 })
 
 const issuesAssign = (parsed: ParsedArgs, gateway: LinearGateway) => {
@@ -467,15 +471,17 @@ const updateOfficialIssue = (
     return { issue: before, changed: false, result: "requested issue properties already match (no-op)" }
   }
   yield* gateway.callOfficialTool("save_issue", input)
-  const after = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(id, input))
-  if (!Predicate.isObject(after) || !officialEntityMatchesSelector(after, id)) return yield* officialShapeError("get_issue identity")
-  if (!officialIssueSatisfies(after, input)) {
-    return yield* Effect.fail(new LinearDomainError({
-      message: "save_issue update could not be verified",
-      help: `Run \`linear-axi issues inspect --id ${shellQuote(id)} --full\` before retrying.`
-    }))
-  }
-  return { issue: after, changed: true, result: "requested issue properties saved and verified", concurrency: DESCRIPTION_CONCURRENCY_WARNING }
+  const inspection = officialMutationInspectionCommand("save_issue", input)
+  return yield* Effect.gen(function*() {
+    const after = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(id, input))
+    if (!Predicate.isObject(after) || !officialEntityMatchesSelector(after, id)) return yield* officialShapeError("get_issue identity")
+    if (!officialIssueSatisfies(after, input)) {
+      return yield* Effect.fail(new LinearDomainError({ message: "save_issue update could not be verified" }))
+    }
+    return { issue: after, changed: true, result: "requested issue properties saved and verified", concurrency: DESCRIPTION_CONCURRENCY_WARNING }
+  }).pipe(
+    Effect.mapError(() => indeterminateOfficialMutation("save_issue", inspection))
+  )
 })
 
 const issuePropertyInput = (

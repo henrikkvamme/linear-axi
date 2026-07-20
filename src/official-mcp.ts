@@ -221,6 +221,32 @@ export const makeOfficialMcpClient = (
   return { request }
 }
 
+export const collectOfficialMcpTools = Effect.fn("OfficialMcp.collectTools")(function*(
+  client: OfficialMcpClient,
+  maxPages = 100
+) {
+  const tools: Array<Record<string, unknown>> = []
+  const cursors = new Set<string>()
+  let cursor: string | undefined
+  for (let page = 0; page < maxPages; page += 1) {
+    const result = yield* client.request("tools/list", cursor === undefined ? {} : { cursor })
+    if (!Predicate.isObject(result) || !Array.isArray(result.tools) || result.tools.some((tool) => !Predicate.isObject(tool))) {
+      return yield* Effect.fail(apiError("tools/list", "response shape drifted"))
+    }
+    tools.push(...result.tools as Array<Record<string, unknown>>)
+    if (result.nextCursor === undefined || result.nextCursor === null) return tools
+    if (typeof result.nextCursor !== "string" || result.nextCursor.trim().length === 0) {
+      return yield* Effect.fail(apiError("tools/list", "returned a blank or invalid nextCursor"))
+    }
+    if (cursors.has(result.nextCursor)) {
+      return yield* Effect.fail(apiError("tools/list", "cursor did not advance"))
+    }
+    cursors.add(result.nextCursor)
+    cursor = result.nextCursor
+  }
+  return yield* Effect.fail(apiError("tools/list", `exceeded the ${maxPages}-page safety limit`))
+})
+
 export const makeOfficialMcpToolCaller = (
   credentials: Credentials,
   options: OfficialMcpOptions = {}

@@ -1,3 +1,5 @@
+import { LinearApiError } from "./errors"
+
 export const officialMutationInspectionCommand = (
   tool: string,
   args: Readonly<Record<string, unknown>>
@@ -21,6 +23,14 @@ export const officialMutationInspectionCommand = (
       : "releases"
   return `linear-axi ${noun} view --id ${id} --full`
 }
+
+export const indeterminateOfficialMutation = (
+  tool: string,
+  inspection: string
+): LinearApiError => new LinearApiError({
+  message: `${tool} was dispatched but its result could not be verified; mutation outcome is unknown`,
+  help: `Run \`${inspection}\` to inspect the current state. Do not repeat the mutation until the outcome is known.`
+})
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
 const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0

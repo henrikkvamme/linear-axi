@@ -8,7 +8,7 @@ import {
   officialCollectionContains as collectionContains,
   officialCollectionEqual as collectionEqual
 } from "./official-collection"
-import { officialMutationInspectionCommand } from "./official-inspection"
+import { indeterminateOfficialMutation, officialMutationInspectionCommand } from "./official-inspection"
 import { truncateText, type OutputValue } from "./output"
 import { richTextEqual } from "./rich-text"
 import { isCanonicalDate, isCanonicalTimestamp } from "./validation"
@@ -272,23 +272,24 @@ const runVerifiedMutation = (
     )
   }
   yield* gateway.callOfficialTool(entry.tool, canonicalArgs)
-  const afterRaw = yield* gateway.callOfficialTool(mutationReadTool(entry.tool), mutationReadArgs(entry.tool, canonicalArgs))
-  const after = yield* extractMutationObject(entry.tool, afterRaw, canonicalArgs)
-  if (!mutationSatisfied(after, canonicalArgs, entry.tool)) {
-    return yield* Effect.fail(new LinearDomainError({
-      message: `${entry.tool} update could not be verified`,
-      help: `Run \`${inspection}\` before retrying.`
-    }))
-  }
-  const output = detailOutput(
-    entry,
-    after,
-    parsed,
-    true,
-    `official ${entry.tool} update verified`,
-    inspection
+  return yield* Effect.gen(function*() {
+    const afterRaw = yield* gateway.callOfficialTool(mutationReadTool(entry.tool), mutationReadArgs(entry.tool, canonicalArgs))
+    const after = yield* extractMutationObject(entry.tool, afterRaw, canonicalArgs)
+    if (!mutationSatisfied(after, canonicalArgs, entry.tool)) {
+      return yield* Effect.fail(new LinearDomainError({ message: `${entry.tool} update could not be verified` }))
+    }
+    const output = detailOutput(
+      entry,
+      after,
+      parsed,
+      true,
+      `official ${entry.tool} update verified`,
+      inspection
+    )
+    return preconditioned ? { ...output, concurrency: DESCRIPTION_CONCURRENCY_WARNING } : output
+  }).pipe(
+    Effect.mapError(() => indeterminateOfficialMutation(entry.tool, inspection))
   )
-  return preconditioned ? { ...output, concurrency: DESCRIPTION_CONCURRENCY_WARNING } : output
 })
 
 const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*(

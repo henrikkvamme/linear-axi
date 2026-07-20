@@ -1,9 +1,9 @@
 import { mkdir } from "node:fs/promises"
 import { dirname, join } from "node:path"
-import { Effect, Predicate } from "effect"
+import { Effect } from "effect"
 import { loadEnv } from "../src/env"
 import { credentialsFromEnv } from "../src/linear"
-import { makeOfficialMcpClient, OFFICIAL_MCP_PROTOCOL_VERSION, OFFICIAL_MCP_URL } from "../src/official-mcp"
+import { collectOfficialMcpTools, makeOfficialMcpClient, OFFICIAL_MCP_PROTOCOL_VERSION, OFFICIAL_MCP_URL } from "../src/official-mcp"
 
 const readDate = (argv: ReadonlyArray<string>): string => {
   const index = argv.indexOf("--date")
@@ -22,11 +22,8 @@ const main = async (): Promise<void> => {
     throw new Error("No local Linear credential is available for read-only MCP schema discovery")
   }
 
-  const result = await Effect.runPromise(makeOfficialMcpClient(credentials).request("tools/list", {}))
-  if (!Predicate.isObject(result) || !Array.isArray(result.tools) || result.tools.some((tool) => !Predicate.isObject(tool))) {
-    throw new Error("Official Linear MCP tools/list returned no tools")
-  }
-  const tools = result.tools as ReadonlyArray<Record<string, unknown>>
+  const tools = await Effect.runPromise(collectOfficialMcpTools(makeOfficialMcpClient(credentials)))
+  if (tools.length === 0) throw new Error("Official Linear MCP tools/list returned no tools")
   const output = {
     generated: true,
     observedAt,

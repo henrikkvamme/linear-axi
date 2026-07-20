@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { decodeStreamableHttpMessage, makeOfficialMcpToolCaller } from "../src/official-mcp"
+import { collectOfficialMcpTools, decodeStreamableHttpMessage, makeOfficialMcpToolCaller } from "../src/official-mcp"
 
 const initializedFetcher = (
   respond: (request: Record<string, unknown>, headers: Headers) => Response,
@@ -104,6 +104,41 @@ describe("official Linear MCP tool boundary", () => {
       id: 2,
       result: { tools: [{ name: "list_teams" }] }
     })
+  })
+
+  test("tools inventory capture exhausts cursor pages without changing schemas", async () => {
+    const calls: Array<Readonly<Record<string, unknown>>> = []
+    const client = {
+      request: (_method: string, params: Readonly<Record<string, unknown>>) => {
+        calls.push(params)
+        return Effect.succeed(calls.length === 1
+          ? { tools: [{ name: "list_teams", inputSchema: { type: "object", properties: { limit: { type: "number" } } } }], nextCursor: "page-2" }
+          : { tools: [{ name: "get_team", annotations: { readOnlyHint: true } }] })
+      }
+    }
+
+    const tools = await Effect.runPromise(collectOfficialMcpTools(client))
+
+    expect(calls).toEqual([{}, { cursor: "page-2" }])
+    expect(tools).toEqual([
+      { name: "list_teams", inputSchema: { type: "object", properties: { limit: { type: "number" } } } },
+      { name: "get_team", annotations: { readOnlyHint: true } }
+    ])
+  })
+
+  test("tools inventory capture rejects repeated cursors and page overflow", async () => {
+    const repeated = {
+      request: () => Effect.succeed({ tools: [], nextCursor: "same" })
+    }
+    const repeatedError = await Effect.runPromise(Effect.flip(collectOfficialMcpTools(repeated)))
+    expect(repeatedError.message).toContain("cursor did not advance")
+
+    let pages = 0
+    const unbounded = {
+      request: () => Effect.succeed({ tools: [{ name: `tool-${pages}` }], nextCursor: `cursor-${pages++}` })
+    }
+    const limitError = await Effect.runPromise(Effect.flip(collectOfficialMcpTools(unbounded, 2)))
+    expect(limitError.message).toContain("exceeded the 2-page safety limit")
   })
 
   test("incremental SSE decoding matches the request id without waiting for EOF", async () => {

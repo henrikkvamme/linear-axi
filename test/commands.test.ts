@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { Effect } from "effect"
 import { commandSpecs, parseArgs } from "../src/args"
 import { runCommand } from "../src/commands"
-import { UsageError } from "../src/errors"
+import { LinearApiError, UsageError } from "../src/errors"
 import type { IssueDetail, IssueSummary, LinearGateway } from "../src/linear"
 import { encodeFrontierCursor } from "../src/wayfinder"
 
@@ -422,8 +422,10 @@ describe("runCommand", () => {
     }), "/repo/src/main.ts")))
 
     expect(saves).toBe(1)
-    expect(error._tag).toBe("LinearDomainError")
+    expect(error._tag).toBe("LinearApiError")
     expect(error.message).toContain("could not be verified")
+    expect(error.help).toContain("linear-axi projects view --query 'project-id' --full")
+    expect(error.help).not.toContain("retry")
   })
 
   test("official exact collection verification requires an explicit array readback", async () => {
@@ -439,8 +441,9 @@ describe("runCommand", () => {
       }), "/repo/src/main.ts")))
 
       expect(saves).toBe(1)
-      expect(error._tag).toBe("LinearDomainError")
+      expect(error._tag).toBe("LinearApiError")
       expect(error.message).toContain("could not be verified")
+      expect(error.help).not.toContain("retry")
     }
   })
 
@@ -457,8 +460,9 @@ describe("runCommand", () => {
       }), "/repo/src/main.ts")))
 
       expect(saves).toBe(1)
-      expect(error._tag).toBe("LinearDomainError")
+      expect(error._tag).toBe("LinearApiError")
       expect(error.message).toContain("could not be verified")
+      expect(error.help).not.toContain("retry")
     }
   })
 
@@ -476,8 +480,9 @@ describe("runCommand", () => {
       }), "/repo/src/main.ts")))
 
       expect(saves).toBe(1)
-      expect(error._tag).toBe("LinearDomainError")
+      expect(error._tag).toBe("LinearApiError")
       expect(error.message).toContain("could not be verified")
+      expect(error.help).not.toContain("retry")
     }
   })
 
@@ -794,8 +799,9 @@ describe("runCommand", () => {
       const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs(entry.argv, commandSpecs), fakeGateway({
         callOfficialTool: (name) => Effect.succeed(name === entry.read ? entry.before : { id: "ignored" })
       }), "/repo/src/main.ts")))
-      expect(error._tag).toBe("LinearDomainError")
+      expect(error._tag).toBe("LinearApiError")
       expect(error.help).toContain(entry.help)
+      expect(error.help).not.toContain("retry")
     }
 
     const milestoneError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
@@ -808,6 +814,29 @@ describe("runCommand", () => {
       }
     }), "/repo/src/main.ts")))
     expect(milestoneError.help).toContain("linear-axi milestones view --project 'project-id' --query 'milestone-id' --full")
+  })
+
+  test("official post-save read failures require inspection without replay", async () => {
+    let reads = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "projects", "update", "--id", "Roadmap", "--state", "started"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_project") return Effect.succeed({ id: "project-id" })
+        reads += 1
+        if (reads < 3) return Effect.succeed({ id: "project-id", name: "Roadmap", state: "planned" })
+        return Effect.fail(new LinearApiError({
+          message: "temporary read failure",
+          help: "Retry the update."
+        }))
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(error._tag).toBe("LinearApiError")
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).toContain("linear-axi projects view --query 'project-id' --full")
+    expect(error.help).not.toContain("Retry")
+    expect(error.help).not.toContain("retry")
   })
 
   test("official detail truncation reports totals and a full escape hatch", async () => {
@@ -1050,9 +1079,38 @@ describe("runCommand", () => {
         }
       }), "/repo/src/main.ts")))
 
-      expect(error._tag).toBe("LinearDomainError")
+      expect(error._tag).toBe("LinearApiError")
       expect(reads).toBe(Object.keys(saveResult).length === 0 ? 0 : 1)
+      expect(error.help).toContain(Object.keys(saveResult).length === 0
+        ? "linear-axi issues search --team 'team-id' --query 'Launch' --full"
+        : "linear-axi issues inspect --id 'new-id' --full")
+      expect(error.help).not.toContain("retry")
     }
+  })
+
+  test("advanced issue post-save read failures require inspection without replay", async () => {
+    let reads = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+        if (name === "save_issue") return Effect.succeed({ id: "new-id" })
+        if (name === "get_issue") {
+          reads += 1
+          return Effect.fail(new LinearApiError({ message: "temporary read failure", help: "Retry the create." }))
+        }
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(reads).toBe(1)
+    expect(error._tag).toBe("LinearApiError")
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).toContain("linear-axi issues inspect --id 'new-id' --full")
+    expect(error.help).not.toContain("Retry")
+    expect(error.help).not.toContain("retry")
   })
 
   test("advanced issue create preflights exact identity and performs one mutation", async () => {
@@ -1629,8 +1687,9 @@ describe("runCommand", () => {
     }), "/repo/src/main.ts")))
 
     expect(saves).toBe(1)
-    expect(error._tag).toBe("LinearDomainError")
+    expect(error._tag).toBe("LinearApiError")
     expect(error.message).toContain("could not be verified")
+    expect(error.help).not.toContain("retry")
   })
 
   test("issue removals require explicit association and duplicate readbacks", async () => {
@@ -1658,7 +1717,8 @@ describe("runCommand", () => {
         }
       }), "/repo/src/main.ts")))
 
-      expect(error._tag).toBe("LinearDomainError")
+      expect(error._tag).toBe("LinearApiError")
+      expect(error.help).not.toContain("retry")
       expect(saves).toBe(1)
     }
   })
@@ -1682,8 +1742,9 @@ describe("runCommand", () => {
       }), "/repo/src/main.ts")))
 
       expect(saves).toBe(1)
-      expect(error._tag).toBe("LinearDomainError")
+      expect(error._tag).toBe("LinearApiError")
       expect(error.message).toContain("could not be verified")
+      expect(error.help).not.toContain("retry")
     }
   })
 
@@ -1776,8 +1837,9 @@ describe("runCommand", () => {
     }), "/repo/src/main.ts")))
 
     expect(reads).toBe(2)
-    expect(error._tag).toBe("LinearDomainError")
+    expect(error._tag).toBe("LinearApiError")
     expect(error.help).toContain("linear-axi issues inspect --id 'ENG-123' --full")
+    expect(error.help).not.toContain("retry")
   })
 
   test("issue scalar clears require explicit field readback", async () => {
@@ -1792,8 +1854,9 @@ describe("runCommand", () => {
     }), "/repo/src/main.ts")))
 
     expect(saves).toBe(1)
-    expect(error._tag).toBe("LinearDomainError")
+    expect(error._tag).toBe("LinearApiError")
     expect(error.message).toContain("could not be verified")
+    expect(error.help).not.toContain("retry")
   })
 
   test("issue update sends explicit clears in one official mutation", async () => {

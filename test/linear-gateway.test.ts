@@ -1286,7 +1286,36 @@ describe("SDK LinearGateway conflict contracts", () => {
     })))
 
     expect(reads).toBe(2)
-    expect(error.message).toContain("could not be verified")
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).toContain(`linear-axi labels list --team 'BEN' --name '${created.name}'`)
+    expect(error.help).not.toContain("retry")
+  })
+
+  test("label creation readback failures require scoped inspection without replay", async () => {
+    const created = issueLabel()
+    let reads = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async () => {
+        reads += 1
+        if (reads === 1) return page([])
+        throw new Error("temporary read failure")
+      },
+      createIssueLabel: async () => ({ success: true, issueLabel: Promise.resolve(created) })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createLabel({
+      name: created.name,
+      color: created.color,
+      description: created.description ?? undefined,
+      workspace: false,
+      team: "BEN",
+      ifAbsent: false
+    })))
+
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).toContain(`linear-axi labels list --team 'BEN' --name '${created.name}'`)
+    expect(error.help).not.toContain("retry")
   })
 
   test("label creation resolves a same-scope group and sends group metadata", async () => {
