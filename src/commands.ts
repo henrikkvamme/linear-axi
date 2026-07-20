@@ -287,21 +287,39 @@ const createOfficialIssue = (
     }))
   }
   if (matches.length === 1) {
+    const candidate = matches[0]!
+    const candidateId = officialIssueIdentity(candidate)
+    if (!candidateId) return yield* officialShapeError("list_issues identity")
     const detail = yield* gateway.callOfficialTool("get_issue", {
-      id: matches[0]!.id,
+      id: candidateId,
       includeRelations: true,
       includeReleases: true
     })
-    if (!Predicate.isObject(detail)) return yield* officialShapeError("get_issue")
+    if (!Predicate.isObject(detail) || !officialEntityMatchesSelector(detail, candidateId, ["id", "identifier"])) {
+      return yield* officialShapeError("get_issue identity")
+    }
     if (officialIssueSatisfies(detail, input)) {
       return { issue: detail, changed: false, result: "exact issue already exists (no-op)" }
     }
     return yield* Effect.fail(new LinearDomainError({
       message: `Issue title ${title} already exists in team ${teamInput} with different requested properties`,
-      help: `Inspect candidate id ${String(matches[0]!.id)} and update it explicitly, or choose a different title.`
+      help: `Inspect candidate id ${candidateId} and update it explicitly, or choose a different title.`
     }))
   }
-  const issue = yield* gateway.callOfficialTool("save_issue", input)
+  const created = yield* gateway.callOfficialTool("save_issue", input)
+  if (!Predicate.isObject(created)) return yield* officialShapeError("save_issue identity")
+  const createdId = officialIssueIdentity(created)
+  if (!createdId) return yield* officialShapeError("save_issue identity")
+  const issue = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(createdId, input))
+  if (!Predicate.isObject(issue) || !officialEntityMatchesSelector(issue, createdId, ["id", "identifier"])) {
+    return yield* officialShapeError("get_issue identity")
+  }
+  if (!officialIssueSatisfies(issue, input)) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: "save_issue create could not be verified",
+      help: `Run \`linear-axi issues inspect --id ${shellQuote(createdId)} --full\` before retrying.`
+    }))
+  }
   return { issue, changed: true, result: "issue created through official save_issue" }
 })
 
@@ -514,21 +532,21 @@ const resolveOfficialUserSelector = (
   if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(selector)) return selector
   if (selector === "me") {
     const user = yield* gateway.callOfficialTool("get_user", { query: selector })
-    if (!Predicate.isObject(user) || typeof user.id !== "string") return yield* officialShapeError("get_user")
+    if (!Predicate.isObject(user) || !nonEmptyString(user.id)) return yield* officialShapeError("get_user identity")
     return user.id
   }
   const rows = yield* fetchOfficialRows(gateway, "list_users", { query: selector, limit: 100 }, "users")
   const normalized = selector.toLowerCase()
   const matches = rows.filter((user) =>
     [user.id, user.email, user.name, user.displayName].some((value) => typeof value === "string" && value.toLowerCase() === normalized))
-  if (matches.length !== 1) {
+  if (matches.length !== 1 || !nonEmptyString(matches[0]!.id)) {
     const candidates = matches.length > 0 ? matches : rows
     return yield* Effect.fail(new LinearDomainError({
-      message: matches.length === 0 ? `No Linear user exactly matched ${selector}` : `Ambiguous Linear user selector ${selector}`,
+      message: matches.length === 0 ? `No Linear user exactly matched ${selector}` : `Ambiguous or invalid Linear user selector ${selector}`,
       help: `Candidate ids: ${candidates.map((user) => String(user.id)).join(", ") || "none"}`
     }))
   }
-  return String(matches[0]!.id)
+  return matches[0]!.id
 })
 
 const resolveOfficialTeamSelector = (
@@ -537,7 +555,9 @@ const resolveOfficialTeamSelector = (
 ): Effect.Effect<string, CliError> => Effect.gen(function*() {
   if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(selector)) return selector
   const team = yield* gateway.callOfficialTool("get_team", { query: selector })
-  if (!Predicate.isObject(team) || typeof team.id !== "string") return yield* officialShapeError("get_team")
+  if (!Predicate.isObject(team) || !nonEmptyString(team.id) || !officialEntityMatchesSelector(team, selector, ["id", "key", "name"])) {
+    return yield* officialShapeError("get_team identity")
+  }
   return team.id
 })
 
@@ -548,13 +568,19 @@ const resolveOfficialIssueSelectors = (
   current?: Readonly<Record<string, unknown>>
 ): Effect.Effect<void, CliError> => Effect.gen(function*() {
   if (typeof input.delegate === "string" && !looksLikeUuid(input.delegate)) {
-    const user = yield* gateway.callOfficialTool("get_user", { query: input.delegate })
-    if (!Predicate.isObject(user) || typeof user.id !== "string") return yield* officialShapeError("get_user")
+    const selector = input.delegate
+    const user = yield* gateway.callOfficialTool("get_user", { query: selector })
+    if (!Predicate.isObject(user) || !nonEmptyString(user.id) || !officialEntityMatchesSelector(user, selector, ["id", "name", "email", "displayName"])) {
+      return yield* officialShapeError("get_user identity")
+    }
     input.delegate = user.id
   }
   if (typeof input.project === "string") {
-    const project = yield* gateway.callOfficialTool("get_project", { query: input.project })
-    if (!Predicate.isObject(project) || typeof project.id !== "string") return yield* officialShapeError("get_project")
+    const selector = input.project
+    const project = yield* gateway.callOfficialTool("get_project", { query: selector })
+    if (!Predicate.isObject(project) || !nonEmptyString(project.id) || !officialEntityMatchesSelector(project, selector, ["id", "name", "slugId"])) {
+      return yield* officialShapeError("get_project identity")
+    }
     input.project = project.id
   }
   if (typeof input.parentId === "string") input.parentId = yield* resolveOfficialIssueId(gateway, input.parentId)
@@ -571,8 +597,11 @@ const resolveOfficialIssueSelectors = (
         help: "Pass --project with --milestone, or use a stable milestone UUID."
       }))
     }
-    const milestone = yield* gateway.callOfficialTool("get_milestone", { project, query: input.milestone })
-    if (!Predicate.isObject(milestone) || typeof milestone.id !== "string") return yield* officialShapeError("get_milestone")
+    const selector = input.milestone
+    const milestone = yield* gateway.callOfficialTool("get_milestone", { project, query: selector })
+    if (!Predicate.isObject(milestone) || !nonEmptyString(milestone.id) || !officialEntityMatchesSelector(milestone, selector, ["id", "name"])) {
+      return yield* officialShapeError("get_milestone identity")
+    }
     input.milestone = milestone.id
   }
   if (Array.isArray(input.labels)) input.labels = yield* resolveOfficialLabels(gateway, input.labels, team)
@@ -589,9 +618,9 @@ const resolveOfficialIssueSelectors = (
 
 const resolveOfficialIssueId = (gateway: LinearGateway, selector: string): Effect.Effect<string, CliError> =>
   gateway.callOfficialTool("get_issue", { id: selector }).pipe(Effect.flatMap((issue) =>
-    Predicate.isObject(issue) && typeof issue.id === "string"
+    Predicate.isObject(issue) && nonEmptyString(issue.id) && officialEntityMatchesSelector(issue, selector, ["id", "identifier"])
       ? Effect.succeed(issue.id)
-      : officialShapeError("get_issue")))
+      : officialShapeError("get_issue identity")))
 
 const resolveOfficialLabels = (
   gateway: LinearGateway,
@@ -628,8 +657,8 @@ const uniqueOfficialId = (
 ): Effect.Effect<string, LinearDomainError> => {
   const normalized = selector.toLowerCase()
   const matches = rows.filter((row) => keys.some((key) => String(row[key] ?? "").toLowerCase() === normalized))
-  return matches.length === 1 && typeof matches[0]!.id === "string"
-    ? Effect.succeed(matches[0]!.id as string)
+  return matches.length === 1 && nonEmptyString(matches[0]!.id)
+    ? Effect.succeed(matches[0]!.id)
     : Effect.fail(new LinearDomainError({
         message: matches.length === 0 ? `No ${noun} exactly matched ${selector}` : `Ambiguous ${noun} selector ${selector}`,
         help: `Candidate ids: ${(matches.length > 0 ? matches : rows).map((row) => String(row.id)).join(", ") || "none"}`
@@ -652,13 +681,13 @@ const resolveOfficialStateSelector = (
   const normalized = selector.toLowerCase()
   const matches = result.filter(Predicate.isObject).filter((state) =>
     typeof state.name === "string" && state.name.toLowerCase() === normalized)
-  if (matches.length !== 1) {
+  if (matches.length !== 1 || !nonEmptyString(matches[0]!.id)) {
     return yield* Effect.fail(new LinearDomainError({
-      message: matches.length === 0 ? `No workflow state exactly matched ${selector}` : `Ambiguous workflow state ${selector}`,
+      message: matches.length === 0 ? `No workflow state exactly matched ${selector}` : `Ambiguous or invalid workflow state selector ${selector}`,
       help: `Candidate ids: ${matches.map((state) => String(state.id)).join(", ") || "none"}`
     }))
   }
-  return String(matches[0]!.id)
+  return matches[0]!.id
 })
 
 const officialTeamSelector = (issue: Record<string, unknown>): string | undefined => {
@@ -691,9 +720,9 @@ const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<st
       const normalizedKey = `${relationKey.slice(0, 1).toLowerCase()}${relationKey.slice(1)}`
       return Predicate.isObject(issue.relations) && officialCollectionAbsent(issue.relations[normalizedKey], desired)
     }
-    if (key === "duplicateOf") return Predicate.isObject(issue.relations)
+    if (key === "duplicateOf") return Predicate.isObject(issue.relations) && "duplicateOf" in issue.relations
       ? officialReferenceMatches(issue.relations.duplicateOf, desired)
-      : desired === null
+      : false
     if (key === "setReleases") return officialCollectionEqual(issue.releases, desired)
     if (key === "addReleases") return officialCollectionContains(issue.releases, desired)
     if (key === "removeReleases") return officialCollectionAbsent(issue.releases, desired)
@@ -710,8 +739,12 @@ const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<st
 
 const officialCollectionContains = (current: unknown, desired: unknown): boolean => officialCollectionMatches(current, desired, false)
 const officialCollectionEqual = (current: unknown, desired: unknown): boolean => officialCollectionMatches(current, desired, true)
-const officialCollectionAbsent = (current: unknown, desired: unknown): boolean => Array.isArray(desired) &&
-  desired.every((value) => !officialCollectionReferences(current).some((references) => references.some((reference) => officialTextEqual(reference, String(value)))))
+const officialCollectionAbsent = (current: unknown, desired: unknown): boolean => {
+  if (!Array.isArray(current) || !Array.isArray(desired)) return false
+  const references = officialCollectionReferences(current)
+  return references.every((values) => values.length > 0) &&
+    desired.every((value) => !references.some((values) => values.some((reference) => officialTextEqual(reference, String(value)))))
+}
 const officialCollectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
   if (!Array.isArray(desired)) return false
   const remaining = officialCollectionReferences(current).map((references) => [...references])
@@ -725,8 +758,8 @@ const officialCollectionMatches = (current: unknown, desired: unknown, exact: bo
 const officialCollectionReferences = (value: unknown): ReadonlyArray<ReadonlyArray<string>> => Array.isArray(value)
   ? value.map((item) => Predicate.isObject(item)
       ? [item.id, item.identifier, item.name, item.version, item.slugId]
-          .filter((reference): reference is string => typeof reference === "string")
-      : [String(item)])
+          .filter((reference): reference is string => nonEmptyString(reference))
+      : nonEmptyString(item) || typeof item === "number" ? [String(item)] : [])
   : []
 const officialLinksContain = (current: unknown, desired: unknown): boolean => Array.isArray(current) && Array.isArray(desired) &&
   desired.every((link) => Predicate.isObject(link) && typeof link.url === "string" && typeof link.title === "string" &&
@@ -741,9 +774,16 @@ const officialReferenceMatches = (current: unknown, desired: unknown): boolean =
     : current === desired
 }
 
-const officialEntityMatchesSelector = (entity: Readonly<Record<string, unknown>>, selector: string): boolean =>
-  [entity.id, entity.identifier]
-    .some((value) => typeof value === "string" && officialTextEqual(value, selector))
+const officialEntityMatchesSelector = (
+  entity: Readonly<Record<string, unknown>>,
+  selector: string,
+  keys: ReadonlyArray<string> = ["id", "identifier"]
+): boolean => keys.some((key) => typeof entity[key] === "string" && officialTextEqual(entity[key], selector))
+
+const officialIssueIdentity = (issue: Readonly<Record<string, unknown>>): string | undefined =>
+  nonEmptyString(issue.id) ? issue.id : nonEmptyString(issue.identifier) ? issue.identifier : undefined
+
+const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0
 
 const officialTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
 

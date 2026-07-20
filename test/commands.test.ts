@@ -131,6 +131,15 @@ describe("runCommand", () => {
     expect(output.page).toEqual({ hasNext: false, endCursor: null })
   })
 
+  test("documentation search reports its current page without claiming a final page", async () => {
+    const output = await run(["docs", "search", "--query", "projects", "--page", "2"], fakeGateway({
+      callOfficialTool: () => Effect.succeed([{ title: "Projects", url: "https://linear.app/docs/projects", snippet: "Plan work" }])
+    }))
+
+    expect(output.page).toEqual({ current: 2 })
+    expect(output.help).toEqual(["Run `linear-axi docs search --query 'projects' --page '3'` for the next page."])
+  })
+
   test("official command validation and shape drift fail before false output", async () => {
     let calls = 0
     const gateway = fakeGateway({
@@ -263,6 +272,24 @@ describe("runCommand", () => {
 
     expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
     expect(saves).toBe(0)
+  })
+
+  test("official removal verification requires an explicit valid collection readback", async () => {
+    for (const project of [{ id: "project-id" }, { id: "project-id", teams: [{}] }]) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "projects", "update", "--id", "project-id", "--remove-teams-json", '["ENG"]'
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "save_project") saves += 1
+          return Effect.succeed(project)
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(saves).toBe(1)
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("could not be verified")
+    }
   })
 
   test("official rich-text updates accept Linear-normalized readback", async () => {
@@ -552,6 +579,104 @@ describe("runCommand", () => {
     await run(["issues", "create", "--team", "ENG", "--title", "Child", "--description-file", file, "--parent", "ENG-100", "--label", "wayfinder:task", "--id", id], gateway)
   })
 
+  test("advanced issue create rejects drifted selector resolutions before mutation", async () => {
+    const cases = [
+      { flag: ["--project", "Roadmap"], invalidTool: "get_project", invalidArgs: { query: "Roadmap" }, invalidValue: { id: "other-project", name: "Other" } },
+      { flag: ["--parent", "ENG-1"], invalidTool: "get_issue", invalidArgs: { id: "ENG-1" }, invalidValue: { id: "other-issue", identifier: "ENG-2" } },
+      { flag: ["--blocks-json", '["ENG-1"]'], invalidTool: "get_issue", invalidArgs: { id: "ENG-1" }, invalidValue: { id: "other-issue", identifier: "ENG-2" } },
+      { flag: ["--project", "Roadmap", "--milestone", "Launch"], invalidTool: "get_milestone", invalidArgs: { project: "project-id", query: "Launch" }, invalidValue: { id: "other-milestone", name: "Other" } },
+      { flag: ["--delegate", "Linear"], invalidTool: "get_user", invalidArgs: { query: "Linear" }, invalidValue: { id: "other-user", name: "Not Linear" } }
+    ] as const
+
+    for (const entry of cases) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "create", "--team", "ENG", "--title", "Launch", "--if-absent", ...entry.flag
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name, args) => {
+          if (name === "save_issue") saves += 1
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering" })
+          if (name === "get_project") {
+            return Effect.succeed(entry.invalidTool === name ? entry.invalidValue : { id: "project-id", name: "Roadmap", slugId: "roadmap" })
+          }
+          if (name === entry.invalidTool && JSON.stringify(args) === JSON.stringify(entry.invalidArgs)) return Effect.succeed(entry.invalidValue)
+          throw new Error(`unexpected ${name}`)
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(saves).toBe(0)
+    }
+
+    let teamSaves = 0
+    const teamError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_issue") teamSaves += 1
+        if (name === "get_team") return Effect.succeed({ id: "ops-team", key: "OPS", name: "Operations" })
+        throw new Error(`unexpected ${name}`)
+      }
+    }), "/repo/src/main.ts")))
+    expect(teamError._tag).toBe("LinearDomainError")
+    expect(teamSaves).toBe(0)
+
+    let assigneeSaves = 0
+    const assigneeError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--assignee", "alice@example.com", "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_issue") assigneeSaves += 1
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "list_users") return Effect.succeed({ users: [{ email: "alice@example.com", name: "Alice" }], hasNextPage: false })
+        throw new Error(`unexpected ${name}`)
+      }
+    }), "/repo/src/main.ts")))
+    expect(assigneeError._tag).toBe("LinearDomainError")
+    expect(assigneeSaves).toBe(0)
+  })
+
+  test("advanced issue create validates the preflight detail identity", async () => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "list_issues") return Effect.succeed({ issues: [{ id: "candidate-id", title: "Launch", teamId: "team-id" }], hasNextPage: false })
+        if (name === "get_issue") return Effect.succeed({ id: "different-id", title: "Launch", teamId: "team-id", priority: 2 })
+        if (name === "save_issue") saves += 1
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(error._tag).toBe("LinearDomainError")
+    expect(saves).toBe(0)
+  })
+
+  test("advanced issue create requires a valid response identity and verified readback", async () => {
+    for (const saveResult of [{}, { id: "new-id", title: "Launch", teamId: "team-id", priority: 2 }]) {
+      let reads = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+          if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+          if (name === "save_issue") return Effect.succeed(saveResult)
+          if (name === "get_issue") {
+            reads += 1
+            return Effect.succeed({ id: "new-id", title: "Launch", teamId: "team-id", priority: 1 })
+          }
+          return Effect.succeed({})
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(reads).toBe(Object.keys(saveResult).length === 0 ? 0 : 1)
+    }
+  })
+
   test("advanced issue create preflights exact identity and performs one mutation", async () => {
     const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
     const gateway = fakeGateway({
@@ -561,7 +686,8 @@ describe("runCommand", () => {
         if (name === "list_issue_labels") return Effect.succeed({ labels: [{ id: "label-id", name: "Bug" }], hasNextPage: false })
         if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
         if (name === "list_users") return Effect.succeed({ users: [{ id: "user-id", email: "alice@example.com", name: "Alice" }], hasNextPage: false })
-        return Effect.succeed({ id: "issue-id", title: "Launch", team: "ENG", priority: 2 })
+        if (name === "save_issue") return Effect.succeed({ id: "issue-id" })
+        return Effect.succeed({ id: "issue-id", title: "Launch", teamId: "team-id", assignee: { id: "user-id" }, priority: 2, labels: [{ id: "label-id" }] })
       }
     })
     const output = await run([
@@ -574,7 +700,8 @@ describe("runCommand", () => {
       { name: "list_users", args: { query: "alice@example.com", limit: 100 } },
       { name: "list_issue_labels", args: { team: "team-id", limit: 250 } },
       { name: "list_issues", args: { query: "Launch", team: "team-id", limit: 100, includeArchived: false } },
-      { name: "save_issue", args: { title: "Launch", assignee: "user-id", priority: 2, labels: ["label-id"], team: "team-id" } }
+      { name: "save_issue", args: { title: "Launch", assignee: "user-id", priority: 2, labels: ["label-id"], team: "team-id" } },
+      { name: "get_issue", args: { id: "issue-id" } }
     ])
     expect(output).toMatchObject({ changed: true, result: "issue created through official save_issue" })
   })
@@ -619,6 +746,7 @@ describe("runCommand", () => {
           hasNextPage: false
         })
         if (name === "save_issue") return Effect.succeed({ id: "new-id", title: "Launch", teamId: "team-id", priority: 2 })
+        if (name === "get_issue") return Effect.succeed({ id: "new-id", title: "Launch", teamId: "team-id", priority: 2 })
         return Effect.succeed({})
       }
     }))
@@ -706,10 +834,20 @@ describe("runCommand", () => {
     ], fakeGateway({
       callOfficialTool: (name, args) => {
         if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
-        if (name === "get_issue") return Effect.succeed({ id: args.id === "ENG-2" ? "blocked-id" : "duplicate-id", teamId: "team-id" })
+        if (name === "get_issue" && args.id === "ENG-2") return Effect.succeed({ id: "blocked-id", identifier: "ENG-2", teamId: "team-id" })
+        if (name === "get_issue" && args.id === "ENG-1") return Effect.succeed({ id: "duplicate-id", identifier: "ENG-1", teamId: "team-id" })
+        if (name === "get_issue") return Effect.succeed({
+          id: "new-id",
+          title: "Launch",
+          teamId: "team-id",
+          relations: { blocks: [{ id: "blocked-id" }], duplicateOf: { id: "duplicate-id" } }
+        })
         if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
-        if (name === "save_issue") saves.push(args)
-        return Effect.succeed({ id: "new-id", title: "Launch" })
+        if (name === "save_issue") {
+          saves.push(args)
+          return Effect.succeed({ id: "new-id" })
+        }
+        return Effect.succeed({})
       }
     }))
     expect(saves).toEqual([{ title: "Launch", team: "team-id", blocks: ["blocked-id"], duplicateOf: "duplicate-id" }])
@@ -741,6 +879,36 @@ describe("runCommand", () => {
       { name: "get_issue", args: { id: "eng-123", includeReleases: true, includeRelations: true } }
     ])
     expect(output).toMatchObject({ changed: true, result: "requested issue properties saved and verified" })
+  })
+
+  test("issue removals require explicit association and duplicate readbacks", async () => {
+    const cases = [
+      { flags: ["--remove-releases-json", '["v1"]'], relations: {} },
+      { flags: ["--remove-blocks-json", '["ENG-2"]'], relations: {} },
+      { flags: ["--remove-blocks-json", '["ENG-2"]'], relations: { blocks: [{}] } },
+      { flags: ["--clear-duplicate"], relations: {} }
+    ] as const
+
+    for (const entry of cases) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "update", "--id", "ENG-123", ...entry.flags
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name, args) => {
+          if (name === "save_issue") {
+            saves += 1
+            return Effect.succeed({ id: "issue-id" })
+          }
+          if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1" }], hasNextPage: false })
+          if (name === "get_issue" && args.id === "ENG-2") return Effect.succeed({ id: "blocked-id", identifier: "ENG-2" })
+          if (name === "get_issue") return Effect.succeed({ id: "issue-id", identifier: "ENG-123", teamId: "team-id", relations: entry.relations })
+          return Effect.succeed({})
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(saves).toBe(1)
+    }
   })
 
   test("issue updates fail closed when readback does not satisfy the request", async () => {

@@ -95,6 +95,43 @@ describe("official Linear MCP tool boundary", () => {
     })
   })
 
+  test("shared decoding selects the matching response from JSON-RPC batches", () => {
+    expect(decodeStreamableHttpMessage(JSON.stringify([
+      { jsonrpc: "2.0", id: 1, result: { ignored: true } },
+      { jsonrpc: "2.0", id: 2, result: { tools: [{ name: "list_teams" }] } }
+    ]), "application/json", 2)).toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { tools: [{ name: "list_teams" }] }
+    })
+  })
+
+  test("incremental SSE decoding matches the request id without waiting for EOF", async () => {
+    let canceled = false
+    const transport = initializedFetcher((request) => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode([
+          "event: message",
+          `data: ${JSON.stringify([
+            { jsonrpc: "2.0", id: 999, result: { content: [{ type: "text", text: "{}" }] } },
+            { jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: JSON.stringify({ id: "project-1" }) }] } }
+          ])}`,
+          "",
+          ""
+        ].join("\n")))
+      },
+      cancel() {
+        canceled = true
+      }
+    }), { status: 200, headers: { "content-type": "text/event-stream" } }))
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher: transport.fetcher })
+
+    const result = await Effect.runPromise(call("get_project", { query: "Roadmap" }))
+
+    expect(result).toEqual({ id: "project-1" })
+    expect(canceled).toBe(true)
+  }, 1_000)
+
   test("reinitializes and replays after the server terminates a session", async () => {
     let sessions = 0
     let calls = 0

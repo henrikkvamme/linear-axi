@@ -167,11 +167,16 @@ const renderResult = (
     if (!Array.isArray(value)) return shapeDrift(entry, "expected an array result")
     if (value.some((row) => !Predicate.isObject(row))) return shapeDrift(entry, "expected every row to be an object")
     const items = full ? value : value.map((row) => projectRow(row, entry.defaultFields ?? []))
+    const documentationPage = entry.tool === "search_documentation"
+      ? Number(parsed.flags.get("page") ?? 0)
+      : undefined
     return Effect.succeed({
       count: `${items.length} ${entry.outputKey} shown`,
-      page: { hasNext: false, endCursor: null },
+      page: documentationPage === undefined ? { hasNext: false, endCursor: null } : { current: documentationPage },
       ...(items.length === 0 ? { [entry.outputKey]: `0 ${entry.outputKey} matched this query` } : { [entry.outputKey]: items }),
-      help: []
+      help: documentationPage === undefined
+        ? []
+        : [`Run \`linear-axi ${entry.path.join(" ")} ${replayFlags(parsed.flags, { page: String(documentationPage + 1) })}\` for the next page.`]
     })
   }
   if (!Predicate.isObject(value)) return shapeDrift(entry, "expected an object result")
@@ -235,18 +240,18 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
 ) {
   if (tool === "save_project" && typeof args.lead === "string") {
     const user = yield* gateway.callOfficialTool("get_user", { query: args.lead })
-    if (!Predicate.isObject(user) || typeof user.id !== "string" || (args.lead !== "me" && !userEntityMatches(user, args.lead))) {
+    if (!Predicate.isObject(user) || !nonEmptyString(user.id) || (args.lead !== "me" && !userEntityMatches(user, args.lead))) {
       return yield* mutationShapeDrift(tool)
     }
     return { ...args, lead: user.id }
   }
   if (tool === "save_milestone" && typeof args.project === "string" && typeof args.id === "string") {
     const project = yield* gateway.callOfficialTool("get_project", { query: args.project })
-    if (!Predicate.isObject(project) || typeof project.id !== "string" || !mutationEntityMatches(project, args.project, "save_project")) {
+    if (!Predicate.isObject(project) || !nonEmptyString(project.id) || !mutationEntityMatches(project, args.project, "save_project")) {
       return yield* mutationShapeDrift(tool)
     }
     const milestone = yield* gateway.callOfficialTool("get_milestone", { project: project.id, query: args.id })
-    if (!Predicate.isObject(milestone) || typeof milestone.id !== "string" || !mutationEntityMatches(milestone, args.id, "save_milestone")) {
+    if (!Predicate.isObject(milestone) || !nonEmptyString(milestone.id) || !mutationEntityMatches(milestone, args.id, "save_milestone")) {
       return yield* mutationShapeDrift(tool)
     }
     return { ...args, project: project.id, id: milestone.id }
@@ -313,8 +318,12 @@ const mutationSatisfied = (
 
 const collectionEqual = (current: unknown, desired: unknown): boolean => collectionMatches(current, desired, true)
 const collectionContains = (current: unknown, desired: unknown): boolean => collectionMatches(current, desired, false)
-const collectionAbsent = (current: unknown, desired: unknown): boolean => Array.isArray(desired) &&
-  desired.every((value) => !collectionReferences(current).some((references) => references.some((reference) => referenceTextEqual(reference, String(value)))))
+const collectionAbsent = (current: unknown, desired: unknown): boolean => {
+  if (!Array.isArray(current) || !Array.isArray(desired)) return false
+  const references = collectionReferences(current)
+  return references.every((values) => values.length > 0) &&
+    desired.every((value) => !references.some((values) => values.some((reference) => referenceTextEqual(reference, String(value)))))
+}
 const collectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
   if (!Array.isArray(desired)) return false
   const remaining = collectionReferences(current).map((references) => [...references])
@@ -330,9 +339,9 @@ const collectionReferences = (value: unknown): ReadonlyArray<ReadonlyArray<strin
   : []
 const referenceValues = (value: unknown): ReadonlyArray<string> => Predicate.isObject(value)
   ? [value.id, value.identifier, value.name, value.key, value.email, value.displayName, value.slugId, value.version, value.number, value.type]
-      .filter((reference): reference is string | number => typeof reference === "string" || typeof reference === "number")
+      .filter((reference): reference is string | number => nonEmptyString(reference) || typeof reference === "number")
       .map(String)
-  : [String(value)]
+  : nonEmptyString(value) || typeof value === "number" ? [String(value)] : []
 const referenceEqual = (current: unknown, desired: unknown): boolean => {
   if (desired === null) return current == null
   if (Predicate.isObject(current)) return referenceValues(current).some((reference) => referenceTextEqual(reference, String(desired)))
@@ -357,6 +366,7 @@ const userEntityMatches = (entity: Readonly<Record<string, unknown>>, selector: 
   [entity.id, entity.name, entity.email, entity.displayName]
     .some((reference) => typeof reference === "string" && referenceTextEqual(reference, selector))
 const referenceTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
+const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0
 const lowerFirst = (value: string): string => `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`
 
 const mutationRecoveryCommand = (tool: string, args: Readonly<Record<string, unknown>>): string => {

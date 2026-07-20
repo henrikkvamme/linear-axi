@@ -16,6 +16,8 @@ interface OfficialMcpClient {
   ) => Effect.Effect<unknown, GatewayError>
 }
 
+type JsonRpcId = string | number
+
 const RpcResponseSchema = Schema.Struct({
   result: Schema.optionalKey(Schema.Unknown),
   error: Schema.optionalKey(Schema.Struct({ message: Schema.optionalKey(Schema.String) }))
@@ -53,33 +55,45 @@ export const makeOfficialMcpClient = (
     }
     if (sessionId !== undefined) headers["mcp-session-id"] = sessionId
     if (protocolVersion !== undefined) headers["mcp-protocol-version"] = protocolVersion
+    const controller = new AbortController()
     const response = yield* Effect.tryPromise({
       try: () => fetcher(OFFICIAL_MCP_URL, {
         method: "POST",
         headers,
-        body: JSON.stringify(message)
+        body: JSON.stringify(message),
+        signal: controller.signal
       }),
-      catch: (cause) => fail(operation, readableCause(cause))
+      catch: (cause) => {
+        controller.abort()
+        return fail(operation, readableCause(cause))
+      }
     })
-    const body = yield* Effect.tryPromise({
-      try: () => response.text(),
-      catch: (cause) => fail(operation, readableCause(cause))
-    })
-    return { response, body }
+    return { response, controller }
   })
 
   const responseMessage = (
     operation: string,
     response: Response,
-    body: string
+    id: JsonRpcId,
+    controller: AbortController
   ): Effect.Effect<Schema.Schema.Type<typeof RpcResponseSchema>, LinearApiError> => {
-    if (!response.ok) return Effect.fail(fail(operation, `HTTP ${response.status}`))
-    return Effect.try({
-      try: () => decodeRpcResponse(decodeStreamableHttpMessage(body, response.headers.get("content-type"))),
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => undefined)
+      controller.abort()
+      return Effect.fail(fail(operation, `HTTP ${response.status}`))
+    }
+    return Effect.tryPromise({
+      try: () => readStreamableHttpMessage(response, id, controller),
       catch: (cause) => fail(operation, readableCause(cause))
-    }).pipe(Effect.flatMap((message) => message.error
-      ? Effect.fail(fail(operation, message.error.message ?? "request failed"))
-      : Effect.succeed(message)))
+    }).pipe(
+      Effect.flatMap((value) => Effect.try({
+        try: () => decodeRpcResponse(value),
+        catch: (cause) => fail(operation, readableCause(cause))
+      })),
+      Effect.flatMap((message) => message.error
+        ? Effect.fail(fail(operation, message.error.message ?? "request failed"))
+        : Effect.succeed(message))
+    )
   }
 
   const initialize = Effect.fn("OfficialMcp.initialize")(function*() {
@@ -96,7 +110,7 @@ export const makeOfficialMcpClient = (
         clientInfo: { name: "linear-axi", version: "0.1.0" }
       }
     })
-    const message = yield* responseMessage("initialize", initializedResponse.response, initializedResponse.body)
+    const message = yield* responseMessage("initialize", initializedResponse.response, id, initializedResponse.controller)
     if (!Predicate.isObject(message.result) || message.result.protocolVersion !== OFFICIAL_MCP_PROTOCOL_VERSION) {
       return yield* Effect.fail(fail("initialize", "server negotiated an unsupported protocol version"))
     }
@@ -106,6 +120,8 @@ export const makeOfficialMcpClient = (
       jsonrpc: "2.0",
       method: "notifications/initialized"
     })
+    void notification.response.body?.cancel().catch(() => undefined)
+    notification.controller.abort()
     if (!notification.response.ok) {
       return yield* Effect.fail(fail("notifications/initialized", `HTTP ${notification.response.status}`))
     }
@@ -124,12 +140,14 @@ export const makeOfficialMcpClient = (
     let id = ++requestId
     let result = yield* post(method, { jsonrpc: "2.0", id, method, params })
     if (result.response.status === 404 && sessionId !== undefined) {
+      void result.response.body?.cancel().catch(() => undefined)
+      result.controller.abort()
       initialized = false
       yield* ensureInitialized()
       id = ++requestId
       result = yield* post(method, { jsonrpc: "2.0", id, method, params })
     }
-    const message = yield* responseMessage(method, result.response, result.body)
+    const message = yield* responseMessage(method, result.response, id, result.controller)
     return message.result
   })
 
@@ -168,37 +186,107 @@ export const makeOfficialMcpToolCaller = (
   })
 }
 
-export const decodeStreamableHttpMessage = (body: string, contentType: string | null): unknown => {
+export const decodeStreamableHttpMessage = (
+  body: string,
+  contentType: string | null,
+  requestId?: JsonRpcId
+): unknown => {
   const mediaType = contentType?.split(";", 1)[0]?.trim().toLowerCase()
-  if (mediaType === "application/json") return decodeJsonValue(body)
-  if (mediaType === "text/event-stream") return decodeSseMessage(body)
+  if (mediaType === "application/json") return selectRpcResponse(decodeJsonValue(body), requestId)
+  if (mediaType === "text/event-stream") return decodeSseMessage(body, requestId)
   try {
-    return decodeJsonValue(body)
+    return selectRpcResponse(decodeJsonValue(body), requestId)
   } catch {
-    return decodeSseMessage(body)
+    return decodeSseMessage(body, requestId)
   }
 }
 
-const decodeSseMessage = (body: string): unknown => {
-  const payloads: Array<string> = []
-  let data: Array<string> = []
-  for (const line of [...body.split(/\r?\n/), ""]) {
-    if (line.length === 0) {
-      if (data.length > 0) payloads.push(data.join("\n"))
-      data = []
-    } else if (line.startsWith("data:")) {
-      data.push(line.slice(5).replace(/^ /, ""))
-    }
-  }
-  for (const payload of payloads) {
+const readStreamableHttpMessage = async (
+  response: Response,
+  requestId: JsonRpcId,
+  controller: AbortController
+): Promise<unknown> => {
+  const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase()
+  if (mediaType !== "text/event-stream") {
     try {
-      const message = decodeJsonValue(payload)
-      if (Predicate.isObject(message) && ("result" in message || "error" in message)) return message
-    } catch {
-      continue
+      return decodeStreamableHttpMessage(await response.text(), response.headers.get("content-type"), requestId)
+    } finally {
+      controller.abort()
     }
   }
-  throw new Error("response contained no MCP data message")
+  if (!response.body) {
+    controller.abort()
+    throw new Error("response contained no MCP data message")
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  try {
+    while (true) {
+      const chunk = await reader.read()
+      buffer += decoder.decode(chunk.value, { stream: !chunk.done })
+      const parsed = takeSseEvents(buffer, requestId)
+      buffer = parsed.remaining
+      if (parsed.message !== undefined) {
+        controller.abort()
+        void reader.cancel()
+        return parsed.message
+      }
+      if (chunk.done) {
+        const final = decodeSseMessage(buffer, requestId)
+        controller.abort()
+        return final
+      }
+    }
+  } catch (cause) {
+    controller.abort()
+    throw cause
+  }
+}
+
+const takeSseEvents = (
+  body: string,
+  requestId: JsonRpcId
+): { readonly message?: unknown; readonly remaining: string } => {
+  let remaining = body
+  while (true) {
+    const boundary = /\r?\n\r?\n/.exec(remaining)
+    if (!boundary || boundary.index === undefined) return { remaining }
+    const event = remaining.slice(0, boundary.index)
+    remaining = remaining.slice(boundary.index + boundary[0].length)
+    const message = decodeSseEvent(event, requestId)
+    if (message !== undefined) return { message, remaining }
+  }
+}
+
+const decodeSseMessage = (body: string, requestId?: JsonRpcId): unknown => {
+  for (const event of body.split(/\r?\n\r?\n/)) {
+    const message = decodeSseEvent(event, requestId)
+    if (message !== undefined) return message
+  }
+  throw new Error("response contained no matching MCP data message")
+}
+
+const decodeSseEvent = (event: string, requestId?: JsonRpcId): unknown | undefined => {
+  const data = event.split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).replace(/^ /, ""))
+  if (data.length === 0) return undefined
+  try {
+    return selectRpcResponse(decodeJsonValue(data.join("\n")), requestId, false)
+  } catch {
+    return undefined
+  }
+}
+
+const selectRpcResponse = (value: unknown, requestId?: JsonRpcId, required = true): unknown => {
+  const candidates = Array.isArray(value) ? value : [value]
+  const message = candidates.find((candidate) => Predicate.isObject(candidate) &&
+    ("result" in candidate || "error" in candidate) &&
+    (requestId === undefined || candidate.id === requestId))
+  if (message !== undefined) return message
+  if (required) throw new Error("response contained no matching MCP response")
+  return undefined
 }
 
 const apiError = (operation: string, message: string) => new LinearApiError({
