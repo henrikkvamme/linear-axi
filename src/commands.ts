@@ -498,7 +498,12 @@ const issuePropertyInput = (
       input[arg] = number
     }
   }
-  if (labelsJson !== undefined) input.labels = readStringArrayJson(labelsJson, "labels-json", parsed.command)
+  if (labelsJson !== undefined) {
+    input.labels = readStringArrayJson(labelsJson, "labels-json", parsed.command)
+  } else {
+    const label = readStringFlag(parsed.flags, "label")
+    if (label !== undefined) input.labels = [label]
+  }
   const releases = readStringFlag(parsed.flags, "releases-json") ?? readStringFlag(parsed.flags, "set-releases-json")
   if (releases !== undefined) input.setReleases = readStringArrayJson(releases, parsed.flags.has("releases-json") ? "releases-json" : "set-releases-json", parsed.command)
   for (const [flag, arg] of [["add-releases-json", "addReleases"], ["remove-releases-json", "removeReleases"]] as const) {
@@ -583,7 +588,7 @@ const resolveOfficialIssueSelectors = (
     }
     input.project = project.id
   }
-  if (typeof input.parentId === "string") input.parentId = yield* resolveOfficialIssueId(gateway, input.parentId)
+  if (typeof input.parentId === "string") input.parentId = yield* resolveOfficialParentId(gateway, input.parentId, team)
   if (typeof input.cycle === "string" && !looksLikeUuid(input.cycle)) {
     const cycles = yield* gateway.callOfficialTool("list_cycles", { teamId: team })
     if (!Array.isArray(cycles) || cycles.some((cycle) => !Predicate.isObject(cycle))) return yield* officialShapeError("list_cycles")
@@ -622,18 +627,34 @@ const resolveOfficialIssueId = (gateway: LinearGateway, selector: string): Effec
       ? Effect.succeed(issue.id)
       : officialShapeError("get_issue identity")))
 
+const resolveOfficialParentId = (
+  gateway: LinearGateway,
+  selector: string,
+  team: string
+): Effect.Effect<string, CliError> => Effect.gen(function*() {
+  const issue = yield* gateway.callOfficialTool("get_issue", { id: selector })
+  if (!Predicate.isObject(issue) || !nonEmptyString(issue.id) || !officialEntityMatchesSelector(issue, selector, ["id", "identifier"])) {
+    return yield* officialShapeError("get_issue identity")
+  }
+  const parentTeam = officialTeamSelector(issue)
+  if (!parentTeam) return yield* officialShapeError("get_issue team")
+  if (!officialTextEqual(parentTeam, team)) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: `parent ${selector} belongs to another team`,
+      help: "Choose a parent from the issue's team."
+    }))
+  }
+  return issue.id
+})
+
 const resolveOfficialLabels = (
   gateway: LinearGateway,
   selectors: ReadonlyArray<unknown>,
   team: string
 ): Effect.Effect<ReadonlyArray<string>, CliError> => Effect.gen(function*() {
-  const result: Array<string> = []
-  for (const raw of selectors) {
-    const selector = String(raw)
-    const rows = yield* fetchOfficialRows(gateway, "list_issue_labels", { team, limit: 250 }, "labels")
-    result.push(yield* uniqueOfficialId("label", selector, rows, ["id", "name"]))
-  }
-  return result
+  if (selectors.length === 0) return []
+  const rows = yield* fetchOfficialRows(gateway, "list_issue_labels", { team, limit: 250 }, "labels")
+  return yield* Effect.forEach(selectors, (raw) => uniqueOfficialId("label", String(raw), rows, ["id", "name"]))
 })
 
 const resolveOfficialReleases = (
@@ -1235,7 +1256,7 @@ const fetchOfficialRows = Effect.fn("fetchOfficialRows")(function*(
     const page = yield* gateway.callOfficialTool(tool, { ...args, ...(cursor === undefined ? {} : { cursor }) })
     rows.push(...officialRows(page, key))
     pages += 1
-    if (!Predicate.isObject(page) || (page.hasNextPage !== undefined && typeof page.hasNextPage !== "boolean")) {
+    if (!Predicate.isObject(page) || typeof page.hasNextPage !== "boolean") {
       return yield* officialShapeError(`${tool} pagination`)
     }
     if (page.hasNextPage !== true) return rows

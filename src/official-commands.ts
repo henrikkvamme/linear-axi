@@ -184,7 +184,7 @@ const renderResult = (
   if (entry.listKey) {
     const candidateRows = result[entry.listKey]
     if (!Array.isArray(candidateRows)) return shapeDrift(entry, `expected ${entry.listKey} to be an array`)
-    if (result.hasNextPage !== undefined && typeof result.hasNextPage !== "boolean") {
+    if (typeof result.hasNextPage !== "boolean") {
       return shapeDrift(entry, "expected hasNextPage to be a boolean")
     }
     if (result.hasNextPage === true && typeof result.cursor !== "string") {

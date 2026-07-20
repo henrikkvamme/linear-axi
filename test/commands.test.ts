@@ -158,6 +158,14 @@ describe("runCommand", () => {
     expect(driftError._tag).toBe("LinearDomainError")
     expect(driftError.message).toContain("output shape drifted")
     expect(calls).toBe(1)
+
+    const paginationError = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["users", "list"], commandSpecs),
+      fakeGateway({ callOfficialTool: () => Effect.succeed({ users: [] }) }),
+      "/repo/src/main.ts"
+    )))
+    expect(paginationError._tag).toBe("LinearDomainError")
+    expect(paginationError.message).toContain("hasNextPage")
   })
 
   test("official mutation preflights reject empty and mismatched entities", async () => {
@@ -579,6 +587,25 @@ describe("runCommand", () => {
     await run(["issues", "create", "--team", "ENG", "--title", "Child", "--description-file", file, "--parent", "ENG-100", "--label", "wayfinder:task", "--id", id], gateway)
   })
 
+  test("advanced issue create preserves the singular label", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const output = await run([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--label", "Bug", "--if-absent"
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "list_issue_labels") return Effect.succeed({ labels: [{ id: "label-id", name: "Bug" }], hasNextPage: false })
+        if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+        if (name === "save_issue") return Effect.succeed({ id: "issue-id" })
+        return Effect.succeed({ id: "issue-id", title: "Launch", teamId: "team-id", labels: [{ id: "label-id" }] })
+      }
+    }))
+
+    expect(calls.find(({ name }) => name === "save_issue")?.args).toMatchObject({ labels: ["label-id"] })
+    expect(output).toMatchObject({ changed: true })
+  })
+
   test("advanced issue create rejects drifted selector resolutions before mutation", async () => {
     const cases = [
       { flag: ["--project", "Roadmap"], invalidTool: "get_project", invalidArgs: { query: "Roadmap" }, invalidValue: { id: "other-project", name: "Other" } },
@@ -704,6 +731,80 @@ describe("runCommand", () => {
       { name: "get_issue", args: { id: "issue-id" } }
     ])
     expect(output).toMatchObject({ changed: true, result: "issue created through official save_issue" })
+  })
+
+  test("advanced issue parent resolution enforces the target team", async () => {
+    const cases = [
+      ["issues", "create", "--team", "ENG", "--title", "Launch", "--parent", "OPS-1", "--if-absent"],
+      ["issues", "update", "--id", "ENG-1", "--parent", "OPS-1"]
+    ] as const
+
+    for (const argv of cases) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs(argv, commandSpecs), fakeGateway({
+        callOfficialTool: (name, args) => {
+          if (name === "save_issue") saves += 1
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+          if (name === "get_issue" && args.id === "ENG-1") {
+            return Effect.succeed({ id: "issue-id", identifier: "ENG-1", teamId: "team-id" })
+          }
+          if (name === "get_issue" && args.id === "OPS-1") {
+            return Effect.succeed({ id: "parent-id", identifier: "OPS-1", teamId: "other-team-id" })
+          }
+          throw new Error(`unexpected ${name}`)
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("belongs to another team")
+      expect(saves).toBe(0)
+    }
+  })
+
+  test("advanced issue labels share one guarded collection scan", async () => {
+    let labelPages = 0
+    const output = await run([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Bug","Urgent"]', "--if-absent"
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "list_issue_labels") {
+          labelPages += 1
+          return args.cursor === undefined
+            ? Effect.succeed({ labels: [{ id: "bug-id", name: "Bug" }], hasNextPage: true, cursor: "labels-2" })
+            : Effect.succeed({ labels: [{ id: "urgent-id", name: "Urgent" }], hasNextPage: false })
+        }
+        if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+        if (name === "save_issue") return Effect.succeed({ id: "issue-id" })
+        return Effect.succeed({
+          id: "issue-id",
+          title: "Launch",
+          teamId: "team-id",
+          labels: [{ id: "bug-id" }, { id: "urgent-id" }]
+        })
+      }
+    }))
+
+    expect(labelPages).toBe(2)
+    expect(output).toMatchObject({ changed: true })
+  })
+
+  test("internal official pagination requires explicit pagination metadata", async () => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "list_issues") return Effect.succeed({ issues: [] })
+        if (name === "save_issue") saves += 1
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("pagination")
+    expect(saves).toBe(0)
   })
 
   test("internal official pagination rejects repeated cursors across every resolver", async () => {
