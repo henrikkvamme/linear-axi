@@ -112,7 +112,7 @@ export const makeSdkLinearGateway = (
       return yield* Effect.tryPromise({
         try: () => run(client),
         catch: (cause) => {
-          if (cause instanceof LinearDomainError) {
+          if (cause instanceof LinearDomainError || cause instanceof LinearApiError) {
             return cause
           }
           return new LinearApiError({
@@ -208,14 +208,20 @@ const changeIssueState = async (client: LinearClient, input: ChangeIssueStateInp
   if (current && uuidEqual(current.id, target.id)) {
     return unchanged(await issueSummary(issue), "already in the requested workflow state (no-op)")
   }
-  const payload = await client.updateIssue(issue.id, { stateId: target.id })
-  await requirePayload(payload.success, payload.issue, "change the issue workflow state")
-  const verified = await resolveIssue(client, issue.id)
-  const verifiedState = await verified.state
-  if (!verifiedState || !uuidEqual(verifiedState.id, target.id)) {
-    throw conflict(`${issue.identifier} state transition could not be verified`, "Refetch the issue before retrying.")
-  }
-  return changed(await issueSummary(verified), "issue workflow state changed")
+  return executeVerifiedIssueMutation(
+    client,
+    issue,
+    "workflow state update",
+    async () => {
+      const payload = await client.updateIssue(issue.id, { stateId: target.id })
+      return mutationAccepted(payload.success, payload.issue)
+    },
+    async (candidate) => {
+      const state = await candidate.state
+      return Boolean(state && uuidEqual(state.id, target.id))
+    },
+    "issue workflow state changed"
+  )
 }
 
 const setIssueParent = async (client: LinearClient, input: SetIssueParentInput): Promise<MutationResult<IssueSummary>> => {
@@ -231,13 +237,17 @@ const setIssueParent = async (client: LinearClient, input: SetIssueParentInput):
   if (nullableUuidEqual(issue.parentId ?? null, desiredParentId)) {
     return unchanged(await issueSummary(issue), parent ? "requested parent already set (no-op)" : "parent already clear (no-op)")
   }
-  const payload = await client.updateIssue(issue.id, { parentId: desiredParentId })
-  await requirePayload(payload.success, payload.issue, parent ? "set the issue parent" : "clear the issue parent")
-  const verified = await resolveIssue(client, issue.id)
-  if (!nullableUuidEqual(verified.parentId ?? null, desiredParentId)) {
-    throw conflict(`${issue.identifier} parent update could not be verified`, "Refetch the issue before retrying.")
-  }
-  return changed(await issueSummary(verified), parent ? "issue parent set" : "issue parent cleared")
+  return executeVerifiedIssueMutation(
+    client,
+    issue,
+    "parent update",
+    async () => {
+      const payload = await client.updateIssue(issue.id, { parentId: desiredParentId })
+      return mutationAccepted(payload.success, payload.issue)
+    },
+    (candidate) => nullableUuidEqual(candidate.parentId ?? null, desiredParentId),
+    parent ? "issue parent set" : "issue parent cleared"
+  )
 }
 
 const clearIssueFields = async (client: LinearClient, input: ClearIssueFieldsInput): Promise<MutationResult<IssueSummary>> => {
@@ -247,16 +257,21 @@ const clearIssueFields = async (client: LinearClient, input: ClearIssueFieldsInp
   if (dueDateAlreadyClear && milestoneAlreadyClear) {
     return unchanged(await issueSummary(issue), "requested issue fields already clear (no-op)")
   }
-  const payload = await client.updateIssue(issue.id, {
-    ...(input.dueDate ? { dueDate: null } : {}),
-    ...(input.milestone ? { projectMilestoneId: null } : {})
-  })
-  await requirePayload(payload.success, payload.issue, "clear issue fields")
-  const verified = await resolveIssue(client, issue.id)
-  if ((input.dueDate && verified.dueDate != null) || (input.milestone && verified.projectMilestoneId != null)) {
-    throw conflict(`${issue.identifier} cleared fields could not be verified`, "Refetch the issue before retrying.")
-  }
-  return changed(await issueSummary(verified), "requested issue fields cleared")
+  return executeVerifiedIssueMutation(
+    client,
+    issue,
+    "field clear",
+    async () => {
+      const payload = await client.updateIssue(issue.id, {
+        ...(input.dueDate ? { dueDate: null } : {}),
+        ...(input.milestone ? { projectMilestoneId: null } : {})
+      })
+      return mutationAccepted(payload.success, payload.issue)
+    },
+    (candidate) => (!input.dueDate || candidate.dueDate == null) &&
+      (!input.milestone || candidate.projectMilestoneId == null),
+    "requested issue fields cleared"
+  )
 }
 
 const listIssues = async (client: LinearClient, input: ListIssuesInput): Promise<PageResult<IssueSummary>> => {
@@ -714,21 +729,17 @@ const applyLabel = async (
     return unchanged(await issueSummary(issue), "label already applied (no-op)")
   }
 
-  try {
-    const payload = await client.issueAddLabel(issue.id, label.id)
-    await requirePayload(payload.success, payload.issue, "apply the label")
-  } catch (cause) {
-    const concurrent = await resolveIssue(client, issue.id)
-    if (!concurrent.labelIds.some((id) => uuidEqual(id, label.id))) {
-      throw cause
-    }
-    return unchanged(await issueSummary(concurrent), "label already applied (no-op)")
-  }
-  const verified = await resolveIssue(client, issue.id)
-  if (!verified.labelIds.some((id) => uuidEqual(id, label.id))) {
-    throw conflict(`${label.name} was not present after apply`, "Refetch the issue before retrying.")
-  }
-  return changed(await issueSummary(verified), "label applied")
+  return executeVerifiedIssueMutation(
+    client,
+    issue,
+    "label add",
+    async () => {
+      const payload = await client.issueAddLabel(issue.id, label.id)
+      return mutationAccepted(payload.success, payload.issue)
+    },
+    (candidate) => candidate.labelIds.some((id) => uuidEqual(id, label.id)),
+    "label applied"
+  )
 }
 
 const removeLabel = async (
@@ -742,13 +753,17 @@ const removeLabel = async (
   if (!issue.labelIds.some((id) => uuidEqual(id, label.id))) {
     return unchanged(await issueSummary(issue), "label already absent (no-op)")
   }
-  const payload = await client.issueRemoveLabel(issue.id, label.id)
-  await requirePayload(payload.success, payload.issue, "remove the label")
-  const verified = await resolveIssue(client, issue.id)
-  if (verified.labelIds.some((id) => uuidEqual(id, label.id))) {
-    throw conflict(`${label.name} remained present after removal`, "Refetch the issue before retrying.")
-  }
-  return changed(await issueSummary(verified), "label removed")
+  return executeVerifiedIssueMutation(
+    client,
+    issue,
+    "label removal",
+    async () => {
+      const payload = await client.issueRemoveLabel(issue.id, label.id)
+      return mutationAccepted(payload.success, payload.issue)
+    },
+    (candidate) => !candidate.labelIds.some((id) => uuidEqual(id, label.id)),
+    "label removed"
+  )
 }
 
 const replaceLabels = async (
@@ -760,18 +775,20 @@ const replaceLabels = async (
     resolveLabelForTeam(client, selector, requireTeamId(issue))))
   labels.forEach(requireOrdinaryLabel)
   const desiredIds = [...new Set(labels.map((label) => normalizeUuid(label.id)))].sort(compareText)
-  const currentIds = issue.labelIds.map(normalizeUuid).sort(compareText)
-  if (desiredIds.length === currentIds.length && desiredIds.every((id, index) => id === currentIds[index])) {
+  if (uuidSetEqual(issue.labelIds, desiredIds)) {
     return unchanged(await issueSummary(issue), "labels already match requested replacement (no-op)")
   }
-  const payload = await client.updateIssue(issue.id, { labelIds: desiredIds })
-  await requirePayload(payload.success, payload.issue, "replace the issue labels")
-  const verified = await resolveIssue(client, issue.id)
-  const verifiedIds = verified.labelIds.map(normalizeUuid).sort(compareText)
-  if (desiredIds.length !== verifiedIds.length || desiredIds.some((id, index) => id !== verifiedIds[index])) {
-    throw conflict(`${issue.identifier} labels could not be verified after replacement`, "Refetch the issue before retrying.")
-  }
-  return changed(await issueSummary(verified), "issue labels replaced")
+  return executeVerifiedIssueMutation(
+    client,
+    issue,
+    "label replacement",
+    async () => {
+      const payload = await client.updateIssue(issue.id, { labelIds: desiredIds })
+      return mutationAccepted(payload.success, payload.issue)
+    },
+    (candidate) => uuidSetEqual(candidate.labelIds, desiredIds),
+    "issue labels replaced"
+  )
 }
 
 const listRelations = async (
@@ -907,20 +924,15 @@ const removeRelation = async (
   if (!relation || relation.archivedAt) {
     return unchanged(desired, "directed relation already absent (no-op)")
   }
-  const payload = await client.deleteIssueRelation(relation.id)
-  if (!payload.success) {
-    throw conflict(`relation ${relation.id} was not removed`, "Refetch the relation before retrying.")
+  if (typeof relation.issueId !== "string" || relation.issueId.length === 0) {
+    throw conflict(`relation ${relation.id} has no source issue`, "Inspect the relation in Linear before removing it.")
   }
-  const verified = await lookupRelationByUuid(client, relation.id)
-  if (verified && !verified.archivedAt) {
-    throw conflict(`relation ${relation.id} remained active after removal`, "Refetch the relation before retrying.")
-  }
-  return changed({
+  return executeVerifiedRelationRemoval(client, relation, {
     id: relation.id,
     type: relation.type as RelationType,
     sourceId: relation.issueId,
     targetId: relation.relatedIssueId
-  }, "directed relation removed")
+  })
 }
 
 const listComments = async (
@@ -1211,6 +1223,114 @@ const pageResult = <Node, Value>(connection: ConnectionLike<Node>, items: Readon
     endCursor: connection.pageInfo.endCursor ?? null
   }
 })
+
+const executeVerifiedIssueMutation = async (
+  client: LinearClient,
+  issue: Issue,
+  operation: string,
+  mutate: () => Promise<boolean>,
+  desiredState: (candidate: Issue) => boolean | Promise<boolean>,
+  result: string
+): Promise<MutationResult<IssueSummary>> => {
+  let mutationFailed = false
+  let mutationCause: unknown
+  let accepted = false
+  try {
+    accepted = await mutate()
+  } catch (cause) {
+    mutationFailed = true
+    mutationCause = cause
+  }
+  if (!mutationFailed && !accepted) {
+    throw new Error(`Linear did not accept the ${operation}`)
+  }
+
+  let verified: Issue
+  try {
+    verified = await resolveIssue(client, issue.id)
+    if (!(await desiredState(verified))) {
+      throw new Error("the requested state was not observed")
+    }
+    const summary = await issueSummary(verified)
+    return mutationFailed
+      ? unchanged(summary, `requested ${operation} verified after an indeterminate response`)
+      : changed(summary, result)
+  } catch (cause) {
+    throw indeterminateIssueMutation(issue, operation, mutationFailed ? mutationCause : cause, mutationFailed)
+  }
+}
+
+const indeterminateIssueMutation = (
+  issue: Issue,
+  operation: string,
+  cause: unknown,
+  mutationFailed: boolean
+): LinearApiError => new LinearApiError({
+  message: mutationFailed
+    ? `${issue.identifier} ${operation} failed after dispatch (${readableError(cause)}); mutation outcome is unknown`
+    : `${issue.identifier} ${operation} could not be verified after dispatch (${readableError(cause)}); current outcome is uncertain`,
+  help: `Run \`linear-axi issues view --id ${issue.identifier} --full\` to inspect the current issue. Do not repeat the mutation until the outcome is known.`
+})
+
+const executeVerifiedRelationRemoval = async (
+  client: LinearClient,
+  relation: IssueRelation,
+  desired: RelationRemovalSummary
+): Promise<MutationResult<RelationRemovalSummary>> => {
+  let mutationFailed = false
+  let mutationCause: unknown
+  let accepted = false
+  try {
+    const payload = await client.deleteIssueRelation(relation.id)
+    accepted = payload.success
+  } catch (cause) {
+    mutationFailed = true
+    mutationCause = cause
+  }
+  if (!mutationFailed && !accepted) {
+    throw new Error("Linear did not remove the relation")
+  }
+
+  let verified: IssueRelation | undefined
+  try {
+    verified = await lookupRelationByUuid(client, relation.id)
+  } catch (cause) {
+    throw indeterminateRelationRemoval(relation, mutationFailed ? mutationCause : cause, mutationFailed)
+  }
+  if (verified && !verified.archivedAt) {
+    throw indeterminateRelationRemoval(
+      relation,
+      mutationFailed ? mutationCause : new Error("the relation remained active"),
+      mutationFailed
+    )
+  }
+  return mutationFailed
+    ? unchanged(desired, "directed relation absence verified after an indeterminate response")
+    : changed(desired, "directed relation removed")
+}
+
+const indeterminateRelationRemoval = (
+  relation: IssueRelation,
+  cause: unknown,
+  mutationFailed: boolean
+): LinearApiError => new LinearApiError({
+  message: mutationFailed
+    ? `relation ${relation.id} removal failed after dispatch (${readableError(cause)}); mutation outcome is unknown`
+    : `relation ${relation.id} removal could not be verified after dispatch (${readableError(cause)}); current outcome is uncertain`,
+  help: `Run \`linear-axi relations list --issue ${relation.issueId} --type ${relation.type} --direction outgoing\` to inspect the current relation. Do not repeat the mutation until the outcome is known.`
+})
+
+const mutationAccepted = async <Value>(success: boolean, value: Promise<Value> | undefined): Promise<boolean> => {
+  if (!success || !value) return false
+  await value
+  return true
+}
+
+const uuidSetEqual = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean => {
+  const leftIds = [...new Set(left.map(normalizeUuid))].sort(compareText)
+  const rightIds = [...new Set(right.map(normalizeUuid))].sort(compareText)
+  return leftIds.length === rightIds.length && leftIds.every((id, index) => id === rightIds[index])
+}
 
 const requirePayload = async <Value>(
   success: boolean,

@@ -50,7 +50,10 @@ class OfficialMcpRequestError extends LinearApiError {
 
 const RpcResponseSchema = Schema.Struct({
   result: Schema.optionalKey(Schema.Unknown),
-  error: Schema.optionalKey(Schema.Struct({ message: Schema.optionalKey(Schema.String) }))
+  error: Schema.optionalKey(Schema.Struct({
+    code: Schema.optionalKey(Schema.Number),
+    message: Schema.optionalKey(Schema.String)
+  }))
 })
 const ToolResultSchema = Schema.Struct({
   content: Schema.optionalKey(Schema.Array(Schema.Struct({
@@ -154,7 +157,7 @@ export const makeOfficialMcpClient = (
         operation,
         message.error.message ?? "request failed",
         "response-received",
-        false
+        operation === "tools/call" && !isPreExecutionRpcError(message.error.code)
       ))
     }
     return message
@@ -246,6 +249,14 @@ export const makeOfficialMcpToolCaller = (
       .map((block) => block.text!)
       .join("\n") ?? ""
     if (toolResult.isError) {
+      if (name.startsWith("save_")) {
+        return yield* Effect.fail(ambiguousMutationFailure(name, args, new OfficialMcpRequestError({
+          operation: "tools/call",
+          phase: "response-received",
+          outcomeUnknown: true,
+          message: text || "tool call failed"
+        })))
+      }
       return yield* Effect.fail(fail(name, text || "tool call failed"))
     }
     if (text.length === 0) return {}
@@ -410,6 +421,9 @@ const ambiguousMutationFailure = (
 
 const isSaveToolCall = (method: string, params: Readonly<Record<string, unknown>>): boolean =>
   method === "tools/call" && typeof params.name === "string" && params.name.startsWith("save_")
+
+const isPreExecutionRpcError = (code: number | undefined): boolean =>
+  code === -32600 || code === -32601 || code === -32602
 
 const apiError = (operation: string, message: string) => new LinearApiError({
   message: `Official Linear MCP ${operation} failed: ${message}`,

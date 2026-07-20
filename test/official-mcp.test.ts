@@ -304,17 +304,41 @@ describe("official Linear MCP tool boundary", () => {
     expect(error.help).not.toContain("retry")
   })
 
-  test("explicit save tool errors remain definitive", async () => {
+  test.each([
+    {
+      channel: "JSON-RPC error",
+      response: (id: unknown) => ({ jsonrpc: "2.0", id, error: { message: "validation failed" } })
+    },
+    {
+      channel: "tool result error",
+      response: (id: unknown) => ({
+        jsonrpc: "2.0",
+        id,
+        result: { content: [{ type: "text", text: "validation failed" }], isError: true }
+      })
+    }
+  ])("save $channel is ambiguous after dispatch", async ({ response }) => {
+    const transport = initializedFetcher((request) => Response.json(response(request.id)))
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher: transport.fetcher })
+
+    const error = await Effect.runPromise(Effect.flip(call("save_project", { id: "project-id", state: "invalid" })))
+
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).toContain("linear-axi projects view --query 'project-id' --full")
+    expect(error.help).not.toContain("retry")
+  })
+
+  test("typed pre-execution save rejection remains definitive", async () => {
     const transport = initializedFetcher((request) => Response.json({
       jsonrpc: "2.0",
       id: request.id,
-      result: { content: [{ type: "text", text: "validation failed" }], isError: true }
+      error: { code: -32602, message: "invalid params" }
     }))
     const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher: transport.fetcher })
 
     const error = await Effect.runPromise(Effect.flip(call("save_project", { id: "project-id", state: "invalid" })))
 
-    expect(error.message).toContain("validation failed")
+    expect(error.message).toContain("invalid params")
     expect(error.message).not.toContain("outcome is unknown")
   })
 
