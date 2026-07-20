@@ -417,7 +417,9 @@ const updateOfficialIssue = (
   timestamp: string | undefined
 ): Effect.Effect<OutputValue, CliError> => Effect.gen(function*() {
   const id = readStringFlag(parsed.flags, "id")!
-  const before = yield* gateway.callOfficialTool("get_issue", { id })
+  const input = issuePropertyInput(parsed, description, readStringFlag(parsed.flags, "labels-json"))
+  input.id = id
+  const before = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(id, input))
   if (!Predicate.isObject(before)) return yield* officialShapeError("get_issue")
   if (timestamp !== undefined && before.updatedAt !== timestamp) {
     return yield* Effect.fail(new LinearDomainError({
@@ -425,8 +427,6 @@ const updateOfficialIssue = (
       help: `Run \`linear-axi issues inspect --id ${id} --full\`, then retry with its updatedAt.`
     }))
   }
-  const input = issuePropertyInput(parsed, description, readStringFlag(parsed.flags, "labels-json"))
-  input.id = id
   if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialUserSelector(gateway, input.assignee)
   if (typeof input.state === "string") {
     const team = officialTeamSelector(before)
@@ -504,7 +504,12 @@ const resolveOfficialUserSelector = (
   gateway: LinearGateway,
   selector: string
 ): Effect.Effect<string, CliError> => Effect.gen(function*() {
-  if (selector === "me" || /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(selector)) return selector
+  if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(selector)) return selector
+  if (selector === "me") {
+    const user = yield* gateway.callOfficialTool("get_user", { query: selector })
+    if (!Predicate.isObject(user) || typeof user.id !== "string") return yield* officialShapeError("get_user")
+    return user.id
+  }
   const rows: Array<Record<string, unknown>> = []
   let cursor: string | undefined
   do {
@@ -679,10 +684,16 @@ const officialTeamSelector = (issue: Record<string, unknown>): string | undefine
   return undefined
 }
 
+const officialIssueReadArgs = (id: string, input: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> => ({
+  id,
+  ...(["setReleases", "addReleases", "removeReleases"].some((key) => input[key] !== undefined) ? { includeReleases: true } : {}),
+  ...(["blocks", "blockedBy", "relatedTo", "removeBlocks", "removeBlockedBy", "removeRelatedTo", "duplicateOf"].some((key) => input[key] !== undefined) ? { includeRelations: true } : {})
+})
+
 const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<string, unknown>): boolean =>
   Object.entries(input).every(([key, desired]) => {
     if (key === "id" || key === "team") return key === "id" || officialReferenceMatches(issue.team ?? issue.teamId, desired)
-    if (["links", "setReleases", "addReleases", "removeReleases"].includes(key)) return false
+    if (key === "links") return officialLinksContain(issue.attachments ?? issue.links, desired)
     if (key === "state") return officialReferenceMatches(issue.status ?? issue.state, desired)
     if (key === "parentId") return officialReferenceMatches(issue.parentId ?? issue.parent, desired)
     if (["blocks", "blockedBy", "relatedTo"].includes(key)) {
@@ -707,15 +718,29 @@ const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<st
     return officialReferenceMatches(issue[key], desired)
   })
 
-const officialCollectionValues = (value: unknown): ReadonlyArray<string> => Array.isArray(value)
-  ? value.map((item) => Predicate.isObject(item) ? item.id ?? item.identifier ?? item.name ?? item.version : item).map(String)
-  : []
-const officialCollectionContains = (current: unknown, desired: unknown): boolean => Array.isArray(desired) &&
-  desired.map(String).every((value) => officialCollectionValues(current).includes(value))
-const officialCollectionEqual = (current: unknown, desired: unknown): boolean => Array.isArray(desired) &&
-  desired.length === officialCollectionValues(current).length && desired.map(String).every((value) => officialCollectionValues(current).includes(value))
+const officialCollectionContains = (current: unknown, desired: unknown): boolean => officialCollectionMatches(current, desired, false)
+const officialCollectionEqual = (current: unknown, desired: unknown): boolean => officialCollectionMatches(current, desired, true)
 const officialCollectionAbsent = (current: unknown, desired: unknown): boolean => Array.isArray(desired) &&
-  desired.map(String).every((value) => !officialCollectionValues(current).includes(value))
+  desired.every((value) => !officialCollectionReferences(current).some((references) => references.includes(String(value))))
+const officialCollectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
+  if (!Array.isArray(desired)) return false
+  const remaining = officialCollectionReferences(current).map((references) => [...references])
+  for (const value of desired) {
+    const index = remaining.findIndex((references) => references.includes(String(value)))
+    if (index === -1) return false
+    remaining.splice(index, 1)
+  }
+  return !exact || remaining.length === 0
+}
+const officialCollectionReferences = (value: unknown): ReadonlyArray<ReadonlyArray<string>> => Array.isArray(value)
+  ? value.map((item) => Predicate.isObject(item)
+      ? [item.id, item.identifier, item.name, item.version, item.slugId]
+          .filter((reference): reference is string => typeof reference === "string")
+      : [String(item)])
+  : []
+const officialLinksContain = (current: unknown, desired: unknown): boolean => Array.isArray(current) && Array.isArray(desired) &&
+  desired.every((link) => Predicate.isObject(link) && typeof link.url === "string" && typeof link.title === "string" &&
+    current.some((attachment) => Predicate.isObject(attachment) && attachment.url === link.url && attachment.title === link.title))
 
 const officialReferenceMatches = (current: unknown, desired: unknown): boolean => {
   if (desired === null) return current === null || current === undefined

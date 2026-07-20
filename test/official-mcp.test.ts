@@ -9,6 +9,9 @@ describe("official Linear MCP tool boundary", () => {
       requests.push({ url: String(url), init: init! })
       return new Response([
         "event: message",
+        'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}',
+        "",
+        "event: message",
         'data: {"result":{"content":[{"type":"text","text":"{\\"teams\\":[{\\"id\\":\\"team-1\\",\\"name\\":\\"Engineering\\"}],\\"hasNextPage\\":false}"}]},"jsonrpc":"2.0","id":1}',
         ""
       ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } })
@@ -25,6 +28,18 @@ describe("official Linear MCP tool boundary", () => {
       params: { name: "list_teams", arguments: { limit: 1 } }
     })
     expect(new Headers(requests[0]!.init.headers).get("authorization")).toBe("Bearer secret-value")
+  })
+
+  test("decodes application/json Streamable HTTP responses", async () => {
+    const fetcher = async (): Promise<Response> => new Response(
+      '{"result":{"content":[{"type":"text","text":"{\\"id\\":\\"project-1\\",\\"name\\":\\"Roadmap\\"}"}]},"jsonrpc":"2.0","id":1}',
+      { status: 200, headers: { "content-type": "application/json; charset=utf-8" } }
+    )
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher })
+
+    const result = await Effect.runPromise(call("get_project", { query: "Roadmap" }))
+
+    expect(result).toEqual({ id: "project-1", name: "Roadmap" })
   })
 
   test("translates tool and malformed response errors without echoing credentials", async () => {

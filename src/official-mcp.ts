@@ -55,7 +55,7 @@ export const makeOfficialMcpToolCaller = (
       return yield* Effect.fail(fail(name, `HTTP ${response.status}`))
     }
     const message = yield* Effect.try({
-      try: () => decodeMessage(body),
+      try: () => decodeMessage(body, response.headers.get("content-type")),
       catch: (cause) => fail(name, readableCause(cause))
     })
     const text = message.result?.content
@@ -76,12 +76,37 @@ export const makeOfficialMcpToolCaller = (
   })
 }
 
-const decodeMessage = (body: string): McpResponse => {
-  const data = body.split("\n").find((line) => line.startsWith("data: "))?.slice(6)
-  if (!data) {
-    throw new Error("response contained no MCP data message")
+const decodeMessage = (body: string, contentType: string | null): McpResponse => {
+  const mediaType = contentType?.split(";", 1)[0]?.trim().toLowerCase()
+  if (mediaType === "application/json") return decodeMcpResponse(body)
+  if (mediaType === "text/event-stream") return decodeSseMessage(body)
+  try {
+    return decodeMcpResponse(body)
+  } catch {
+    return decodeSseMessage(body)
   }
-  return decodeMcpResponse(data)
+}
+
+const decodeSseMessage = (body: string): McpResponse => {
+  const payloads: Array<string> = []
+  let data: Array<string> = []
+  for (const line of [...body.split(/\r?\n/), ""]) {
+    if (line.length === 0) {
+      if (data.length > 0) payloads.push(data.join("\n"))
+      data = []
+    } else if (line.startsWith("data:")) {
+      data.push(line.slice(5).replace(/^ /, ""))
+    }
+  }
+  for (const payload of payloads) {
+    try {
+      const message = decodeMcpResponse(payload)
+      if (message.result || message.error) return message
+    } catch {
+      continue
+    }
+  }
+  throw new Error("response contained no MCP data message")
 }
 
 const apiError = (tool: string, message: string) => new LinearApiError({

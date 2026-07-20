@@ -854,7 +854,7 @@ const removeRelation = async (
     const target = await resolveIssue(client, input.relatedIssue!)
     const type = input.type!
     const relations = await fetchAllPages(await source.relations({ first: 100, includeArchived: true }))
-    const matches = relations.filter((candidate) => relationMatches(candidate, source.id, target.id, type))
+    const matches = relations.filter((candidate) => !candidate.archivedAt && relationMatches(candidate, source.id, target.id, type))
     if (matches.length > 1) {
       throw conflict(
         `Ambiguous directed relation; matched ${matches.map((candidate) => candidate.id).join(", ")}`,

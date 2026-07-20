@@ -184,6 +184,37 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: true, result: "official save_project update verified" })
   })
 
+  test("official project lead updates canonicalize me before verification", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const output = await run(["projects", "update", "--id", "project-id", "--lead", "me"], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_user") return Effect.succeed({ id: "user-id", name: "Henrik", email: "henrik@example.com" })
+        if (name === "get_project") return Effect.succeed({ id: "project-id", lead: { id: "user-id", name: "Henrik" } })
+        throw new Error("must not save an already satisfied lead")
+      }
+    }))
+
+    expect(calls).toEqual([
+      { name: "get_user", args: { query: "me" } },
+      { name: "get_project", args: { query: "project-id" } }
+    ])
+    expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
+  })
+
+  test("official collection verification accepts documented selectors", async () => {
+    let saves = 0
+    const output = await run(["projects", "update", "--id", "project-id", "--teams-json", '["ENG"]'], fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_project") saves += 1
+        return Effect.succeed({ id: "project-id", teams: [{ id: "team-id", key: "ENG", name: "Engineering" }] })
+      }
+    }))
+
+    expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
+    expect(saves).toBe(0)
+  })
+
   test("official updates reject id-only calls before I/O", async () => {
     let calls = 0
     const parsed = parseArgs(["projects", "update", "--id", "project-id"], commandSpecs)
@@ -222,6 +253,25 @@ describe("runCommand", () => {
       expect(calls).toHaveLength(before)
     }
     expect(() => parseArgs(["status-updates", "update", "--type", "project", "--id", "update-id", "--diff-hidden"], commandSpecs)).toThrow("unknown flag --diff-hidden")
+  })
+
+  test("status-update comment searches allow an omitted type only with an id", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    await run(["comments", "search", "--status-update-id", "update-id"], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        return Effect.succeed({ comments: [], hasNextPage: false })
+      }
+    }))
+    expect(calls).toEqual([{ name: "list_comments", args: { statusUpdateId: "update-id" } }])
+
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "comments", "search", "--project-id", "project-id", "--status-update-type", "project"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: () => { throw new Error("must validate before I/O") }
+    }), "/repo/src/main.ts")))
+    expect(error._tag).toBe("UsageError")
+    expect(error.message).toContain("--status-update-type requires --status-update-id")
   })
 
   test("release-note association updates request associations for readback verification", async () => {
@@ -384,6 +434,60 @@ describe("runCommand", () => {
     expect(mutations).toBe(0)
   })
 
+  test("advanced issue create retries links and releases as an exact no-op", async () => {
+    let saves = 0
+    const output = await run([
+      "issues", "create", "--team", "ENG", "--title", "Launch",
+      "--links-json", '[{"url":"https://example.com/docs","title":"Docs"}]',
+      "--releases-json", '["v1.0"]', "--if-absent"
+    ], fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_issue") saves += 1
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1.0" }], hasNextPage: false })
+        if (name === "list_issues") return Effect.succeed({ issues: [{ id: "issue-id", title: "Launch", teamId: "team-id" }], hasNextPage: false })
+        if (name === "get_issue") return Effect.succeed({
+          id: "issue-id",
+          title: "Launch",
+          teamId: "team-id",
+          attachments: [{ url: "https://example.com/docs", title: "Docs" }],
+          releases: [{ id: "release-id", version: "v1.0" }]
+        })
+        return Effect.succeed({})
+      }
+    }))
+
+    expect(output).toMatchObject({ changed: false, result: "exact issue already exists (no-op)" })
+    expect(saves).toBe(0)
+  })
+
+  test("issue update retries links and releases without repeating the mutation", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const output = await run([
+      "issues", "update", "--id", "ENG-123",
+      "--links-json", '[{"url":"https://example.com/docs","title":"Docs"}]',
+      "--add-releases-json", '["v1.0"]'
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_issue") return Effect.succeed({
+          id: "issue-id",
+          teamId: "team-id",
+          attachments: [{ url: "https://example.com/docs", title: "Docs" }],
+          releases: [{ id: "release-id", version: "v1.0" }]
+        })
+        if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1.0" }], hasNextPage: false })
+        throw new Error("must not repeat an already satisfied mutation")
+      }
+    }))
+
+    expect(calls).toEqual([
+      { name: "get_issue", args: { id: "ENG-123", includeReleases: true } },
+      { name: "list_releases", args: { query: "v1.0", limit: 250 } }
+    ])
+    expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
+  })
+
   test("advanced issue create includes official relation fields in the single mutation", async () => {
     const saves: Array<Readonly<Record<string, unknown>>> = []
     const output = await run([
@@ -447,6 +551,24 @@ describe("runCommand", () => {
     }))
     expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
     expect(saves).toBe(0)
+  })
+
+  test("issue assignee updates canonicalize me before retry verification", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const output = await run(["issues", "update", "--id", "ENG-123", "--assignee", "me"], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_issue") return Effect.succeed({ id: "issue-id", teamId: "team-id", assignee: { id: "user-id", name: "Henrik" } })
+        if (name === "get_user") return Effect.succeed({ id: "user-id", name: "Henrik" })
+        throw new Error("must not repeat an already satisfied assignee mutation")
+      }
+    }))
+
+    expect(calls).toEqual([
+      { name: "get_issue", args: { id: "ENG-123" } },
+      { name: "get_user", args: { query: "me" } }
+    ])
+    expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
   })
 
   test("issue set and clear conflicts fail before official I/O", async () => {

@@ -203,21 +203,33 @@ const runVerifiedMutation = (
 ): Effect.Effect<OutputValue, CliError> => Effect.gen(function*() {
   const desiredKeys = Object.keys(args).filter((key) => !mutationIdentityKeys(entry.tool).includes(key))
   if (desiredKeys.length === 0) return yield* usage("at least one property to update is required", entry)
-  const beforeRaw = yield* gateway.callOfficialTool(mutationReadTool(entry.tool), mutationReadArgs(entry.tool, args))
-  const before = yield* extractMutationObject(entry.tool, beforeRaw, args)
-  if (mutationSatisfied(before, args, entry.tool)) {
+  const canonicalArgs = yield* canonicalizeMutationArgs(entry.tool, args, gateway)
+  const beforeRaw = yield* gateway.callOfficialTool(mutationReadTool(entry.tool), mutationReadArgs(entry.tool, canonicalArgs))
+  const before = yield* extractMutationObject(entry.tool, beforeRaw, canonicalArgs)
+  if (mutationSatisfied(before, canonicalArgs, entry.tool)) {
     return detailOutput(entry, before, parsed, false, "requested properties already match (no-op)")
   }
-  yield* gateway.callOfficialTool(entry.tool, args)
-  const afterRaw = yield* gateway.callOfficialTool(mutationReadTool(entry.tool), mutationReadArgs(entry.tool, args))
-  const after = yield* extractMutationObject(entry.tool, afterRaw, args)
-  if (!mutationSatisfied(after, args, entry.tool)) {
+  yield* gateway.callOfficialTool(entry.tool, canonicalArgs)
+  const afterRaw = yield* gateway.callOfficialTool(mutationReadTool(entry.tool), mutationReadArgs(entry.tool, canonicalArgs))
+  const after = yield* extractMutationObject(entry.tool, afterRaw, canonicalArgs)
+  if (!mutationSatisfied(after, canonicalArgs, entry.tool)) {
     return yield* Effect.fail(new LinearDomainError({
       message: `${entry.tool} update could not be verified`,
       help: `Run \`linear-axi ${entry.path[0]} view --id ${String(args.id)} --full\` before retrying.`
     }))
   }
   return detailOutput(entry, after, parsed, true, `official ${entry.tool} update verified`)
+})
+
+const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*(
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+  gateway: LinearGateway
+) {
+  if (tool !== "save_project" || typeof args.lead !== "string") return args
+  const user = yield* gateway.callOfficialTool("get_user", { query: args.lead })
+  if (!Predicate.isObject(user) || typeof user.id !== "string") return yield* mutationShapeDrift(tool)
+  return { ...args, lead: user.id }
 })
 
 const mutationReadTool = (tool: string): string => ({
@@ -271,18 +283,30 @@ const mutationSatisfied = (
   return referenceEqual(current[key], desired)
 })
 
-const collectionValues = (value: unknown): ReadonlyArray<string> => Array.isArray(value)
-  ? value.map((item) => Predicate.isObject(item) ? item.id ?? item.name ?? item.key : item).map(String).sort()
+const collectionEqual = (current: unknown, desired: unknown): boolean => collectionMatches(current, desired, true)
+const collectionContains = (current: unknown, desired: unknown): boolean => collectionMatches(current, desired, false)
+const collectionAbsent = (current: unknown, desired: unknown): boolean => Array.isArray(desired) &&
+  desired.every((value) => !collectionReferences(current).some((references) => references.includes(String(value))))
+const collectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
+  if (!Array.isArray(desired)) return false
+  const remaining = collectionReferences(current).map((references) => [...references])
+  for (const value of desired) {
+    const index = remaining.findIndex((references) => references.includes(String(value)))
+    if (index === -1) return false
+    remaining.splice(index, 1)
+  }
+  return !exact || remaining.length === 0
+}
+const collectionReferences = (value: unknown): ReadonlyArray<ReadonlyArray<string>> => Array.isArray(value)
+  ? value.map(referenceValues)
   : []
-const collectionEqual = (current: unknown, desired: unknown): boolean =>
-  Array.isArray(desired) && desired.length === collectionValues(current).length && desired.map(String).every((value) => collectionValues(current).includes(value))
-const collectionContains = (current: unknown, desired: unknown): boolean =>
-  Array.isArray(desired) && desired.map(String).every((value) => collectionValues(current).includes(value))
-const collectionAbsent = (current: unknown, desired: unknown): boolean =>
-  Array.isArray(desired) && desired.map(String).every((value) => !collectionValues(current).includes(value))
+const referenceValues = (value: unknown): ReadonlyArray<string> => Predicate.isObject(value)
+  ? [value.id, value.name, value.key, value.email, value.displayName, value.slugId, value.version]
+      .filter((reference): reference is string => typeof reference === "string")
+  : [String(value)]
 const referenceEqual = (current: unknown, desired: unknown): boolean => {
   if (desired === null) return current == null
-  if (Predicate.isObject(current)) return [current.id, current.name, current.key, current.email].includes(desired)
+  if (Predicate.isObject(current)) return [current.id, current.name, current.key, current.email, current.displayName, current.slugId, current.version].includes(desired)
   return current === desired
 }
 const lowerFirst = (value: string): string => `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`
@@ -417,7 +441,7 @@ function commentSearchValidation(flags: ReadonlyMap<string, string | boolean>): 
   if (selected(flags, parents).length === 0) return `exactly one of ${parents.map((name) => `--${name}`).join(", ")} is required`
   const parentError = atMostOne(parents)(flags)
   if (parentError) return parentError
-  if (flags.has("status-update-id") !== flags.has("status-update-type")) return "--status-update-id and --status-update-type must be provided together"
+  if (flags.has("status-update-type") && !flags.has("status-update-id")) return "--status-update-type requires --status-update-id"
   return undefined
 }
 
