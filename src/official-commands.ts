@@ -101,6 +101,7 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
     flags,
     valueFlags,
     required,
+    officialTools: [entry.tool],
     help: [usage, "Options:", ...options, ...safety, "Example:", ...entry.examples.map((example) => `  ${example}`)].join("\n")
   }
 })
@@ -206,11 +207,24 @@ const renderResult = (
     if (typeof result.hasNextPage !== "boolean") {
       return shapeDrift(entry, "expected hasNextPage to be a boolean")
     }
+    const rows: ReadonlyArray<unknown> = candidateRows
+    if (rows.some((row) => !Predicate.isObject(row))) return shapeDrift(entry, `expected every ${entry.listKey} row to be an object`)
+    if (entry.path.join(" ") === "status-updates view") {
+      if (result.hasNextPage || rows.length > 1) return exactStatusUpdateError("returned multiple updates")
+      if (rows.length === 0) return exactStatusUpdateError("returned no matching update")
+      const row = rows[0]
+      const id = parsed.flags.get("id")
+      const type = parsed.flags.get("type")
+      if (!Predicate.isObject(row) || typeof row.id !== "string" || typeof row.type !== "string" ||
+        typeof id !== "string" || typeof type !== "string" ||
+        !referenceTextEqual(row.id, id) || !referenceTextEqual(row.type, type)) {
+        return exactStatusUpdateError("did not match --id and --type")
+      }
+      return Effect.succeed(detailOutput(entry, row, parsed, false))
+    }
     if (result.hasNextPage === true && (typeof result.cursor !== "string" || result.cursor.trim().length === 0)) {
       return shapeDrift(entry, "expected a non-blank cursor when hasNextPage is true")
     }
-    const rows: ReadonlyArray<unknown> = candidateRows
-    if (rows.some((row) => !Predicate.isObject(row))) return shapeDrift(entry, `expected every ${entry.listKey} row to be an object`)
     const projection = full ? { items: rows, truncatedBodies: false } : projectRows(rows, entry.defaultFields ?? [])
     if (!full && projection.items.some((row) => Predicate.isObject(row) && Object.keys(row).length === 0)) {
       return shapeDrift(entry, `expected every ${entry.listKey} row to contain at least one default field`)
@@ -532,6 +546,12 @@ const shapeDrift = (entry: OfficialCommand, detail: string): Effect.Effect<never
   Effect.fail(new LinearDomainError({
     message: `Official Linear MCP output shape drifted for ${entry.tool}: ${detail}`,
     help: "Refresh the frozen parity inventory and update linear-axi before retrying."
+  }))
+
+const exactStatusUpdateError = (detail: string): Effect.Effect<never, LinearDomainError> =>
+  Effect.fail(new LinearDomainError({
+    message: `status-updates view ${detail}`,
+    help: "Run `linear-axi status-updates list --type <project|initiative>` to inspect available updates."
   }))
 
 const projectRows = (

@@ -1,4 +1,4 @@
-import { commandSpecs } from "../src/args"
+import { commandSpecs, officialToolCapabilities } from "../src/args"
 import { parityEntryError } from "./parity-contract"
 import { renderSkillCommandReference } from "./render-skill-commands"
 
@@ -29,6 +29,18 @@ for (const entry of manifest.tools) {
   for (const command of entry.commands) {
     if (!commandPaths.has(command)) fail(`${entry.tool} maps unknown command ${command}`)
   }
+}
+const normalizedCapabilities = officialToolCapabilities.map((entry) => ({
+  ...entry,
+  commands: [...entry.commands].sort()
+}))
+const normalizedManifest = manifest.tools.map((entry) => ({
+  tool: entry.tool,
+  status: entry.status,
+  commands: [...entry.commands].sort()
+}))
+if (JSON.stringify(normalizedManifest) !== JSON.stringify(normalizedCapabilities)) {
+  fail("manifest tool-to-command mappings differ from the exported command capability registry")
 }
 
 const skill = await Bun.file(".agents/skills/linear-axi/SKILL.md").text()

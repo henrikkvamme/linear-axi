@@ -554,6 +554,46 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(uncertain.help).not.toContain("Retry")
   })
 
+  test("missing successful mutation payload reconciles instead of suggesting replay", async () => {
+    const current = issueLabel({ name: "Current" })
+    const desired = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Desired" })
+    const before = issue({ labelIds: [current.id], labels: async () => page([current]) })
+    const after = issue({ labelIds: [desired.id], labels: async () => page([desired]) })
+    let reads = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        issues: async () => page([reads++ === 0 ? before : after]),
+        issueLabels: async () => page([desired]),
+        updateIssue: async () => ({ success: true, issue: undefined })
+      })
+    })
+
+    const result = await Effect.runPromise(gateway.replaceLabels({ issue: "BEN-1", labels: ["Desired"] }))
+
+    expect(result).toMatchObject({
+      changed: false,
+      result: "requested label replacement verified after an indeterminate response"
+    })
+  })
+
+  test("missing successful mutation payload fails closed when state cannot be reconciled", async () => {
+    const current = issueLabel({ name: "Current" })
+    const desired = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Desired" })
+    const unchangedIssue = issue({ labelIds: [current.id], labels: async () => page([current]) })
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([unchangedIssue], {
+        issueLabels: async () => page([desired]),
+        updateIssue: async () => ({ success: true, issue: undefined })
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.replaceLabels({ issue: "BEN-1", labels: ["Desired"] })))
+
+    expect(error.message).toContain("outcome is unknown")
+    expect(error.help).toContain("linear-axi issues view --id BEN-1 --full")
+    expect(error.help).not.toContain("Retry")
+  })
+
   test("successful description update refetches and verifies content and timestamp", async () => {
     const before = issue()
     const after = issue({ description: "replacement", updatedAt: new Date("2026-07-13T12:01:00.000Z") })

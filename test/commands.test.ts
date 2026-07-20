@@ -137,6 +137,30 @@ describe("runCommand", () => {
     expect((full.comments as Array<{ body: string }>)[0]!.body).toBe(body)
   })
 
+  test("status update view requires one exact id and type match", async () => {
+    const exact = { id: "update-id", type: "project", health: "onTrack", body: "Shipped" }
+    const output = await run(["status-updates", "view", "--id", "update-id", "--type", "project"], fakeGateway({
+      callOfficialTool: () => Effect.succeed({ statusUpdates: [exact], hasNextPage: false })
+    }))
+    expect(output.statusUpdates).toEqual(exact)
+
+    const cases = [
+      { rows: [], message: "returned no matching update" },
+      { rows: [{ ...exact, id: "other-id" }], message: "did not match --id and --type" },
+      { rows: [{ ...exact, type: "initiative" }], message: "did not match --id and --type" },
+      { rows: [exact, { ...exact, id: "other-id" }], message: "returned multiple updates" }
+    ]
+    for (const entry of cases) {
+      const error = await Effect.runPromise(Effect.flip(runCommand(
+        parseArgs(["status-updates", "view", "--id", "update-id", "--type", "project"], commandSpecs),
+        fakeGateway({ callOfficialTool: () => Effect.succeed({ statusUpdates: entry.rows, hasNextPage: false }) }),
+        "/repo/src/main.ts"
+      )))
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain(entry.message)
+    }
+  })
+
   test("official direct-array tools render definitive non-paginated lists", async () => {
     const output = await run(["cycles", "list", "--team-id", "team-id", "--type", "current"], fakeGateway({
       callOfficialTool: (name, args) => {

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { parityEntryError } from "../scripts/parity-contract"
 import { renderSkillCommandReference } from "../scripts/render-skill-commands"
-import { commandSpecs } from "../src/args"
+import { commandSpecs, officialToolCapabilities } from "../src/args"
+import { buildOfficialToolCapabilities } from "../src/official-capabilities"
 
 interface Inventory { readonly observedAt: string; readonly toolCount: number; readonly tools: ReadonlyArray<{ readonly name: string }> }
 interface Manifest { readonly observedAt: string; readonly inventorySha256: string; readonly tools: ReadonlyArray<{ readonly tool: string; readonly status: string; readonly commands: ReadonlyArray<string>; readonly rationale?: string }> }
@@ -20,6 +21,14 @@ describe("official Linear MCP parity drift", () => {
     expect(manifest.inventorySha256).toBe(new Bun.CryptoHasher("sha256").update(inventoryText).digest("hex"))
     expect(new Set(mapped).size).toBe(mapped.length)
     expect([...mapped].sort()).toEqual([...official].sort())
+    expect(manifest.tools.map((entry) => ({
+      tool: entry.tool,
+      status: entry.status,
+      commands: [...entry.commands].sort()
+    }))).toEqual(officialToolCapabilities.map((entry) => ({
+      ...entry,
+      commands: [...entry.commands].sort()
+    })))
 
     const commandPaths = new Set(commandSpecs.map((spec) => spec.path.join(" ")))
     for (const entry of manifest.tools) {
@@ -33,6 +42,16 @@ describe("official Linear MCP parity drift", () => {
       }
     }
     expect(commandReference).toBe(renderSkillCommandReference(commandSpecs))
+  })
+
+  test("derives mappings from command capability declarations", () => {
+    const drifted = buildOfficialToolCapabilities(commandSpecs.map((spec) =>
+      spec.path.join(" ") === "users list"
+        ? { ...spec, officialTools: ["get_user"] }
+        : spec))
+    expect(drifted.find((entry) => entry.tool === "list_users")?.commands).not.toContain("users list")
+    expect(drifted.find((entry) => entry.tool === "get_user")?.commands).toContain("users list")
+    expect(drifted).not.toEqual(officialToolCapabilities)
   })
 
   test("rejects unknown statuses and unmapped partial entries", () => {

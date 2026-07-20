@@ -1235,26 +1235,30 @@ const indeterminateLabelCreation = (
   })
 }
 
+type IssueMutationOutcome = "accepted" | "rejected" | "indeterminate"
+
 const executeVerifiedIssueMutation = async (
   client: LinearClient,
   issue: Issue,
   operation: string,
-  mutate: () => Promise<boolean>,
+  mutate: () => Promise<IssueMutationOutcome>,
   desiredState: (candidate: Issue) => boolean | Promise<boolean>,
   result: string
 ): Promise<MutationResult<IssueSummary>> => {
   let mutationFailed = false
   let mutationCause: unknown
-  let accepted = false
+  let outcome: IssueMutationOutcome = "indeterminate"
   try {
-    accepted = await mutate()
+    outcome = await mutate()
   } catch (cause) {
     mutationFailed = true
     mutationCause = cause
   }
-  if (!mutationFailed && !accepted) {
+  if (!mutationFailed && outcome === "rejected") {
     throw new Error(`Linear did not accept the ${operation}`)
   }
+  const outcomeUnknown = mutationFailed || outcome === "indeterminate"
+  const unknownCause = mutationCause ?? new Error("the successful response omitted its issue payload")
 
   let verified: Issue
   try {
@@ -1263,11 +1267,11 @@ const executeVerifiedIssueMutation = async (
       throw new Error("the requested state was not observed")
     }
     const summary = await issueSummary(verified)
-    return mutationFailed
+    return outcomeUnknown
       ? unchanged(summary, `requested ${operation} verified after an indeterminate response`)
       : changed(summary, result)
   } catch (cause) {
-    throw indeterminateIssueMutation(issue, operation, mutationFailed ? mutationCause : cause, mutationFailed)
+    throw indeterminateIssueMutation(issue, operation, outcomeUnknown ? unknownCause : cause, outcomeUnknown)
   }
 }
 
@@ -1331,10 +1335,14 @@ const indeterminateRelationRemoval = (
   help: `Run \`linear-axi relations list --issue ${relation.issueId} --type ${relation.type} --direction outgoing\` to inspect the current relation. Do not repeat the mutation until the outcome is known.`
 })
 
-const mutationAccepted = async <Value>(success: boolean, value: Promise<Value> | undefined): Promise<boolean> => {
-  if (!success || !value) return false
+const mutationAccepted = async <Value>(
+  success: boolean,
+  value: Promise<Value> | undefined
+): Promise<IssueMutationOutcome> => {
+  if (!success) return "rejected"
+  if (!value) return "indeterminate"
   await value
-  return true
+  return "accepted"
 }
 
 const uuidSetEqual = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean => {

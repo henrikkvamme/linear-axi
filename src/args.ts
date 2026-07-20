@@ -1,4 +1,5 @@
 import { UsageError } from "./errors"
+import { buildOfficialToolCapabilities } from "./official-capabilities"
 import { officialCommandSpecs, officialTopLevelHelp } from "./official-commands"
 
 export interface ParsedArgs {
@@ -12,6 +13,7 @@ export interface CommandSpec {
   valueFlags?: ReadonlySet<string>
   required?: ReadonlySet<string>
   fields?: ReadonlyArray<string>
+  officialTools?: ReadonlyArray<string>
   help: string
 }
 
@@ -504,4 +506,35 @@ const completeHelp = (spec: CommandSpec): CommandSpec => {
   }
 }
 
-export const commandSpecs: ReadonlyArray<CommandSpec> = [...rawCommandSpecs.map(completeHelp), ...officialCommandSpecs]
+const nativeOfficialToolsByCommand: Readonly<Record<string, ReadonlyArray<string>>> = {
+  "teams list": ["list_teams"],
+  "workflow-states list": ["list_issue_statuses", "get_issue_status"],
+  "issues list": ["list_issues"],
+  "issues view": ["get_issue"],
+  "issues create": ["save_issue"],
+  "issues assign": ["save_issue"],
+  "issues unassign": ["save_issue"],
+  "issues state": ["save_issue", "get_issue_status"],
+  "issues parent set": ["save_issue"],
+  "issues parent clear": ["save_issue"],
+  "issues update": ["save_issue"],
+  "labels list": ["list_issue_labels"],
+  "labels create": ["create_issue_label"],
+  "labels add": ["save_issue"],
+  "labels remove": ["save_issue"],
+  "labels replace": ["save_issue"],
+  "relations create": ["save_issue"],
+  "relations remove": ["save_issue"],
+  "comments list": ["list_comments"],
+  "comments create": ["save_comment"]
+}
+
+export const commandSpecs: ReadonlyArray<CommandSpec> = [
+  ...rawCommandSpecs.map((spec) => completeHelp({
+    ...spec,
+    officialTools: nativeOfficialToolsByCommand[spec.path.join(" ")]
+  })),
+  ...officialCommandSpecs
+]
+
+export const officialToolCapabilities = buildOfficialToolCapabilities(commandSpecs)
