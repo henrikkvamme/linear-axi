@@ -51,6 +51,7 @@ import type {
 } from "./linear"
 import { decodeLocalCursorOffset, fetchAllPages, type ConnectionLike, type LocalCursorKind } from "./linear-pagination"
 import { makeOfficialMcpToolCaller } from "./official-mcp"
+import { normalizeRichText, richTextEqual } from "./rich-text"
 import {
   completedStates,
   findIssueByUuid,
@@ -461,7 +462,7 @@ const updateIssueDescription = async (
   const issue = await resolveIssue(client, input.id)
   const currentDescription = issue.description ?? ""
   const currentUpdatedAt = issue.updatedAt.toISOString()
-  const desiredDescription = normalizeDescription(input.description)
+  const desiredDescription = normalizeRichText(input.description)
   if (currentUpdatedAt !== input.ifUpdatedAt) {
     throw conflict(
       `${issue.identifier} changed since --if-updated-at; description was not updated (current updatedAt: ${currentUpdatedAt})`,
@@ -1225,15 +1226,6 @@ const readableError = (cause: unknown): string => {
   }
   return "Linear request failed"
 }
-
-const normalizeDescription = (description: string): string =>
-  description.replaceAll("\r\n", "\n").replaceAll("\r", "\n").replace(/\n+$/, "")
-
-const canonicalRichText = (text: string): string =>
-  normalizeDescription(text).replace(/\]\(<(https?:\/\/[^>\n]+)>\)/g, "]($1)")
-
-const richTextEqual = (left: string, right: string): boolean =>
-  canonicalRichText(left) === canonicalRichText(right)
 
 const compareText = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0
 

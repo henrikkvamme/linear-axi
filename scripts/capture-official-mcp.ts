@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { loadEnv } from "../src/env"
+import { decodeStreamableHttpMessage } from "../src/official-mcp"
 
 const MCP_URL = "https://mcp.linear.app/mcp"
 const PROTOCOL_VERSION = "2025-03-26"
@@ -12,14 +13,6 @@ const readDate = (argv: ReadonlyArray<string>): string => {
     throw new Error("Usage: bun scripts/capture-official-mcp.ts --date YYYY-MM-DD")
   }
   return value
-}
-
-const decodeSseMessage = (body: string): unknown => {
-  const data = body.split("\n").find((line) => line.startsWith("data: "))?.slice(6)
-  if (!data) {
-    throw new Error("Official Linear MCP response did not contain an SSE data message")
-  }
-  return JSON.parse(data)
 }
 
 const main = async (): Promise<void> => {
@@ -43,7 +36,7 @@ const main = async (): Promise<void> => {
     throw new Error(`Official Linear MCP tools/list failed with HTTP ${response.status}`)
   }
 
-  const message = decodeSseMessage(await response.text()) as {
+  const message = decodeStreamableHttpMessage(await response.text(), response.headers.get("content-type")) as {
     readonly result?: { readonly tools?: ReadonlyArray<Record<string, unknown>> }
     readonly error?: { readonly message?: string }
   }

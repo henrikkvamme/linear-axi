@@ -84,7 +84,15 @@ export const resolveUser = async (client: LinearClient, selector: string): Promi
       first: 50,
       includeArchived: true,
       includeDisabled: true,
-      ...(isUuid(identity) ? { filter: { id: { eq: identity } } } : {})
+      filter: isUuid(identity)
+        ? { id: { eq: identity } }
+        : {
+            or: [
+              { name: { eqIgnoreCase: identity } },
+              { displayName: { eqIgnoreCase: identity } },
+              { email: { eqIgnoreCase: identity } }
+            ]
+          }
     })
   )
   const matches = users.filter((user) => isUuid(identity)

@@ -25,6 +25,7 @@ import { DESCRIPTION_CONCURRENCY_WARNING } from "./linear"
 import { decodeLocalCursorOffset } from "./linear-pagination"
 import { connectOAuth, setupOAuth } from "./oauth"
 import { truncateText, type OutputValue } from "./output"
+import { richTextEqual } from "./rich-text"
 import { isCanonicalDate, isCanonicalTimestamp } from "./validation"
 import { runOfficialCommand } from "./official-commands"
 import { validateFrontierCursor } from "./wayfinder"
@@ -714,6 +715,9 @@ const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<st
       if (!Array.isArray(desired) || !Array.isArray(issue.labels)) return desired === null && issue.labels === undefined
       const current = issue.labels.map((label) => Predicate.isObject(label) ? label.id ?? label.name : label).map(String).sort()
       return [...desired].map(String).sort().every((value, index, values) => values.length === current.length && value === current[index])
+    }
+    if (key === "description" && typeof issue[key] === "string" && typeof desired === "string") {
+      return richTextEqual(issue[key], desired)
     }
     return officialReferenceMatches(issue[key], desired)
   })

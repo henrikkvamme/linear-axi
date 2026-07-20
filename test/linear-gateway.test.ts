@@ -645,6 +645,37 @@ describe("SDK LinearGateway conflict contracts", () => {
     }
   })
 
+  test("non-ID user resolution applies exact case-insensitive server filters", async () => {
+    const selected = user({
+      name: "Alice Example",
+      displayName: "alice",
+      email: "alice@example.com"
+    })
+    const filters: Array<unknown> = []
+    const client = clientWithIssues([issue({
+      assigneeId: selected.id,
+      assignee: Promise.resolve(selected)
+    })], {
+      users: async (variables: { filter?: unknown }) => {
+        filters.push(variables.filter)
+        return page([selected])
+      }
+    })
+
+    const result = await Effect.runPromise(
+      makeLinearGateway({}, { client }).assignIssue({ id: "BEN-1", assignee: "ALICE", replace: false })
+    )
+
+    expect(result.changed).toBe(false)
+    expect(filters).toEqual([{
+      or: [
+        { name: { eqIgnoreCase: "ALICE" } },
+        { displayName: { eqIgnoreCase: "ALICE" } },
+        { email: { eqIgnoreCase: "ALICE" } }
+      ]
+    }])
+  })
+
   test("ambiguous user names return candidate ids without mutating", async () => {
     const first = user({ name: "Alex", email: "first@example.com" })
     const second = user({

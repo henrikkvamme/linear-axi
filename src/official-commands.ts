@@ -3,6 +3,7 @@ import type { CommandSpec, ParsedArgs } from "./args"
 import { LinearDomainError, UsageError, type CliError } from "./errors"
 import type { LinearGateway } from "./linear"
 import { truncateText, type OutputValue } from "./output"
+import { richTextEqual } from "./rich-text"
 import { isCanonicalDate, isCanonicalTimestamp } from "./validation"
 
 type FlagKind = "string" | "number" | "boolean" | "null" | "string-array"
@@ -77,7 +78,9 @@ const commands: ReadonlyArray<OfficialCommand> = [
 ]
 
 export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((entry) => {
-  const flags = new Set(["help", ...Object.keys(entry.flags)])
+  const flagNames = Object.entries(entry.flags).flatMap(([name, flag]) =>
+    flag.kind === "boolean" && name !== "full" ? [name, `no-${name}`] : [name])
+  const flags = new Set(["help", ...flagNames])
   const valueFlags = new Set(Object.entries(entry.flags).filter(([, flag]) => !["boolean", "null"].includes(flag.kind)).map(([name]) => name))
   const required = new Set(Object.entries(entry.flags).filter(([, flag]) => flag.required).map(([name]) => name))
   const usage = `Usage: linear-axi ${entry.path.join(" ")} ${[...required].map((flag) => `--${flag} <value>`).join(" ")}`.trimEnd()
@@ -102,16 +105,20 @@ export const runOfficialCommand = (
   if (!entry) {
     return undefined
   }
+  const booleanConflict = Object.entries(entry.flags).find(([name, flag]) =>
+    flag.kind === "boolean" && parsed.flags.has(name) && parsed.flags.has(`no-${name}`))
+  if (booleanConflict) return usage(`--${booleanConflict[0]} and --no-${booleanConflict[0]} are mutually exclusive`, entry)
   const validation = entry.validate?.(parsed.flags)
   if (validation) return usage(validation, entry)
   const args: Record<string, unknown> = { ...entry.fixedArgs }
   for (const [name, flag] of Object.entries(entry.flags)) {
     if (name === "full") continue
     const value = parsed.flags.get(name)
-    if (value === undefined) continue
+    const negative = parsed.flags.get(`no-${name}`)
+    if (value === undefined && negative === undefined) continue
     const arg = flag.arg ?? name
     if (flag.kind === "boolean") {
-      args[arg] = true
+      args[arg] = value === true
     } else if (flag.kind === "null") {
       args[arg] = null
     } else if (flag.kind === "number") {
@@ -280,6 +287,9 @@ const mutationSatisfied = (
   if (key.startsWith("remove") && key.length > 6) return collectionAbsent(current[lowerFirst(key.slice(6))], desired)
   if (key.startsWith("set") && key.length > 3) return collectionEqual(current[lowerFirst(key.slice(3))], desired)
   if (Array.isArray(desired)) return collectionEqual(current[key], desired)
+  if (["body", "content", "description"].includes(key) && typeof current[key] === "string" && typeof desired === "string") {
+    return richTextEqual(current[key], desired)
+  }
   return referenceEqual(current[key], desired)
 })
 
@@ -301,12 +311,13 @@ const collectionReferences = (value: unknown): ReadonlyArray<ReadonlyArray<strin
   ? value.map(referenceValues)
   : []
 const referenceValues = (value: unknown): ReadonlyArray<string> => Predicate.isObject(value)
-  ? [value.id, value.name, value.key, value.email, value.displayName, value.slugId, value.version]
-      .filter((reference): reference is string => typeof reference === "string")
+  ? [value.id, value.identifier, value.name, value.key, value.email, value.displayName, value.slugId, value.version, value.number, value.type]
+      .filter((reference): reference is string | number => typeof reference === "string" || typeof reference === "number")
+      .map(String)
   : [String(value)]
 const referenceEqual = (current: unknown, desired: unknown): boolean => {
   if (desired === null) return current == null
-  if (Predicate.isObject(current)) return [current.id, current.name, current.key, current.email, current.displayName, current.slugId, current.version].includes(desired)
+  if (Predicate.isObject(current)) return referenceValues(current).includes(String(desired))
   return current === desired
 }
 const lowerFirst = (value: string): string => `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`

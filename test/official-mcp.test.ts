@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { makeOfficialMcpToolCaller } from "../src/official-mcp"
+import { decodeStreamableHttpMessage, makeOfficialMcpToolCaller } from "../src/official-mcp"
 
 describe("official Linear MCP tool boundary", () => {
   test("sends a tools/call payload and decodes JSON text content", async () => {
@@ -40,6 +40,27 @@ describe("official Linear MCP tool boundary", () => {
     const result = await Effect.runPromise(call("get_project", { query: "Roadmap" }))
 
     expect(result).toEqual({ id: "project-1", name: "Roadmap" })
+  })
+
+  test("shared Streamable HTTP decoding handles JSON and skips SSE progress messages", () => {
+    expect(decodeStreamableHttpMessage(
+      '{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"list_teams"}]}}',
+      "application/json; charset=utf-8"
+    )).toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "list_teams" }] } })
+
+    expect(decodeStreamableHttpMessage([
+      "event: message",
+      'data: {"jsonrpc":"2.0","method":"notifications/progress",',
+      'data: "params":{"progress":1}}',
+      "",
+      "event: message",
+      'data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"list_teams"}]}}',
+      ""
+    ].join("\n"), "text/event-stream")).toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "list_teams" }] }
+    })
   })
 
   test("translates tool and malformed response errors without echoing credentials", async () => {

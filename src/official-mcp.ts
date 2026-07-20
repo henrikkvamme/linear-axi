@@ -18,8 +18,7 @@ const McpResponseSchema = Schema.Struct({
   })),
   error: Schema.optionalKey(Schema.Struct({ message: Schema.optionalKey(Schema.String) }))
 })
-type McpResponse = typeof McpResponseSchema.Type
-const decodeMcpResponse = Schema.decodeUnknownSync(Schema.fromJsonString(McpResponseSchema))
+const decodeMcpResponse = Schema.decodeUnknownSync(McpResponseSchema)
 const decodeJsonValue = Schema.decodeUnknownSync(Schema.UnknownFromJsonString)
 
 export const makeOfficialMcpToolCaller = (
@@ -55,7 +54,7 @@ export const makeOfficialMcpToolCaller = (
       return yield* Effect.fail(fail(name, `HTTP ${response.status}`))
     }
     const message = yield* Effect.try({
-      try: () => decodeMessage(body, response.headers.get("content-type")),
+      try: () => decodeMcpResponse(decodeStreamableHttpMessage(body, response.headers.get("content-type"))),
       catch: (cause) => fail(name, readableCause(cause))
     })
     const text = message.result?.content
@@ -76,18 +75,18 @@ export const makeOfficialMcpToolCaller = (
   })
 }
 
-const decodeMessage = (body: string, contentType: string | null): McpResponse => {
+export const decodeStreamableHttpMessage = (body: string, contentType: string | null): unknown => {
   const mediaType = contentType?.split(";", 1)[0]?.trim().toLowerCase()
-  if (mediaType === "application/json") return decodeMcpResponse(body)
+  if (mediaType === "application/json") return decodeJsonValue(body)
   if (mediaType === "text/event-stream") return decodeSseMessage(body)
   try {
-    return decodeMcpResponse(body)
+    return decodeJsonValue(body)
   } catch {
     return decodeSseMessage(body)
   }
 }
 
-const decodeSseMessage = (body: string): McpResponse => {
+const decodeSseMessage = (body: string): unknown => {
   const payloads: Array<string> = []
   let data: Array<string> = []
   for (const line of [...body.split(/\r?\n/), ""]) {
@@ -100,8 +99,8 @@ const decodeSseMessage = (body: string): McpResponse => {
   }
   for (const payload of payloads) {
     try {
-      const message = decodeMcpResponse(payload)
-      if (message.result || message.error) return message
+      const message = decodeJsonValue(payload)
+      if (typeof message === "object" && message !== null && ("result" in message || "error" in message)) return message
     } catch {
       continue
     }

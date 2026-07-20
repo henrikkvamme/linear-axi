@@ -215,6 +215,85 @@ describe("runCommand", () => {
     expect(saves).toBe(0)
   })
 
+  test("official rich-text updates accept Linear-normalized readback", async () => {
+    const cases = [
+      { argv: ["documents", "update", "--id", "document-id", "--content", "[doc](https://example.com)\r\n"], read: "get_document", value: { id: "document-id", content: "[doc](<https://example.com>)" } },
+      { argv: ["projects", "update", "--id", "project-id", "--description", "[project](https://example.com)\r\n"], read: "get_project", value: { id: "project-id", description: "[project](<https://example.com>)" } },
+      { argv: ["releases", "update", "--id", "release-id", "--description", "[release](https://example.com)\r\n"], read: "get_release", value: { id: "release-id", description: "[release](<https://example.com>)" } },
+      { argv: ["release-notes", "update", "--id", "note-id", "--content", "[note](https://example.com)\r\n"], read: "get_release_note", value: { id: "note-id", content: "[note](<https://example.com>)" } },
+      { argv: ["milestones", "update", "--project", "Roadmap", "--id", "milestone-id", "--description", "[milestone](https://example.com)\r\n"], read: "get_milestone", value: { id: "milestone-id", description: "[milestone](<https://example.com>)" } },
+      { argv: ["status-updates", "update", "--type", "project", "--id", "update-id", "--body", "[status](https://example.com)\r\n"], read: "get_status_updates", value: { statusUpdates: [{ id: "update-id", body: "[status](<https://example.com>)" }] } }
+    ] as const
+
+    for (const entry of cases) {
+      const calls: Array<string> = []
+      const output = await run(entry.argv, fakeGateway({
+        callOfficialTool: (name) => {
+          calls.push(name)
+          if (name !== entry.read) throw new Error("must not repeat an equivalent rich-text mutation")
+          return Effect.succeed(entry.value)
+        }
+      }))
+      expect(calls).toEqual([entry.read])
+      expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
+    }
+  })
+
+  test("official update verification accepts every documented reference selector", async () => {
+    const cases = [
+      { argv: ["documents", "update", "--id", "document-id", "--issue", "ENG-123"], read: "get_document", value: { id: "document-id", issue: { id: "issue-id", identifier: "ENG-123" } } },
+      { argv: ["documents", "update", "--id", "document-id", "--cycle", "7"], read: "get_document", value: { id: "document-id", cycle: { id: "cycle-id", number: 7 } } },
+      { argv: ["releases", "update", "--id", "release-id", "--stage", "started"], read: "get_release", value: { id: "release-id", stage: { id: "stage-id", name: "In progress", type: "started" } } }
+    ] as const
+
+    for (const entry of cases) {
+      let saves = 0
+      const output = await run(entry.argv, fakeGateway({
+        callOfficialTool: (name) => {
+          if (name.startsWith("save_")) saves += 1
+          return Effect.succeed(entry.value)
+        }
+      }))
+      expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
+      expect(saves).toBe(0)
+    }
+  })
+
+  test("official boolean filters expose explicit false aliases and reject conflicts before I/O", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const gateway = fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        const key = name === "list_release_pipelines" ? "releasePipelines" : name === "list_releases" ? "releases" : name === "list_issues" ? "issues" : undefined
+        return Effect.succeed(key ? { [key]: [], hasNextPage: false } : [])
+      }
+    })
+
+    await run(["release-pipelines", "list", "--no-production"], gateway)
+    await run(["releases", "list", "--no-has-release-notes"], gateway)
+    await run(["issues", "search", "--no-include-archived"], gateway)
+    await run(["diffs", "threads", "--id", "diff-id", "--no-resolved"], gateway)
+
+    expect(calls).toEqual([
+      { name: "list_release_pipelines", args: { isProduction: false } },
+      { name: "list_releases", args: { hasReleaseNotes: false } },
+      { name: "list_issues", args: { includeArchived: false } },
+      { name: "get_diff_threads", args: { urlOrId: "diff-id", resolved: false } }
+    ])
+    const help = commandSpecs.find((spec) => spec.path.join(" ") === "issues search")!.help
+    expect(help).toContain("--no-include-archived")
+
+    let conflicts = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "search", "--include-archived", "--no-include-archived"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: () => { conflicts += 1; return Effect.succeed({}) }
+    }), "/repo/src/main.ts")))
+    expect(error._tag).toBe("UsageError")
+    expect(error.message).toContain("mutually exclusive")
+    expect(conflicts).toBe(0)
+  })
+
   test("official updates reject id-only calls before I/O", async () => {
     let calls = 0
     const parsed = parseArgs(["projects", "update", "--id", "project-id"], commandSpecs)
@@ -551,6 +630,28 @@ describe("runCommand", () => {
     }))
     expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
     expect(saves).toBe(0)
+  })
+
+  test("issue retries accept Linear-normalized descriptions", async () => {
+    const calls: Array<string> = []
+    const output = await run([
+      "issues", "update", "--id", "ENG-123", "--description", "[decision](https://example.com)\r\n",
+      "--if-updated-at", baseIssue.updatedAt
+    ], fakeGateway({
+      callOfficialTool: (name) => {
+        calls.push(name)
+        if (name !== "get_issue") throw new Error("must not repeat an equivalent description mutation")
+        return Effect.succeed({
+          id: baseIssue.id,
+          teamId: "team-id",
+          updatedAt: baseIssue.updatedAt,
+          description: "[decision](<https://example.com>)"
+        })
+      }
+    }))
+
+    expect(calls).toEqual(["get_issue"])
+    expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
   })
 
   test("issue assignee updates canonicalize me before retry verification", async () => {
