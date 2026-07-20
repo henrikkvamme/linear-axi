@@ -564,6 +564,8 @@ Options:
   --id <value> (required)
   --title <value>
   --content <value>
+  --clear-content
+  --if-updated-at <value>
   --project <value>
   --issue <value>
   --initiative <value>
@@ -572,6 +574,8 @@ Options:
   --icon <value>
   --color <value>
   --full
+Safety:
+  Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
   linear-axi documents update --id <document-id> --title "New title"
 ```
@@ -680,7 +684,10 @@ Options:
   --icon <value>
   --color <value>
   --summary <value>
+  --clear-summary
   --description <value>
+  --clear-description
+  --if-updated-at <value>
   --state <value>
   --start-date <value>
   --start-date-resolution <value>
@@ -697,6 +704,8 @@ Options:
   --remove-initiatives-json <value>
   --initiatives-json <value>
   --full
+Safety:
+  Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
   linear-axi projects update --id <project-id> --state started
 ```
@@ -793,6 +802,8 @@ Options:
   --id <value> (required)
   --name <value>
   --description <value>
+  --clear-description
+  --if-updated-at <value>
   --version <value>
   --pipeline <value>
   --stage <value>
@@ -807,6 +818,8 @@ Options:
   --clear-completed-at
   --commit-sha <value>
   --full
+Safety:
+  Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
   linear-axi releases update --id <release-id> --stage shipped
 ```
@@ -860,10 +873,14 @@ Options:
   --pipeline <value>
   --title <value>
   --content <value>
+  --clear-content
+  --if-updated-at <value>
   --releases-json <value>
   --range-from <value>
   --range-to <value>
   --full
+Safety:
+  Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
   linear-axi release-notes update --id <note-id> --title "v2 notes"
 ```
@@ -949,9 +966,13 @@ Options:
   --id <value> (required)
   --name <value>
   --description <value>
+  --clear-description
+  --if-updated-at <value>
   --target-date <value>
   --clear-target-date
   --full
+Safety:
+  Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
   linear-axi milestones update --project Roadmap --id <milestone-id> --target-date 2026-09-01
 ```
@@ -1073,8 +1094,12 @@ Options:
   --project <value>
   --initiative <value>
   --body <value>
+  --clear-body
+  --if-updated-at <value>
   --health <value>
   --full
+Safety:
+  Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
   linear-axi status-updates update --type project --id <update-id> --health onTrack
 ```

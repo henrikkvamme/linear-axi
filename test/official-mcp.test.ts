@@ -226,6 +226,98 @@ describe("official Linear MCP tool boundary", () => {
     }
   }, 1_000)
 
+  test("save transport failures after dispatch require inspection without retry", async () => {
+    const cases = [
+      {
+        respond: () => Promise.reject(new Error("connection reset")),
+        detail: "awaiting-response"
+      },
+      {
+        respond: () => Promise.resolve(new Response(null, { status: 503 })),
+        detail: "response-received"
+      },
+      {
+        respond: () => Promise.resolve(new Response("not-json", { status: 200, headers: { "content-type": "application/json" } })),
+        detail: "response-received"
+      }
+    ] as const
+
+    for (const entry of cases) {
+      const requests: Array<{ readonly request: Record<string, unknown>; readonly headers: Headers }> = []
+      const transport = initializedFetcher((request) => {
+        void request
+        throw new Error("unused")
+      }, requests)
+      const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>
+        if (request.method === "tools/call") return entry.respond()
+        return transport.fetcher(input, init)
+      }
+      const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher })
+
+      const error = await Effect.runPromise(Effect.flip(call("save_project", { id: "project-id", state: "started" })))
+
+      expect(error._tag).toBe("LinearApiError")
+      expect(error.message).toContain(`after dispatch during ${entry.detail}`)
+      expect(error.help).toContain("linear-axi projects view --query 'project-id' --full")
+      expect(error.help).not.toContain("retry")
+    }
+  })
+
+  test("save calls are not replayed after an expired-session response", async () => {
+    let initializations = 0
+    let saves = 0
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const request = JSON.parse(String(init?.body)) as Record<string, unknown>
+      if (request.method === "initialize") {
+        initializations += 1
+        return Response.json({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2025-03-26", capabilities: {} } }, {
+          headers: { "mcp-session-id": `session-${initializations}` }
+        })
+      }
+      if (request.method === "notifications/initialized") return new Response(null, { status: 202 })
+      saves += 1
+      return new Response(null, { status: 404 })
+    }
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher })
+
+    const error = await Effect.runPromise(Effect.flip(call("save_project", { id: "project-id", state: "started" })))
+
+    expect(initializations).toBe(1)
+    expect(saves).toBe(1)
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).not.toContain("retry")
+  })
+
+  test("malformed save tool payloads have ambiguous outcomes", async () => {
+    const transport = initializedFetcher((request) => Response.json({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { content: [{ type: "text", text: "not-json" }] }
+    }))
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher: transport.fetcher })
+
+    const error = await Effect.runPromise(Effect.flip(call("save_release", { id: "release-id", stage: "started" })))
+
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).toContain("linear-axi releases view --id 'release-id' --full")
+    expect(error.help).not.toContain("retry")
+  })
+
+  test("explicit save tool errors remain definitive", async () => {
+    const transport = initializedFetcher((request) => Response.json({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { content: [{ type: "text", text: "validation failed" }], isError: true }
+    }))
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher: transport.fetcher })
+
+    const error = await Effect.runPromise(Effect.flip(call("save_project", { id: "project-id", state: "invalid" })))
+
+    expect(error.message).toContain("validation failed")
+    expect(error.message).not.toContain("outcome is unknown")
+  })
+
   test("translates tool and malformed response errors without echoing credentials", async () => {
     const transport = initializedFetcher((request) => new Response(
       `event: message\ndata: ${JSON.stringify({ result: { content: [{ type: "text", text: "permission denied for never-print-me" }], isError: true }, jsonrpc: "2.0", id: request.id })}\n`,

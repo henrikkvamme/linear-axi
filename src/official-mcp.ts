@@ -25,6 +25,28 @@ interface OfficialMcpClient {
 }
 
 type JsonRpcId = string | number
+type OfficialMcpRequestPhase = "before-dispatch" | "awaiting-response" | "response-received"
+
+class OfficialMcpRequestError extends LinearApiError {
+  readonly operation: string
+  readonly phase: OfficialMcpRequestPhase
+  readonly outcomeUnknown: boolean
+
+  constructor(input: {
+    readonly operation: string
+    readonly phase: OfficialMcpRequestPhase
+    readonly outcomeUnknown: boolean
+    readonly message: string
+  }) {
+    super({
+      message: `Official Linear MCP ${input.operation} failed: ${input.message}`,
+      help: "Check Linear access and retry the same command."
+    })
+    this.operation = input.operation
+    this.phase = input.phase
+    this.outcomeUnknown = input.outcomeUnknown
+  }
+}
 
 const RpcResponseSchema = Schema.Struct({
   result: Schema.optionalKey(Schema.Unknown),
@@ -51,7 +73,17 @@ export const makeOfficialMcpClient = (
   let initialized = false
   let sessionId: string | undefined
   let protocolVersion: string | undefined
-  const fail = (operation: string, message: string) => apiError(operation, message.replaceAll(credentials.value, "[REDACTED]"))
+  const fail = (
+    operation: string,
+    message: string,
+    phase: OfficialMcpRequestPhase,
+    outcomeUnknown: boolean
+  ) => new OfficialMcpRequestError({
+    operation,
+    phase,
+    outcomeUnknown,
+    message: message.replaceAll(credentials.value, "[REDACTED]")
+  })
 
   const post = Effect.fn("OfficialMcp.post")(function*(
     operation: string,
@@ -72,41 +104,60 @@ export const makeOfficialMcpClient = (
       clearTimeout(timeout)
       if (!controller.signal.aborted) controller.abort()
     }
+    let dispatched = false
     const response = yield* Effect.tryPromise({
-      try: () => abortable(fetcher(OFFICIAL_MCP_URL, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(message),
-        signal: controller.signal
-      }), controller.signal),
+      try: () => {
+        const pending = fetcher(OFFICIAL_MCP_URL, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(message),
+          signal: controller.signal
+        })
+        dispatched = true
+        return abortable(pending, controller.signal)
+      },
       catch: (cause) => {
         complete()
-        return fail(operation, readableCause(cause))
+        return fail(
+          operation,
+          readableCause(cause),
+          dispatched ? "awaiting-response" : "before-dispatch",
+          dispatched
+        )
       }
     })
     return { response, controller, complete }
   })
 
-  const responseMessage = (
+  const responseMessage = Effect.fn("OfficialMcp.responseMessage")(function*(
     operation: string,
     pending: PendingResponse,
     id: JsonRpcId
-  ): Effect.Effect<Schema.Schema.Type<typeof RpcResponseSchema>, LinearApiError> => Effect.tryPromise({
-    try: async () => {
-      try {
-        if (!pending.response.ok) {
-          void pending.response.body?.cancel().catch(() => undefined)
-          throw new Error(`HTTP ${pending.response.status}`)
+  ): Effect.fn.Return<Schema.Schema.Type<typeof RpcResponseSchema>, LinearApiError> {
+    const message = yield* Effect.tryPromise({
+      try: async () => {
+        try {
+          if (!pending.response.ok) {
+            void pending.response.body?.cancel().catch(() => undefined)
+            throw new Error(`HTTP ${pending.response.status}`)
+          }
+          const value = await readStreamableHttpMessage(pending.response, id, pending.controller.signal)
+          return decodeRpcResponse(value)
+        } finally {
+          pending.complete()
         }
-        const value = await readStreamableHttpMessage(pending.response, id, pending.controller.signal)
-        const message = decodeRpcResponse(value)
-        if (message.error) throw new Error(message.error.message ?? "request failed")
-        return message
-      } finally {
-        pending.complete()
-      }
-    },
-    catch: (cause) => fail(operation, readableCause(cause))
+      },
+      catch: (cause) => fail(operation, readableCause(cause), "response-received", true)
+    })
+    if (message.error) {
+      return yield* Effect.fail(fail(
+        operation,
+        message.error.message ?? "request failed",
+        "response-received",
+        false
+      ))
+    }
+    return message
   })
 
   const initialize = Effect.fn("OfficialMcp.initialize")(function*() {
@@ -125,7 +176,7 @@ export const makeOfficialMcpClient = (
     })
     const message = yield* responseMessage("initialize", initializedResponse, id)
     if (!Predicate.isObject(message.result) || message.result.protocolVersion !== OFFICIAL_MCP_PROTOCOL_VERSION) {
-      return yield* Effect.fail(fail("initialize", "server negotiated an unsupported protocol version"))
+      return yield* Effect.fail(fail("initialize", "server negotiated an unsupported protocol version", "response-received", false))
     }
     protocolVersion = OFFICIAL_MCP_PROTOCOL_VERSION
     sessionId = initializedResponse.response.headers.get("mcp-session-id") ?? undefined
@@ -136,7 +187,7 @@ export const makeOfficialMcpClient = (
     void notification.response.body?.cancel().catch(() => undefined)
     notification.complete()
     if (!notification.response.ok) {
-      return yield* Effect.fail(fail("notifications/initialized", `HTTP ${notification.response.status}`))
+      return yield* Effect.fail(fail("notifications/initialized", `HTTP ${notification.response.status}`, "response-received", false))
     }
     initialized = true
   })
@@ -152,7 +203,7 @@ export const makeOfficialMcpClient = (
     yield* ensureInitialized()
     let id = ++requestId
     let result = yield* post(method, { jsonrpc: "2.0", id, method, params })
-    if (result.response.status === 404 && sessionId !== undefined) {
+    if (result.response.status === 404 && sessionId !== undefined && !isSaveToolCall(method, params)) {
       void result.response.body?.cancel().catch(() => undefined)
       result.complete()
       initialized = false
@@ -179,11 +230,16 @@ export const makeOfficialMcpToolCaller = (
     args: Readonly<Record<string, unknown>>
   ): Effect.fn.Return<unknown, GatewayError> {
     const result = yield* client.request("tools/call", { name, arguments: args }).pipe(
-      Effect.mapError((error) => ambiguousMutationTimeout(name, args, error))
+      Effect.mapError((error) => ambiguousMutationFailure(name, args, error))
     )
     const toolResult = yield* Effect.try({
       try: () => decodeToolResult(result),
-      catch: (cause) => fail(name, readableCause(cause))
+      catch: (cause) => ambiguousMutationFailure(name, args, new OfficialMcpRequestError({
+        operation: "tools/call",
+        phase: "response-received",
+        outcomeUnknown: true,
+        message: readableCause(cause)
+      }))
     })
     const text = toolResult.content
       ?.filter((block) => block.type === "text" && typeof block.text === "string")
@@ -195,7 +251,15 @@ export const makeOfficialMcpToolCaller = (
     if (text.length === 0) return {}
     try {
       return decodeJsonValue(text)
-    } catch {
+    } catch (cause) {
+      if (name.startsWith("save_")) {
+        return yield* Effect.fail(ambiguousMutationFailure(name, args, new OfficialMcpRequestError({
+          operation: "tools/call",
+          phase: "response-received",
+          outcomeUnknown: true,
+          message: readableCause(cause)
+        })))
+      }
       return { text }
     }
   })
@@ -325,13 +389,13 @@ const selectRpcResponse = (value: unknown, requestId?: JsonRpcId, required = tru
   return undefined
 }
 
-const ambiguousMutationTimeout = (
+const ambiguousMutationFailure = (
   tool: string,
   args: Readonly<Record<string, unknown>>,
   error: GatewayError
 ): GatewayError => {
-  if (!tool.startsWith("save_") || error._tag !== "LinearApiError" ||
-    !error.message.includes("Official Linear MCP tools/call failed: request timed out after")) {
+  if (!tool.startsWith("save_") || !(error instanceof OfficialMcpRequestError) ||
+    error.operation !== "tools/call" || !error.outcomeUnknown || error.phase === "before-dispatch") {
     return error
   }
   const inspection = officialMutationInspectionCommand(tool, args)
@@ -339,10 +403,13 @@ const ambiguousMutationTimeout = (
     ? " A missing result does not prove creation failed; do not repeat the mutation automatically."
     : " Do not repeat the mutation until the outcome is known."
   return new LinearApiError({
-    message: `Official Linear MCP ${tool} timed out after dispatch; mutation outcome is unknown`,
+    message: `Official Linear MCP ${tool} failed after dispatch during ${error.phase}; mutation outcome is unknown`,
     help: `Run \`${inspection}\` to inspect the outcome.${createWarning}`
   })
 }
+
+const isSaveToolCall = (method: string, params: Readonly<Record<string, unknown>>): boolean =>
+  method === "tools/call" && typeof params.name === "string" && params.name.startsWith("save_")
 
 const apiError = (operation: string, message: string) => new LinearApiError({
   message: `Official Linear MCP ${operation} failed: ${message}`,

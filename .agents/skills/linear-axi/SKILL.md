@@ -136,14 +136,14 @@ The checked `docs/linear-mcp-parity.json` records all 47 observed official tools
 11. Treat assignment as a non-atomic claim convention.
     Completion criterion: claim only an unassigned issue, never pass `--replace` for a Wayfinder claim, and release with `--if-assignee me`. Read-after-write verification narrows but cannot eliminate concurrent claim races.
 
-12. Replace descriptions only from the latest version.
-    Completion criterion: fetch the full issue, merge locally, then pass the exact canonical `updatedAt` emitted by the CLI to `issues update --if-updated-at`. On conflict, refetch and merge again. Linear has no atomic compare-and-swap, so keep resolution comments canonical and do not claim that the final read/write race is eliminated.
+12. Replace rich text only from the latest version.
+    Completion criterion: fetch the full object, merge locally, then pass the exact canonical `updatedAt` emitted by the CLI to the update command's `--if-updated-at`. This applies to issue descriptions, document and release-note content, project, release, and milestone descriptions, status-update bodies, and their clear flags. On conflict, refetch and merge again. Linear has no atomic compare-and-swap, so do not claim that the final read/write race is eliminated.
 
 13. Reuse caller-retained mutation UUIDs safely.
     Completion criterion: pass a UUID v4 with `--id` when issue, label, relation, or comment creation must be retryable. Reuse it only for the same intended content and scope. Rich-text comparisons tolerate normalized newlines and Linear's angle-bracket form for HTTP(S) Markdown links. Treat `changed: false` as a successful no-op and any UUID/content conflict as a stop condition.
 
 14. Use explicit set and clear semantics.
-    Completion criterion: never encode clearing as an empty selector. Use the matching `--clear-*` flag and never combine it with its set flag. Use `labels add` or `labels remove` when unrelated labels must survive; `labels replace` deliberately removes labels omitted from its JSON array.
+    Completion criterion: never encode clearing as an empty selector or empty value. Use the matching `--clear-*` flag and never combine it with its set flag. Product rich-text clears still require the latest `--if-updated-at`. Use `labels add` or `labels remove` when unrelated labels must survive; `labels replace` deliberately removes labels omitted from its JSON array.
 
 15. Follow every list cursor exactly.
     Completion criterion: for issue, label, relation, and comment lists, replay the same filters with the returned `page.endCursor` as `--after`. For Wayfinder frontier, use `pageInfo.endCursor`. Never construct or edit a cursor. Relation pages and issue-scoped exact-name label pages are current-state projections, so restart without `--after` when current membership matters.

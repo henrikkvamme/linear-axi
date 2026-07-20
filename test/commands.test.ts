@@ -275,7 +275,7 @@ describe("runCommand", () => {
       callOfficialTool: (name, args) => {
         calls.push({ name, args })
         if (name === "get_project") {
-          return Effect.succeed(projectReads++ === 0
+          return Effect.succeed(projectReads++ < 2
             ? { id: "project-id", name: "Roadmap", teams: [], priority: 0 }
             : { id: "project-id", name: "Roadmap", teams: [{ key: "ENG" }, { key: "OPS" }], priority: 2 })
         }
@@ -294,6 +294,7 @@ describe("runCommand", () => {
     ], gateway)
     expect(output.project).toMatchObject({ id: "project-id", name: "Roadmap", priority: 2 })
     expect(calls).toEqual([
+      { name: "get_project", args: { query: "project-id" } },
       { name: "get_project", args: { query: "project-id" } },
       { name: "save_project", args: { id: "project-id", setTeams: ["ENG", "OPS"], priority: 2 } },
       { name: "get_project", args: { query: "project-id" } }
@@ -349,8 +350,8 @@ describe("runCommand", () => {
         reads += 1
         return Effect.succeed({
           id: "project-id",
-          teams: reads === 1 ? [{ id: "old-team-id" }] : [{ id: "team-id" }],
-          initiatives: reads === 1 ? [{ id: "legacy-initiative-id" }] : [{ id: "initiative-id" }]
+          teams: reads <= 2 ? [{ id: "old-team-id" }] : [{ id: "team-id" }],
+          initiatives: reads <= 2 ? [{ id: "legacy-initiative-id" }] : [{ id: "initiative-id" }]
         })
       }
     }))
@@ -374,6 +375,7 @@ describe("runCommand", () => {
     }))
 
     expect(calls).toEqual([
+      { name: "get_project", args: { query: "project-id" } },
       { name: "get_user", args: { query: "me" } },
       { name: "get_project", args: { query: "project-id" } }
     ])
@@ -505,14 +507,127 @@ describe("runCommand", () => {
     expect(output.help).toEqual(["Run `linear-axi documents view --id 'document-id' --full` for complete text fields."])
   })
 
+  test("official rich-text updates require a current timestamp before I/O", async () => {
+    const cases = [
+      ["documents", "update", "--id", "document-id", "--content", "new"],
+      ["documents", "update", "--id", "document-id", "--clear-content"],
+      ["projects", "update", "--id", "project-id", "--description", "new"],
+      ["releases", "update", "--id", "release-id", "--description", "new"],
+      ["release-notes", "update", "--id", "note-id", "--content", "new"],
+      ["milestones", "update", "--project", "project-id", "--id", "milestone-id", "--description", "new"],
+      ["status-updates", "update", "--type", "project", "--id", "update-id", "--body", "new"]
+    ] as const
+
+    for (const argv of cases) {
+      let calls = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(
+        parseArgs(argv, commandSpecs),
+        fakeGateway({ callOfficialTool: () => { calls += 1; return Effect.succeed({}) } }),
+        "/repo/src/main.ts"
+      )))
+      expect(error._tag).toBe("UsageError")
+      expect(error.message).toContain("--if-updated-at")
+      expect(calls).toBe(0)
+    }
+  })
+
+  test("official rich-text updates reject stale preconditions before save", async () => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "documents", "update", "--id", "document-id", "--content", "new",
+      "--if-updated-at", "2026-07-07T00:00:00.000Z"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_document") saves += 1
+        return Effect.succeed({ id: "document-id", content: "old", updatedAt: baseIssue.updatedAt })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("known-stale")
+    expect(error.help).toContain("linear-axi documents view --id 'document-id' --full")
+    expect(saves).toBe(0)
+  })
+
+  test("official string clear flags send and verify explicit empty strings", async () => {
+    const cases = [
+      { argv: ["documents", "update", "--id", "document-id", "--clear-content", "--if-updated-at", baseIssue.updatedAt], tool: "save_document", read: "get_document", id: "document-id", fields: { content: "" } },
+      { argv: ["projects", "update", "--id", "Roadmap", "--clear-summary", "--clear-description", "--if-updated-at", baseIssue.updatedAt], tool: "save_project", read: "get_project", id: "project-id", fields: { summary: "", description: "" } },
+      { argv: ["releases", "update", "--id", "release-id", "--clear-description", "--if-updated-at", baseIssue.updatedAt], tool: "save_release", read: "get_release", id: "release-id", fields: { description: "" } },
+      { argv: ["release-notes", "update", "--id", "note-id", "--clear-content", "--if-updated-at", baseIssue.updatedAt], tool: "save_release_note", read: "get_release_note", id: "note-id", fields: { content: "" } },
+      { argv: ["milestones", "update", "--project", "Roadmap", "--id", "Launch", "--clear-description", "--if-updated-at", baseIssue.updatedAt], tool: "save_milestone", read: "get_milestone", id: "milestone-id", fields: { description: "" } },
+      { argv: ["status-updates", "update", "--type", "project", "--id", "update-id", "--clear-body", "--if-updated-at", baseIssue.updatedAt], tool: "save_status_update", read: "get_status_updates", id: "update-id", fields: { body: "" } }
+    ] as const
+
+    for (const entry of cases) {
+      let saved: Readonly<Record<string, unknown>> | undefined
+      let entityReads = 0
+      const output = await run(entry.argv, fakeGateway({
+        callOfficialTool: (name, args) => {
+          if (name === "get_project" && entry.tool === "save_milestone") {
+            return Effect.succeed({ id: "project-id", name: "Roadmap" })
+          }
+          if (name === entry.tool) {
+            saved = args
+            return Effect.succeed({ id: entry.id })
+          }
+          if (name === entry.read) {
+            entityReads += 1
+            const cleared = entry.tool === "save_project" ? entityReads >= 3
+              : entry.tool === "save_milestone" ? entityReads >= 3
+                : entityReads >= 2
+            const entity = {
+              id: entry.id,
+              ...(entry.tool === "save_project" ? { name: "Roadmap" } : {}),
+              ...(entry.tool === "save_milestone" ? { name: "Launch" } : {}),
+              updatedAt: cleared ? "2026-07-08T00:01:00.000Z" : baseIssue.updatedAt,
+              ...Object.fromEntries(Object.keys(entry.fields).map((key) => [key, cleared ? "" : "old"]))
+            }
+            return Effect.succeed(entry.tool === "save_status_update"
+              ? { statusUpdates: [{ ...entity, type: "project" }] }
+              : entity)
+          }
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }))
+
+      expect(saved).toMatchObject({ id: entry.id, ...entry.fields })
+      expect(saved).not.toHaveProperty("ifUpdatedAt")
+      expect(output).toMatchObject({ changed: true, concurrency: expect.stringContaining("no atomic compare-and-swap") })
+    }
+  })
+
+  test("project updates canonicalize mutable selectors to immutable ids", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    let reads = 0
+    const output = await run(["projects", "update", "--id", "Roadmap", "--state", "started"], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_project") {
+          reads += 1
+          return Effect.succeed({ id: "project-id", name: reads === 1 ? "Roadmap" : "Renamed", state: reads < 3 ? "planned" : "started" })
+        }
+        return Effect.succeed({ id: "project-id" })
+      }
+    }))
+
+    expect(calls).toEqual([
+      { name: "get_project", args: { query: "Roadmap" } },
+      { name: "get_project", args: { query: "project-id" } },
+      { name: "save_project", args: { id: "project-id", state: "started" } },
+      { name: "get_project", args: { query: "project-id" } }
+    ])
+    expect(output).toMatchObject({ changed: true })
+  })
+
   test("official rich-text updates accept Linear-normalized readback", async () => {
     const cases = [
-      { argv: ["documents", "update", "--id", "document-id", "--content", "[doc](https://example.com)\r\n"], read: "get_document", value: { id: "document-id", content: "[doc](<https://example.com>)" } },
-      { argv: ["projects", "update", "--id", "project-id", "--description", "[project](https://example.com)\r\n"], read: "get_project", value: { id: "project-id", description: "[project](<https://example.com>)" } },
-      { argv: ["releases", "update", "--id", "release-id", "--description", "[release](https://example.com)\r\n"], read: "get_release", value: { id: "release-id", description: "[release](<https://example.com>)" } },
-      { argv: ["release-notes", "update", "--id", "note-id", "--content", "[note](https://example.com)\r\n"], read: "get_release_note", value: { id: "note-id", content: "[note](<https://example.com>)" } },
-      { argv: ["milestones", "update", "--project", "Roadmap", "--id", "milestone-id", "--description", "[milestone](https://example.com)\r\n"], read: "get_milestone", value: { id: "milestone-id", description: "[milestone](<https://example.com>)" } },
-      { argv: ["status-updates", "update", "--type", "project", "--id", "update-id", "--body", "[status](https://example.com)\r\n"], read: "get_status_updates", value: { statusUpdates: [{ id: "update-id", type: "project", body: "[status](<https://example.com>)" }] } }
+      { argv: ["documents", "update", "--id", "document-id", "--content", "[doc](https://example.com)\r\n", "--if-updated-at", baseIssue.updatedAt], read: "get_document", value: { id: "document-id", content: "[doc](<https://example.com>)", updatedAt: baseIssue.updatedAt } },
+      { argv: ["projects", "update", "--id", "project-id", "--description", "[project](https://example.com)\r\n", "--if-updated-at", baseIssue.updatedAt], read: "get_project", value: { id: "project-id", description: "[project](<https://example.com>)", updatedAt: baseIssue.updatedAt } },
+      { argv: ["releases", "update", "--id", "release-id", "--description", "[release](https://example.com)\r\n", "--if-updated-at", baseIssue.updatedAt], read: "get_release", value: { id: "release-id", description: "[release](<https://example.com>)", updatedAt: baseIssue.updatedAt } },
+      { argv: ["release-notes", "update", "--id", "note-id", "--content", "[note](https://example.com)\r\n", "--if-updated-at", baseIssue.updatedAt], read: "get_release_note", value: { id: "note-id", content: "[note](<https://example.com>)", updatedAt: baseIssue.updatedAt } },
+      { argv: ["milestones", "update", "--project", "Roadmap", "--id", "milestone-id", "--description", "[milestone](https://example.com)\r\n", "--if-updated-at", baseIssue.updatedAt], read: "get_milestone", value: { id: "milestone-id", description: "[milestone](<https://example.com>)", updatedAt: baseIssue.updatedAt } },
+      { argv: ["status-updates", "update", "--type", "project", "--id", "update-id", "--body", "[status](https://example.com)\r\n", "--if-updated-at", baseIssue.updatedAt], read: "get_status_updates", value: { statusUpdates: [{ id: "update-id", type: "project", body: "[status](<https://example.com>)", updatedAt: baseIssue.updatedAt }] } }
     ] as const
 
     for (const entry of cases) {
@@ -527,7 +642,7 @@ describe("runCommand", () => {
       }))
       expect(calls).toEqual(entry.read === "get_milestone"
         ? ["get_project", "get_milestone", "get_milestone"]
-        : [entry.read])
+        : entry.read === "get_project" ? ["get_project", "get_project"] : [entry.read])
       expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
     }
   })
@@ -669,7 +784,7 @@ describe("runCommand", () => {
   test("verification failures provide exact tool-specific inspection commands", async () => {
     const cases = [
       { argv: ["documents", "update", "--id", "document-id", "--title", "New"], read: "get_document", before: { id: "document-id", title: "Old" }, help: "linear-axi documents view --id 'document-id' --full" },
-      { argv: ["projects", "update", "--id", "project-id", "--state", "started"], read: "get_project", before: { id: "project-id", state: "planned" }, help: "linear-axi projects view --query 'project-id' --full" },
+      { argv: ["projects", "update", "--id", "Roadmap", "--state", "started"], read: "get_project", before: { id: "project-id", name: "Roadmap", state: "planned" }, help: "linear-axi projects view --query 'project-id' --full" },
       { argv: ["releases", "update", "--id", "release-id", "--name", "New"], read: "get_release", before: { id: "release-id", name: "Old" }, help: "linear-axi releases view --id 'release-id' --full" },
       { argv: ["release-notes", "update", "--id", "note-id", "--title", "New"], read: "get_release_note", before: { id: "note-id", title: "Old" }, help: "linear-axi release-notes view --id 'note-id' --full" },
       { argv: ["status-updates", "update", "--type", "project", "--id", "update-id", "--health", "onTrack"], read: "get_status_updates", before: { statusUpdates: [{ id: "update-id", type: "project", health: "offTrack" }] }, help: "linear-axi status-updates view --type 'project' --id 'update-id' --full" }
