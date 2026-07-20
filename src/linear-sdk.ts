@@ -63,6 +63,7 @@ import {
   resolveAssignableUser,
   resolveInitiative,
   resolveIssue,
+  resolveIssueForRemoval,
   resolveLabelForRemoval,
   resolveLabelForTeam,
   resolveLabelGlobally,
@@ -890,7 +891,7 @@ const removeRelation = async (
     desired = { id: input.id }
   } else {
     const source = await resolveIssue(client, input.issue!)
-    const target = await resolveIssue(client, input.relatedIssue!)
+    const target = await resolveIssueForRemoval(client, input.relatedIssue!)
     const type = input.type!
     const relations = await fetchAllPages(await source.relations({ first: 100, includeArchived: true }))
     const matches = relations.filter((candidate) => !candidate.archivedAt && relationMatches(candidate, source.id, target.id, type))

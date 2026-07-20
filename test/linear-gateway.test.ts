@@ -1823,6 +1823,42 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(result).toMatchObject({ changed: false, result: "directed relation already exists (no-op)" })
   })
 
+  test("tuple relation removal resolves an archived target", async () => {
+    const source = issue()
+    const target = issue({
+      id: "99999999-9999-4999-8999-999999999999",
+      identifier: "BEN-2",
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    const active = {
+      id: "77777777-7777-4777-8777-777777777777",
+      type: "blocks",
+      issueId: source.id,
+      relatedIssueId: target.id,
+      archivedAt: undefined
+    }
+    source.relations = async () => page([active]) as never
+    const deleted: string[] = []
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source]),
+      deleteIssueRelation: async (id: string) => {
+        deleted.push(id)
+        return { success: true }
+      },
+      issueRelation: async () => ({ ...active, archivedAt: new Date("2026-07-13T14:00:00.000Z") })
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).removeRelation({
+      issue: "BEN-1",
+      relatedIssue: "BEN-2",
+      type: "blocks"
+    }))
+
+    expect(deleted).toEqual([active.id])
+    expect(result).toMatchObject({ changed: true, value: { id: active.id } })
+  })
+
   test("relation removal ignores archived tuple history when one active match exists", async () => {
     const source = issue()
     const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })

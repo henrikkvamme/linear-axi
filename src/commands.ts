@@ -444,6 +444,7 @@ const updateOfficialIssue = (
   input.id = id
   const before = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(id, input))
   if (!Predicate.isObject(before) || !officialEntityMatchesSelector(before, id)) return yield* officialShapeError("get_issue identity")
+  yield* requireOfficialEntityActive("issue", id, before)
   if (timestamp !== undefined && before.updatedAt !== timestamp) {
     return yield* Effect.fail(new LinearDomainError({
       message: `Issue changed since ${timestamp}; refusing a known-stale description update`,

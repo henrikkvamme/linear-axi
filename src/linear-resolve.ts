@@ -82,41 +82,43 @@ export const resolveInitiative = async (
       )
 }
 
-export const resolveIssue = async (client: LinearClient, idOrKey: string): Promise<Issue> => {
+export const resolveIssue = async (client: LinearClient, idOrKey: string): Promise<Issue> =>
+  exactlyOneActive(
+    `issue ${idOrKey}`,
+    await findIssuesByIdentity(client, idOrKey),
+    issueCandidate,
+    (issue) => issue.archivedAt
+  )
+
+export const resolveIssueForRemoval = async (client: LinearClient, idOrKey: string): Promise<Issue> =>
+  exactlyOne(`issue ${idOrKey}`, await findIssuesByIdentity(client, idOrKey), issueCandidate)
+
+const findIssuesByIdentity = async (client: LinearClient, idOrKey: string): Promise<ReadonlyArray<Issue>> => {
   const identity = normalizeUuid(idOrKey)
-  const normalized = identity.toLowerCase()
   if (isUuid(identity)) {
     const issues = await fetchAllPages(
       await client.issues({ first: 50, includeArchived: true, filter: { id: { eq: identity } } })
     )
-    return exactlyOneActive(
-      `issue ${idOrKey}`,
-      issues.filter((issue) => uuidEqual(issue.id, identity)),
-      (issue) => `${issue.id} (${issue.identifier})`,
-      (issue) => issue.archivedAt
-    )
+    return issues.filter((issue) => uuidEqual(issue.id, identity))
   }
 
   const identifier = /^(.*)-([0-9]+)$/.exec(identity)
-  const issues = identifier && identifier[1]
-    ? await fetchAllPages(
-        await client.issues({
-          first: 50,
-          includeArchived: true,
-          filter: {
-            number: { eq: Number(identifier[2]) },
-            team: { key: { eqIgnoreCase: identifier[1] } }
-          }
-        })
-      )
-    : []
-  return exactlyOneActive(
-    `issue ${idOrKey}`,
-    issues.filter((issue) => issue.identifier.toLowerCase() === normalized),
-    (issue) => `${issue.id} (${issue.identifier})`,
-    (issue) => issue.archivedAt
+  if (!identifier?.[1]) return []
+  const issues = await fetchAllPages(
+    await client.issues({
+      first: 50,
+      includeArchived: true,
+      filter: {
+        number: { eq: Number(identifier[2]) },
+        team: { key: { eqIgnoreCase: identifier[1] } }
+      }
+    })
   )
+  const normalized = identity.toLowerCase()
+  return issues.filter((issue) => issue.identifier.toLowerCase() === normalized)
 }
+
+const issueCandidate = (issue: Issue): string => `${issue.id} (${issue.identifier})`
 
 export const findIssueByUuid = async (client: LinearClient, id: string): Promise<Issue | undefined> => {
   const identity = normalizeUuid(id)

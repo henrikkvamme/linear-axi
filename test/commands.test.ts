@@ -426,7 +426,7 @@ describe("runCommand", () => {
   })
 
   test("official removal verification requires an explicit valid collection readback", async () => {
-    for (const project of [{ id: "project-id" }, { id: "project-id", teams: [{}] }]) {
+    for (const project of [{ id: "project-id" }, { id: "project-id", teams: [{}] }, { id: "project-id", teams: ["ENG"] }]) {
       let saves = 0
       const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
         "projects", "update", "--id", "project-id", "--remove-teams-json", '["ENG"]'
@@ -443,21 +443,23 @@ describe("runCommand", () => {
     }
   })
 
-  test("official removals require canonical identities on object readbacks", async () => {
-    let saves = 0
-    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
-      "projects", "update", "--id", "project-id", "--remove-teams-json", '["ENG"]'
-    ], commandSpecs), fakeGateway({
-      resolveProjectUpdateAssociations: () => Effect.succeed({ teams: ["team-id"], initiatives: [] }),
-      callOfficialTool: (name) => {
-        if (name === "save_project") saves += 1
-        return Effect.succeed({ id: "project-id", teams: [{ key: "ENG", name: "Engineering" }] })
-      }
-    }), "/repo/src/main.ts")))
+  test("official removals require canonical identities on readbacks", async () => {
+    for (const teams of [[{ key: "ENG", name: "Engineering" }], ["ENG"]]) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "projects", "update", "--id", "project-id", "--remove-teams-json", '["ENG"]'
+      ], commandSpecs), fakeGateway({
+        resolveProjectUpdateAssociations: () => Effect.succeed({ teams: ["team-id"], initiatives: [] }),
+        callOfficialTool: (name) => {
+          if (name === "save_project") saves += 1
+          return Effect.succeed({ id: "project-id", teams })
+        }
+      }), "/repo/src/main.ts")))
 
-    expect(saves).toBe(1)
-    expect(error._tag).toBe("LinearDomainError")
-    expect(error.message).toContain("could not be verified")
+      expect(saves).toBe(1)
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("could not be verified")
+    }
   })
 
   test("official literal casing changes mutate and use read-only truncation recovery", async () => {
@@ -1494,26 +1496,28 @@ describe("runCommand", () => {
     }
   })
 
-  test("issue removals require canonical identities on object readbacks", async () => {
-    let saves = 0
-    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
-      "issues", "update", "--id", "ENG-123", "--remove-releases-json", '["v1"]'
-    ], commandSpecs), fakeGateway({
-      callOfficialTool: (name) => {
-        if (name === "save_issue") saves += 1
-        if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1" }], hasNextPage: false })
-        return Effect.succeed({
-          id: "issue-id",
-          identifier: "ENG-123",
-          teamId: "team-id",
-          releases: [{ version: "v1" }]
-        })
-      }
-    }), "/repo/src/main.ts")))
+  test("issue removals require canonical identities on readbacks", async () => {
+    for (const releases of [[{ version: "v1" }], ["v1"]]) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "update", "--id", "ENG-123", "--remove-releases-json", '["v1"]'
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "save_issue") saves += 1
+          if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1" }], hasNextPage: false })
+          return Effect.succeed({
+            id: "issue-id",
+            identifier: "ENG-123",
+            teamId: "team-id",
+            releases
+          })
+        }
+      }), "/repo/src/main.ts")))
 
-    expect(saves).toBe(1)
-    expect(error._tag).toBe("LinearDomainError")
-    expect(error.message).toContain("could not be verified")
+      expect(saves).toBe(1)
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("could not be verified")
+    }
   })
 
   test("archived releases resolve only for removal", async () => {
@@ -1566,6 +1570,28 @@ describe("runCommand", () => {
 
     expect(addError._tag).toBe("LinearDomainError")
     expect(addSaves).toBe(0)
+  })
+
+  test("advanced issue updates reject archived targets before mutation", async () => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "update", "--id", "ENG-123", "--priority", "2"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_issue") saves += 1
+        return Effect.succeed({
+          id: "issue-id",
+          identifier: "ENG-123",
+          teamId: "team-id",
+          archivedAt: "2026-07-01T00:00:00.000Z",
+          priority: 2
+        })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("archived")
+    expect(saves).toBe(0)
   })
 
   test("issue updates fail closed when readback does not satisfy the request", async () => {

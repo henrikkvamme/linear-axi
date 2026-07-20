@@ -24,8 +24,8 @@ export const officialCollectionAbsent = (
 ): boolean => {
   if (!Array.isArray(current) || !Array.isArray(desired)) return false
   const canonicalIdentityKey = options.canonicalIdentityKey
-  if (canonicalIdentityKey !== undefined && current.some((item) =>
-    Predicate.isObject(item) && !validReference(item[canonicalIdentityKey]))) return false
+  if (canonicalIdentityKey !== undefined && desired.length > 0 && current.some((item) =>
+    !Predicate.isObject(item) || !validReference(item[canonicalIdentityKey]))) return false
   const references = officialCollectionReferences(current, options)
   return references.every((values) => values.length > 0) &&
     desired.every((value) => !references.some((values) => values.some((reference) => officialReferenceTextEqual(reference, String(value)))))
