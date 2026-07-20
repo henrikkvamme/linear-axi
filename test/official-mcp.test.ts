@@ -195,6 +195,37 @@ describe("official Linear MCP tool boundary", () => {
     expect(canceled).toBe(true)
   }, 1_000)
 
+  test("save timeouts report ambiguous outcomes with read-only inspection", async () => {
+    const cases = [
+      {
+        args: { id: "ENG-123", title: "Updated" },
+        inspection: "linear-axi issues inspect --id 'ENG-123' --full"
+      },
+      {
+        args: { team: "team-id", title: "Launch" },
+        inspection: "linear-axi issues search --team 'team-id' --query 'Launch' --full"
+      }
+    ] as const
+
+    for (const entry of cases) {
+      const transport = initializedFetcher(() => new Response(new ReadableStream({ start() {} }), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" }
+      }))
+      const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, {
+        fetcher: transport.fetcher,
+        requestTimeoutMs: 25
+      })
+
+      const error = await Effect.runPromise(Effect.flip(call("save_issue", entry.args)))
+
+      expect(error._tag).toBe("LinearApiError")
+      expect(error.message).toContain("mutation outcome is unknown")
+      expect(error.help).toContain(entry.inspection)
+      expect(error.help).not.toContain("retry")
+    }
+  }, 1_000)
+
   test("translates tool and malformed response errors without echoing credentials", async () => {
     const transport = initializedFetcher((request) => new Response(
       `event: message\ndata: ${JSON.stringify({ result: { content: [{ type: "text", text: "permission denied for never-print-me" }], isError: true }, jsonrpc: "2.0", id: request.id })}\n`,

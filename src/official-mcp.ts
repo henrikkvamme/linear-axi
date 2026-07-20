@@ -1,6 +1,7 @@
 import { Effect, Predicate, Schema } from "effect"
 import { LinearApiError } from "./errors"
 import type { Credentials, GatewayError } from "./linear"
+import { officialMutationInspectionCommand } from "./official-inspection"
 
 export const OFFICIAL_MCP_URL = "https://mcp.linear.app/mcp"
 export const OFFICIAL_MCP_PROTOCOL_VERSION = "2025-03-26"
@@ -177,7 +178,9 @@ export const makeOfficialMcpToolCaller = (
     name: string,
     args: Readonly<Record<string, unknown>>
   ): Effect.fn.Return<unknown, GatewayError> {
-    const result = yield* client.request("tools/call", { name, arguments: args })
+    const result = yield* client.request("tools/call", { name, arguments: args }).pipe(
+      Effect.mapError((error) => ambiguousMutationTimeout(name, args, error))
+    )
     const toolResult = yield* Effect.try({
       try: () => decodeToolResult(result),
       catch: (cause) => fail(name, readableCause(cause))
@@ -320,6 +323,25 @@ const selectRpcResponse = (value: unknown, requestId?: JsonRpcId, required = tru
   if (message !== undefined) return message
   if (required) throw new Error("response contained no matching MCP response")
   return undefined
+}
+
+const ambiguousMutationTimeout = (
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+  error: GatewayError
+): GatewayError => {
+  if (!tool.startsWith("save_") || error._tag !== "LinearApiError" ||
+    !error.message.includes("Official Linear MCP tools/call failed: request timed out after")) {
+    return error
+  }
+  const inspection = officialMutationInspectionCommand(tool, args)
+  const createWarning = tool === "save_issue" && !(typeof args.id === "string" && args.id.length > 0)
+    ? " A missing result does not prove creation failed; do not repeat the mutation automatically."
+    : " Do not repeat the mutation until the outcome is known."
+  return new LinearApiError({
+    message: `Official Linear MCP ${tool} timed out after dispatch; mutation outcome is unknown`,
+    help: `Run \`${inspection}\` to inspect the outcome.${createWarning}`
+  })
 }
 
 const apiError = (operation: string, message: string) => new LinearApiError({

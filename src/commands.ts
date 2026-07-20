@@ -394,6 +394,9 @@ const issuesUpdate = (parsed: ParsedArgs, gateway: LinearGateway) => {
   if (parsed.flags.has("set-releases-json") && (parsed.flags.has("add-releases-json") || parsed.flags.has("remove-releases-json"))) {
     return usage("--set-releases-json cannot be combined with --add-releases-json or --remove-releases-json", parsed.command)
   }
+  if (parsed.flags.has("clear-project") && parsed.flags.has("milestone")) {
+    return usage("--clear-project and --milestone cannot be combined", parsed.command)
+  }
   const propertyFlags = [...parsed.flags.keys()].filter((flag) => !["id", "help", "if-updated-at", "description-file", "description"].includes(flag))
   if (description === undefined && descriptionFile === undefined && propertyFlags.length === 0) {
     return usage("at least one issue property or explicit clear flag is required", parsed.command)
@@ -735,7 +738,18 @@ const resolveOfficialLabels = (
 ): Effect.Effect<ReadonlyArray<string>, CliError> => Effect.gen(function*() {
   if (selectors.length === 0) return []
   const rows = yield* fetchOfficialRows(gateway, "list_issue_labels", { team, limit: 250 }, "labels")
-  return yield* Effect.forEach(selectors, (raw) => uniqueOfficialId("label", String(raw), rows, ["id", "name"]))
+  return yield* Effect.forEach(selectors, (raw) => Effect.gen(function*() {
+    const selector = String(raw)
+    const id = yield* uniqueOfficialId("label", selector, rows, ["id", "name"])
+    const label = rows.find((row) => row.id === id)
+    if (label?.isGroup === true) {
+      return yield* Effect.fail(new LinearDomainError({
+        message: `Issue label ${selector} is a label group`,
+        help: "Choose an ordinary issue label."
+      }))
+    }
+    return id
+  }))
 })
 
 const resolveOfficialReleases = (

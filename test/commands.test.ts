@@ -120,6 +120,23 @@ describe("runCommand", () => {
     expect(output.help).toEqual(["Run `linear-axi users list --query 'Alice' --limit '2' --after 'cursor-2'` for the next page."])
   })
 
+  test("official comment search truncates default bodies and preserves full output", async () => {
+    const body = "x".repeat(700)
+    const gateway = fakeGateway({
+      callOfficialTool: () => Effect.succeed({
+        comments: [{ id: "comment-id", body, createdAt: baseIssue.createdAt, updatedAt: baseIssue.updatedAt }],
+        hasNextPage: false
+      })
+    })
+
+    const compact = await run(["comments", "search", "--project-id", "project-id"], gateway)
+    const full = await run(["comments", "search", "--project-id", "project-id", "--full"], gateway)
+
+    expect((compact.comments as Array<{ body: string }>)[0]!.body).toEndWith("(truncated, 700 chars total)")
+    expect(compact.help).toEqual(["Run `linear-axi comments search --project-id 'project-id' --full` for complete bodies."])
+    expect((full.comments as Array<{ body: string }>)[0]!.body).toBe(body)
+  })
+
   test("official direct-array tools render definitive non-paginated lists", async () => {
     const output = await run(["cycles", "list", "--team-id", "team-id", "--type", "current"], fakeGateway({
       callOfficialTool: (name, args) => {
@@ -1181,6 +1198,41 @@ describe("runCommand", () => {
     }
   })
 
+  test("advanced issue labels reject label groups before mutation", async () => {
+    const cases = [
+      ["issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Platform"]', "--if-absent"],
+      ["issues", "update", "--id", "ENG-1", "--labels-json", '["Platform"]']
+    ] as const
+
+    for (const argv of cases) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs(argv, commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "save_issue") {
+            saves += 1
+            return Effect.succeed({ id: "issue-id" })
+          }
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+          if (name === "list_issue_labels") {
+            return Effect.succeed({ labels: [{ id: "group-id", name: "Platform", isGroup: true }], hasNextPage: false })
+          }
+          if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+          return Effect.succeed({
+            id: "issue-id",
+            identifier: "ENG-1",
+            title: "Launch",
+            teamId: "team-id",
+            labels: [{ id: "group-id" }]
+          })
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("label group")
+      expect(saves).toBe(0)
+    }
+  })
+
   test("advanced issue labels share one guarded collection scan", async () => {
     let labelPages = 0
     const output = await run([
@@ -1725,6 +1777,23 @@ describe("runCommand", () => {
       { name: "get_user", args: { query: "me" } }
     ])
     expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
+  })
+
+  test("clearing an issue project conflicts with setting a milestone before I/O", async () => {
+    let calls = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "update", "--id", "ENG-123", "--clear-project", "--milestone", "Launch"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: () => {
+        calls += 1
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(error._tag).toBe("UsageError")
+    expect(error.message).toContain("--clear-project")
+    expect(error.message).toContain("--milestone")
+    expect(calls).toBe(0)
   })
 
   test("issue set and clear conflicts fail before official I/O", async () => {

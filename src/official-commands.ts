@@ -8,6 +8,7 @@ import {
   officialCollectionContains as collectionContains,
   officialCollectionEqual as collectionEqual
 } from "./official-collection"
+import { officialMutationInspectionCommand } from "./official-inspection"
 import { truncateText, type OutputValue } from "./output"
 import { richTextEqual } from "./rich-text"
 import { isCanonicalDate, isCanonicalTimestamp } from "./validation"
@@ -172,20 +173,23 @@ const renderResult = (
   if (entry.listKey === "$") {
     if (!Array.isArray(value)) return shapeDrift(entry, "expected an array result")
     if (value.some((row) => !Predicate.isObject(row))) return shapeDrift(entry, "expected every row to be an object")
-    const items = full ? value : value.map((row) => projectRow(row, entry.defaultFields ?? []))
-    if (!full && items.some((row) => Predicate.isObject(row) && Object.keys(row).length === 0)) {
+    const projection = full ? { items: value, truncatedBodies: false } : projectRows(value, entry.defaultFields ?? [])
+    if (!full && projection.items.some((row) => Predicate.isObject(row) && Object.keys(row).length === 0)) {
       return shapeDrift(entry, "expected every row to contain at least one default field")
     }
     const documentationPage = entry.tool === "search_documentation"
       ? Number(parsed.flags.get("page") ?? 0)
       : undefined
     return Effect.succeed({
-      count: `${items.length} ${entry.outputKey} shown`,
+      count: `${projection.items.length} ${entry.outputKey} shown`,
       page: documentationPage === undefined ? { hasNext: false, endCursor: null } : { current: documentationPage },
-      ...(items.length === 0 ? { [entry.outputKey]: `0 ${entry.outputKey} matched this query` } : { [entry.outputKey]: items }),
-      help: documentationPage === undefined
-        ? []
-        : [`Run \`linear-axi ${entry.path.join(" ")} ${replayFlags(parsed.flags, { page: String(documentationPage + 1) })}\` for the next page.`]
+      ...(projection.items.length === 0 ? { [entry.outputKey]: `0 ${entry.outputKey} matched this query` } : { [entry.outputKey]: projection.items }),
+      help: [
+        ...(projection.truncatedBodies ? [completeBodiesCommand(entry, parsed.flags)] : []),
+        ...(documentationPage === undefined
+          ? []
+          : [`Run \`linear-axi ${entry.path.join(" ")} ${replayFlags(parsed.flags, { page: String(documentationPage + 1) })}\` for the next page.`])
+      ]
     })
   }
   if (!Predicate.isObject(value)) return shapeDrift(entry, "expected an object result")
@@ -201,17 +205,20 @@ const renderResult = (
     }
     const rows: ReadonlyArray<unknown> = candidateRows
     if (rows.some((row) => !Predicate.isObject(row))) return shapeDrift(entry, `expected every ${entry.listKey} row to be an object`)
-    const items = full ? rows : rows.map((row) => projectRow(row, entry.defaultFields ?? []))
-    if (!full && items.some((row) => Predicate.isObject(row) && Object.keys(row).length === 0)) {
+    const projection = full ? { items: rows, truncatedBodies: false } : projectRows(rows, entry.defaultFields ?? [])
+    if (!full && projection.items.some((row) => Predicate.isObject(row) && Object.keys(row).length === 0)) {
       return shapeDrift(entry, `expected every ${entry.listKey} row to contain at least one default field`)
     }
     const cursor = typeof result.cursor === "string" ? result.cursor : null
     const hasNext = result.hasNextPage === true
     return Effect.succeed({
-      count: `${items.length} ${entry.outputKey} shown`,
+      count: `${projection.items.length} ${entry.outputKey} shown`,
       page: { hasNext, endCursor: cursor },
-      ...(items.length === 0 ? { [entry.outputKey]: `0 ${entry.outputKey} matched this query` } : { [entry.outputKey]: items }),
-      help: hasNext && cursor ? [continuation(entry, parsed.flags, cursor)] : []
+      ...(projection.items.length === 0 ? { [entry.outputKey]: `0 ${entry.outputKey} matched this query` } : { [entry.outputKey]: projection.items }),
+      help: [
+        ...(projection.truncatedBodies ? [completeBodiesCommand(entry, parsed.flags)] : []),
+        ...(hasNext && cursor ? [continuation(entry, parsed.flags, cursor)] : [])
+      ]
     })
   }
   if (Object.keys(result).length === 0) return shapeDrift(entry, "expected a non-empty object result")
@@ -237,7 +244,7 @@ const runVerifiedMutation = (
       parsed,
       false,
       "requested properties already match (no-op)",
-      mutationInspectionCommand(entry.tool, canonicalArgs)
+      officialMutationInspectionCommand(entry.tool, canonicalArgs)
     )
   }
   yield* gateway.callOfficialTool(entry.tool, canonicalArgs)
@@ -246,7 +253,7 @@ const runVerifiedMutation = (
   if (!mutationSatisfied(after, canonicalArgs, entry.tool)) {
     return yield* Effect.fail(new LinearDomainError({
       message: `${entry.tool} update could not be verified`,
-      help: `Run \`${mutationInspectionCommand(entry.tool, canonicalArgs)}\` before retrying.`
+      help: `Run \`${officialMutationInspectionCommand(entry.tool, canonicalArgs)}\` before retrying.`
     }))
   }
   return detailOutput(
@@ -255,7 +262,7 @@ const runVerifiedMutation = (
     parsed,
     true,
     `official ${entry.tool} update verified`,
-    mutationInspectionCommand(entry.tool, canonicalArgs)
+    officialMutationInspectionCommand(entry.tool, canonicalArgs)
   )
 })
 
@@ -449,19 +456,6 @@ const nonEmptyString = (value: unknown): value is string => typeof value === "st
 const uniqueStrings = (values: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(values)]
 const lowerFirst = (value: string): string => `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`
 
-const mutationInspectionCommand = (tool: string, args: Readonly<Record<string, unknown>>): string => {
-  const id = shellQuote(String(args.id))
-  if (tool === "save_project") return `linear-axi projects view --query ${id} --full`
-  if (tool === "save_milestone") return `linear-axi milestones view --project ${shellQuote(String(args.project))} --query ${id} --full`
-  if (tool === "save_status_update") return `linear-axi status-updates view --type ${shellQuote(String(args.type))} --id ${id} --full`
-  const noun = tool === "save_document"
-    ? "documents"
-    : tool === "save_release_note"
-      ? "release-notes"
-      : "releases"
-  return `linear-axi ${noun} view --id ${id} --full`
-}
-
 const detailOutput = (
   entry: OfficialCommand,
   detail: unknown,
@@ -498,10 +492,30 @@ const shapeDrift = (entry: OfficialCommand, detail: string): Effect.Effect<never
     help: "Refresh the frozen parity inventory and update linear-axi before retrying."
   }))
 
-const projectRow = (value: unknown, fields: ReadonlyArray<string>): unknown => {
-  if (!Predicate.isObject(value)) return value
-  const selected = fields.filter((field) => value[field] !== undefined).slice(0, 4)
-  return Object.fromEntries(selected.map((field) => [field, value[field]]))
+const projectRows = (
+  values: ReadonlyArray<unknown>,
+  fields: ReadonlyArray<string>
+): { readonly items: ReadonlyArray<Record<string, unknown>>; readonly truncatedBodies: boolean } => {
+  let truncatedBodies = false
+  const items = values.map((value) => {
+    if (!Predicate.isObject(value)) return {}
+    const selected = fields.filter((field) => value[field] !== undefined).slice(0, 4)
+    return Object.fromEntries(selected.map((field) => {
+      if (field !== "body" || typeof value[field] !== "string") return [field, value[field]]
+      const body = truncateText(value[field], 500, false)
+      truncatedBodies ||= body.truncated
+      return [field, body.truncated ? `${body.text} (truncated, ${body.total} chars total)` : body.text]
+    }))
+  })
+  return { items, truncatedBodies }
+}
+
+const completeBodiesCommand = (
+  entry: OfficialCommand,
+  flags: ReadonlyMap<string, string | boolean>
+): string => {
+  const replayed = replayFlags(flags, { full: true })
+  return `Run \`linear-axi ${entry.path.join(" ")}${replayed.length > 0 ? ` ${replayed}` : ""}\` for complete bodies.`
 }
 
 const truncateDetail = (value: unknown): { readonly value: unknown; readonly fields: ReadonlyArray<{ readonly field: string; readonly total: number }> } => {
