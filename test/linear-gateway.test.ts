@@ -210,12 +210,47 @@ describe("SDK LinearGateway conflict contracts", () => {
 
     const result = await Effect.runPromise(makeLinearGateway({}, { client }).resolveProjectUpdateAssociations({
       teams: ["Bender"],
-      initiatives: ["Growth"]
+      initiatives: ["Growth"],
+      includeArchived: false
     }))
 
     expect(result).toEqual({ teams: [team.id], initiatives: [initiative.id] })
     expect(teamFilters).toEqual([{ or: [{ key: { eqIgnoreCase: "Bender" } }, { name: { eqIgnoreCase: "Bender" } }] }])
     expect(initiativeFilters).toEqual([{ name: { eqIgnoreCase: "Growth" } }])
+  })
+
+  test("project association removal resolves archived exact identities without enabling active paths", async () => {
+    const archivedTeam = {
+      ...team,
+      id: "99999999-9999-4999-8999-999999999999",
+      key: "OLD",
+      name: "Archived team",
+      archivedAt: new Date("2026-07-01T00:00:00.000Z")
+    }
+    const archivedInitiative = {
+      id: "88888888-8888-4888-8888-888888888888",
+      name: "Legacy",
+      archivedAt: new Date("2026-07-01T00:00:00.000Z")
+    }
+    const client = clientWithIssues([], {
+      teams: async () => page([archivedTeam]),
+      initiatives: async () => page([archivedInitiative])
+    })
+    const gateway = makeLinearGateway({}, { client })
+
+    const removal = await Effect.runPromise(gateway.resolveProjectUpdateAssociations({
+      teams: [archivedTeam.id],
+      initiatives: [archivedInitiative.id],
+      includeArchived: true
+    }))
+    const activeError = await Effect.runPromise(Effect.flip(gateway.resolveProjectUpdateAssociations({
+      teams: [archivedTeam.id],
+      initiatives: [],
+      includeArchived: false
+    })))
+
+    expect(removal).toEqual({ teams: [archivedTeam.id], initiatives: [archivedInitiative.id] })
+    expect(activeError.message).toContain("archived")
   })
 
   test("active exact matches win over archived duplicates", async () => {

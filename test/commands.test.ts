@@ -313,6 +313,38 @@ describe("runCommand", () => {
     }
   })
 
+  test("project updates resolve archived associations only for removal", async () => {
+    const resolutions: Array<{ readonly teams: ReadonlyArray<string>; readonly initiatives: ReadonlyArray<string>; readonly includeArchived: boolean }> = []
+    let reads = 0
+    const output = await run([
+      "projects", "update", "--id", "project-id",
+      "--add-teams-json", '["ENG"]', "--remove-teams-json", '["OLD"]',
+      "--add-initiatives-json", '["Growth"]', "--remove-initiatives-json", '["Legacy"]'
+    ], fakeGateway({
+      resolveProjectUpdateAssociations: (input) => {
+        resolutions.push(input)
+        return Effect.succeed(input.includeArchived
+          ? { teams: ["old-team-id"], initiatives: ["legacy-initiative-id"] }
+          : { teams: ["team-id"], initiatives: ["initiative-id"] })
+      },
+      callOfficialTool: (name) => {
+        if (name === "save_project") return Effect.succeed({ id: "project-id" })
+        reads += 1
+        return Effect.succeed({
+          id: "project-id",
+          teams: reads === 1 ? [{ id: "old-team-id" }] : [{ id: "team-id" }],
+          initiatives: reads === 1 ? [{ id: "legacy-initiative-id" }] : [{ id: "initiative-id" }]
+        })
+      }
+    }))
+
+    expect(resolutions).toEqual([
+      { teams: ["ENG"], initiatives: ["Growth"], includeArchived: false },
+      { teams: ["OLD"], initiatives: ["Legacy"], includeArchived: true }
+    ])
+    expect(output).toMatchObject({ changed: true })
+  })
+
   test("official project lead updates canonicalize me before verification", async () => {
     const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
     const output = await run(["projects", "update", "--id", "project-id", "--lead", "me"], fakeGateway({
@@ -393,6 +425,23 @@ describe("runCommand", () => {
       expect(error._tag).toBe("LinearDomainError")
       expect(error.message).toContain("could not be verified")
     }
+  })
+
+  test("official removals require canonical identities on object readbacks", async () => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "projects", "update", "--id", "project-id", "--remove-teams-json", '["ENG"]'
+    ], commandSpecs), fakeGateway({
+      resolveProjectUpdateAssociations: () => Effect.succeed({ teams: ["team-id"], initiatives: [] }),
+      callOfficialTool: (name) => {
+        if (name === "save_project") saves += 1
+        return Effect.succeed({ id: "project-id", teams: [{ key: "ENG", name: "Engineering" }] })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(saves).toBe(1)
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("could not be verified")
   })
 
   test("official literal casing changes mutate and use read-only truncation recovery", async () => {
@@ -885,6 +934,46 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: true, result: "issue created through official save_issue" })
   })
 
+  test("advanced issue UUID selectors use scoped reads and reject archived targets", async () => {
+    const selectors = {
+      team: "33333333-3333-4333-8333-333333333333",
+      state: "44444444-4444-4444-8444-444444444444",
+      cycle: "55555555-5555-4555-8555-555555555555",
+      project: "66666666-6666-4666-8666-666666666666",
+      milestone: "77777777-7777-4777-8777-777777777777"
+    }
+    const cases = [
+      { flags: ["--team", selectors.team], archivedTool: "get_team" },
+      { flags: ["--team", "ENG", "--state", selectors.state], archivedTool: "list_issue_statuses" },
+      { flags: ["--team", "ENG", "--cycle", selectors.cycle], archivedTool: "list_cycles" },
+      { flags: ["--team", "ENG", "--project", selectors.project, "--milestone", selectors.milestone], archivedTool: "get_milestone" }
+    ] as const
+
+    for (const entry of cases) {
+      let saves = 0
+      const calls: Array<string> = []
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "create", "--title", "Launch", "--if-absent", ...entry.flags
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          calls.push(name)
+          if (name === "save_issue") saves += 1
+          if (name === "get_team") return Effect.succeed({ id: selectors.team, key: "ENG", archivedAt: entry.archivedTool === name ? "2026-07-01T00:00:00.000Z" : null })
+          if (name === "get_project") return Effect.succeed({ id: selectors.project, name: "Roadmap", archivedAt: null })
+          if (name === "list_issue_statuses") return Effect.succeed([{ id: selectors.state, name: "In Progress", archivedAt: "2026-07-01T00:00:00.000Z" }])
+          if (name === "list_cycles") return Effect.succeed([{ id: selectors.cycle, name: "Cycle 1", archivedAt: "2026-07-01T00:00:00.000Z" }])
+          if (name === "get_milestone") return Effect.succeed({ id: selectors.milestone, name: "Launch", project: { id: selectors.project }, archivedAt: "2026-07-01T00:00:00.000Z" })
+          if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+          return Effect.succeed({ id: "issue-id" })
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(calls).toContain(entry.archivedTool)
+      expect(saves).toBe(0)
+    }
+  })
+
   test("advanced issue parent resolution enforces the target team", async () => {
     const cases = [
       ["issues", "create", "--team", "ENG", "--title", "Launch", "--parent", "OPS-1", "--if-absent"],
@@ -1317,6 +1406,80 @@ describe("runCommand", () => {
       expect(error._tag).toBe("LinearDomainError")
       expect(saves).toBe(1)
     }
+  })
+
+  test("issue removals require canonical identities on object readbacks", async () => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "update", "--id", "ENG-123", "--remove-releases-json", '["v1"]'
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_issue") saves += 1
+        if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1" }], hasNextPage: false })
+        return Effect.succeed({
+          id: "issue-id",
+          identifier: "ENG-123",
+          teamId: "team-id",
+          releases: [{ version: "v1" }]
+        })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(saves).toBe(1)
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("could not be verified")
+  })
+
+  test("archived releases resolve only for removal", async () => {
+    let reads = 0
+    const releaseQueries: Array<Readonly<Record<string, unknown>>> = []
+    const saves: Array<Readonly<Record<string, unknown>>> = []
+    const output = await run([
+      "issues", "update", "--id", "ENG-123", "--remove-releases-json", '["v1"]'
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "list_releases") {
+          releaseQueries.push(args)
+          return Effect.succeed({
+            releases: [{ id: "release-id", version: "v1", archivedAt: "2026-07-01T00:00:00.000Z" }],
+            hasNextPage: false
+          })
+        }
+        if (name === "save_issue") {
+          saves.push(args)
+          return Effect.succeed({ id: "issue-id" })
+        }
+        reads += 1
+        return Effect.succeed({
+          id: "issue-id",
+          identifier: "ENG-123",
+          teamId: "team-id",
+          releases: reads === 1 ? [{ id: "release-id", version: "v1", archivedAt: "2026-07-01T00:00:00.000Z" }] : []
+        })
+      }
+    }))
+
+    expect(releaseQueries).toEqual([{ query: "v1", limit: 250, includeArchived: true }])
+    expect(saves).toEqual([{ id: "ENG-123", removeReleases: ["release-id"] }])
+    expect(output).toMatchObject({ changed: true })
+
+    let addSaves = 0
+    const addError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--releases-json", '["v1"]', "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
+        if (name === "list_releases") return Effect.succeed({
+          releases: [{ id: "release-id", version: "v1", archivedAt: "2026-07-01T00:00:00.000Z" }],
+          hasNextPage: false
+        })
+        if (name === "save_issue") addSaves += 1
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(addError._tag).toBe("LinearDomainError")
+    expect(addSaves).toBe(0)
   })
 
   test("issue updates fail closed when readback does not satisfy the request", async () => {

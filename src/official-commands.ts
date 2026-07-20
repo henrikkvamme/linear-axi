@@ -274,24 +274,40 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
       canonical.lead = user.id
     }
 
-    const teamKeys = ["setTeams", "addTeams", "removeTeams"] as const
-    const initiativeKeys = ["setInitiatives", "addInitiatives", "removeInitiatives"] as const
-    const teamSelectors = teamKeys.flatMap((key) => Array.isArray(args[key]) ? args[key].map(String) : [])
-    const initiativeSelectors = initiativeKeys.flatMap((key) => Array.isArray(args[key]) ? args[key].map(String) : [])
-    if (teamSelectors.length > 0 || initiativeSelectors.length > 0) {
-      const resolved = yield* gateway.resolveProjectUpdateAssociations({ teams: teamSelectors, initiatives: initiativeSelectors })
+    const activeTeamKeys = ["setTeams", "addTeams"] as const
+    const activeInitiativeKeys = ["setInitiatives", "addInitiatives"] as const
+    const activeTeamSelectors = activeTeamKeys.flatMap((key) => Array.isArray(args[key]) ? args[key].map(String) : [])
+    const activeInitiativeSelectors = activeInitiativeKeys.flatMap((key) => Array.isArray(args[key]) ? args[key].map(String) : [])
+    if (activeTeamSelectors.length > 0 || activeInitiativeSelectors.length > 0) {
+      const resolved = yield* gateway.resolveProjectUpdateAssociations({
+        teams: activeTeamSelectors,
+        initiatives: activeInitiativeSelectors,
+        includeArchived: false
+      })
       let teamOffset = 0
-      for (const key of teamKeys) {
+      for (const key of activeTeamKeys) {
         if (!Array.isArray(args[key])) continue
         canonical[key] = uniqueStrings(resolved.teams.slice(teamOffset, teamOffset + args[key].length))
         teamOffset += args[key].length
       }
       let initiativeOffset = 0
-      for (const key of initiativeKeys) {
+      for (const key of activeInitiativeKeys) {
         if (!Array.isArray(args[key])) continue
         canonical[key] = uniqueStrings(resolved.initiatives.slice(initiativeOffset, initiativeOffset + args[key].length))
         initiativeOffset += args[key].length
       }
+    }
+
+    const removeTeams = Array.isArray(args.removeTeams) ? args.removeTeams.map(String) : []
+    const removeInitiatives = Array.isArray(args.removeInitiatives) ? args.removeInitiatives.map(String) : []
+    if (removeTeams.length > 0 || removeInitiatives.length > 0) {
+      const resolved = yield* gateway.resolveProjectUpdateAssociations({
+        teams: removeTeams,
+        initiatives: removeInitiatives,
+        includeArchived: true
+      })
+      if (Array.isArray(args.removeTeams)) canonical.removeTeams = uniqueStrings(resolved.teams)
+      if (Array.isArray(args.removeInitiatives)) canonical.removeInitiatives = uniqueStrings(resolved.initiatives)
     }
 
     for (const [addKey, removeKey, noun] of [
@@ -391,7 +407,8 @@ const mutationReferenceKeys = (tool: string): ReadonlyArray<string> => ({
 } as Record<string, ReadonlyArray<string>>)[tool] ?? []
 
 const MUTATION_COLLECTION_OPTIONS = {
-  referenceKeys: ["id", "identifier", "name", "key", "email", "displayName", "slugId", "version", "number", "type"]
+  referenceKeys: ["id", "identifier", "name", "key", "email", "displayName", "slugId", "version", "number", "type"],
+  canonicalIdentityKey: "id"
 } as const
 const mutationCollectionEqual = (current: unknown, desired: unknown): boolean => collectionEqual(current, desired, MUTATION_COLLECTION_OPTIONS)
 const mutationCollectionContains = (current: unknown, desired: unknown): boolean => collectionContains(current, desired, MUTATION_COLLECTION_OPTIONS)

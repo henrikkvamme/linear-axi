@@ -149,8 +149,8 @@ export const makeSdkLinearGateway = (
 
     resolveProjectUpdateAssociations: (input) => call("projects update", async (client) => {
       const [teams, initiatives] = await Promise.all([
-        Promise.all(input.teams.map(async (selector) => (await resolveTeamReference(client, selector)).id)),
-        Promise.all(input.initiatives.map(async (selector) => (await resolveInitiative(client, selector)).id))
+        Promise.all(input.teams.map(async (selector) => (await resolveTeamReference(client, selector, input.includeArchived)).id)),
+        Promise.all(input.initiatives.map(async (selector) => (await resolveInitiative(client, selector, input.includeArchived)).id))
       ])
       return { teams, initiatives }
     }),

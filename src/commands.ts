@@ -578,11 +578,11 @@ const resolveOfficialTeamSelector = (
   gateway: LinearGateway,
   selector: string
 ): Effect.Effect<string, CliError> => Effect.gen(function*() {
-  if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(selector)) return selector
   const team = yield* gateway.callOfficialTool("get_team", { query: selector })
   if (!Predicate.isObject(team) || !nonEmptyString(team.id) || !officialEntityMatchesSelector(team, selector, ["id", "key", "name"])) {
     return yield* officialShapeError("get_team identity")
   }
+  yield* requireOfficialEntityActive("team", selector, team)
   return team.id
 })
 
@@ -609,17 +609,19 @@ const resolveOfficialIssueSelectors = (
     input.project = project.id
   }
   if (typeof input.parentId === "string") input.parentId = yield* resolveOfficialParentId(gateway, input.parentId, team)
-  if (typeof input.cycle === "string" && !looksLikeUuid(input.cycle)) {
+  if (typeof input.cycle === "string") {
+    const selector = input.cycle
     const cycles = yield* gateway.callOfficialTool("list_cycles", { teamId: team })
     if (!Array.isArray(cycles) || cycles.some((cycle) => !Predicate.isObject(cycle))) return yield* officialShapeError("list_cycles")
-    input.cycle = yield* uniqueOfficialId("cycle", input.cycle, cycles as ReadonlyArray<Record<string, unknown>>, ["id", "name", "number"])
+    const activeCycles = (cycles as ReadonlyArray<Record<string, unknown>>).filter((cycle) => cycle.archivedAt == null)
+    input.cycle = yield* uniqueOfficialId("cycle", selector, activeCycles, ["id", "name", "number"])
   }
-  if (typeof input.milestone === "string" && !looksLikeUuid(input.milestone)) {
+  if (typeof input.milestone === "string") {
     const project = input.project ?? referenceId(current?.project)
     if (typeof project !== "string") {
       return yield* Effect.fail(new LinearDomainError({
-        message: "Milestone name resolution requires the issue project",
-        help: "Pass --project with --milestone, or use a stable milestone UUID."
+        message: "Milestone resolution requires the issue project",
+        help: "Pass --project with --milestone, or assign the issue to a project first."
       }))
     }
     const selector = input.milestone
@@ -627,11 +629,22 @@ const resolveOfficialIssueSelectors = (
     if (!Predicate.isObject(milestone) || !nonEmptyString(milestone.id) || !officialEntityMatchesSelector(milestone, selector, ["id", "name"])) {
       return yield* officialShapeError("get_milestone identity")
     }
+    yield* requireOfficialEntityActive("milestone", selector, milestone)
+    const milestoneProject = referenceId(milestone.project)
+    if (milestoneProject !== undefined && !officialTextEqual(milestoneProject, project)) {
+      return yield* Effect.fail(new LinearDomainError({
+        message: `milestone ${selector} belongs to another project`,
+        help: "Choose a milestone from the issue's project."
+      }))
+    }
     input.milestone = milestone.id
   }
   if (Array.isArray(input.labels)) input.labels = uniqueStrings(yield* resolveOfficialLabels(gateway, input.labels, team))
-  for (const key of ["setReleases", "addReleases", "removeReleases"] as const) {
-    if (Array.isArray(input[key])) input[key] = uniqueStrings(yield* resolveOfficialReleases(gateway, input[key]))
+  for (const key of ["setReleases", "addReleases"] as const) {
+    if (Array.isArray(input[key])) input[key] = uniqueStrings(yield* resolveOfficialReleases(gateway, input[key], false))
+  }
+  if (Array.isArray(input.removeReleases)) {
+    input.removeReleases = uniqueStrings(yield* resolveOfficialReleases(gateway, input.removeReleases, true))
   }
   for (const key of ["blocks", "blockedBy", "relatedTo", "removeBlocks", "removeBlockedBy", "removeRelatedTo"] as const) {
     if (Array.isArray(input[key])) {
@@ -713,13 +726,19 @@ const resolveOfficialLabels = (
 
 const resolveOfficialReleases = (
   gateway: LinearGateway,
-  selectors: ReadonlyArray<unknown>
+  selectors: ReadonlyArray<unknown>,
+  includeArchived: boolean
 ): Effect.Effect<ReadonlyArray<string>, CliError> => Effect.gen(function*() {
   const result: Array<string> = []
   for (const raw of selectors) {
     const selector = String(raw)
-    const rows = yield* fetchOfficialRows(gateway, "list_releases", { query: selector, limit: 250 }, "releases")
-    result.push(yield* uniqueOfficialId("release", selector, rows, ["id", "name", "version", "slugId"]))
+    const rows = yield* fetchOfficialRows(gateway, "list_releases", {
+      query: selector,
+      limit: 250,
+      ...(includeArchived ? { includeArchived: true } : {})
+    }, "releases")
+    const candidates = includeArchived ? rows : rows.filter((row) => row.archivedAt == null)
+    result.push(yield* uniqueOfficialId("release", selector, candidates, ["id", "name", "version", "slugId"]))
   }
   return result
 })
@@ -740,6 +759,17 @@ const uniqueOfficialId = (
       }))
 }
 
+const requireOfficialEntityActive = (
+  noun: string,
+  selector: string,
+  entity: Readonly<Record<string, unknown>>
+): Effect.Effect<void, LinearDomainError> => entity.archivedAt == null
+  ? Effect.void
+  : Effect.fail(new LinearDomainError({
+      message: `${noun} ${selector} is archived`,
+      help: `Choose an active ${noun}.`
+    }))
+
 const looksLikeUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value)
 const referenceId = (value: unknown): string | undefined => Predicate.isObject(value) && typeof value.id === "string"
   ? value.id
@@ -750,19 +780,12 @@ const resolveOfficialStateSelector = (
   team: string,
   selector: string
 ): Effect.Effect<string, CliError> => Effect.gen(function*() {
-  if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(selector)) return selector
   const result = yield* gateway.callOfficialTool("list_issue_statuses", { team })
-  if (!Array.isArray(result)) return yield* officialShapeError("list_issue_statuses")
-  const normalized = selector.toLowerCase()
-  const matches = result.filter(Predicate.isObject).filter((state) =>
-    typeof state.name === "string" && state.name.toLowerCase() === normalized)
-  if (matches.length !== 1 || !nonEmptyString(matches[0]!.id)) {
-    return yield* Effect.fail(new LinearDomainError({
-      message: matches.length === 0 ? `No workflow state exactly matched ${selector}` : `Ambiguous or invalid workflow state selector ${selector}`,
-      help: `Candidate ids: ${matches.map((state) => String(state.id)).join(", ") || "none"}`
-    }))
+  if (!Array.isArray(result) || result.some((state) => !Predicate.isObject(state))) {
+    return yield* officialShapeError("list_issue_statuses")
   }
-  return matches[0]!.id
+  const activeStates = (result as ReadonlyArray<Record<string, unknown>>).filter((state) => state.archivedAt == null)
+  return yield* uniqueOfficialId("workflow state", selector, activeStates, ["id", "name"])
 })
 
 const officialTeamSelector = (issue: Record<string, unknown>): string | undefined => {
@@ -814,7 +837,10 @@ const OFFICIAL_ISSUE_REFERENCE_KEYS = new Set([
   "assignee", "delegate", "state", "project", "cycle", "milestone", "parentId"
 ])
 
-const ISSUE_COLLECTION_OPTIONS = { referenceKeys: ["id", "identifier", "name", "version", "slugId"] } as const
+const ISSUE_COLLECTION_OPTIONS = {
+  referenceKeys: ["id", "identifier", "name", "version", "slugId"],
+  canonicalIdentityKey: "id"
+} as const
 const officialCollectionContains = (current: unknown, desired: unknown): boolean => collectionContains(current, desired, ISSUE_COLLECTION_OPTIONS)
 const officialCollectionEqual = (current: unknown, desired: unknown): boolean => collectionEqual(current, desired, ISSUE_COLLECTION_OPTIONS)
 const officialCollectionAbsent = (current: unknown, desired: unknown): boolean => collectionAbsent(current, desired, ISSUE_COLLECTION_OPTIONS)

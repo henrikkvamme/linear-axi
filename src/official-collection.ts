@@ -2,6 +2,7 @@ import { Predicate } from "effect"
 
 export interface OfficialCollectionOptions {
   readonly referenceKeys: ReadonlyArray<string>
+  readonly canonicalIdentityKey?: string
 }
 
 export const officialCollectionEqual = (
@@ -22,6 +23,9 @@ export const officialCollectionAbsent = (
   options: OfficialCollectionOptions
 ): boolean => {
   if (!Array.isArray(current) || !Array.isArray(desired)) return false
+  const canonicalIdentityKey = options.canonicalIdentityKey
+  if (canonicalIdentityKey !== undefined && current.some((item) =>
+    Predicate.isObject(item) && !validReference(item[canonicalIdentityKey]))) return false
   const references = officialCollectionReferences(current, options)
   return references.every((values) => values.length > 0) &&
     desired.every((value) => !references.some((values) => values.some((reference) => officialReferenceTextEqual(reference, String(value)))))
@@ -66,9 +70,10 @@ const officialCollectionReferences = (
 ): ReadonlyArray<ReadonlyArray<string>> => value.map((item) => Predicate.isObject(item)
   ? options.referenceKeys
       .map((key) => item[key])
-      .filter((reference): reference is string | number => nonEmptyString(reference) || typeof reference === "number")
+      .filter((reference): reference is string | number => validReference(reference))
       .map(String)
-  : nonEmptyString(item) || typeof item === "number" ? [String(item)] : [])
+  : validReference(item) ? [String(item)] : [])
 
 const officialReferenceTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
-const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0
+const validReference = (value: unknown): value is string | number => nonEmptyString(value) || typeof value === "number"
+const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0

@@ -61,6 +61,7 @@ export interface TeamSummary {
 export interface ProjectUpdateAssociationSelectors {
   readonly teams: ReadonlyArray<string>
   readonly initiatives: ReadonlyArray<string>
+  readonly includeArchived: boolean
 }
 
 export interface ProjectUpdateAssociationIds {

@@ -24,7 +24,11 @@ export const resolveTeam = async (client: LinearClient, keyOrId: string): Promis
   )
 }
 
-export const resolveTeamReference = async (client: LinearClient, idKeyOrName: string): Promise<Team> => {
+export const resolveTeamReference = async (
+  client: LinearClient,
+  idKeyOrName: string,
+  includeArchived = false
+): Promise<Team> => {
   const identity = normalizeUuid(idKeyOrName)
   const normalized = identity.toLowerCase()
   const teams = await fetchAllPages(
@@ -39,15 +43,21 @@ export const resolveTeamReference = async (client: LinearClient, idKeyOrName: st
   const matches = teams.filter((team) => isUuid(identity)
     ? uuidEqual(team.id, identity)
     : team.key.toLowerCase() === normalized || team.name.toLowerCase() === normalized)
-  return exactlyOneActive(
-    `team ${idKeyOrName}`,
-    matches,
-    (team) => `${team.id} (${team.key}, ${team.name})`,
-    (team) => team.archivedAt
-  )
+  return includeArchived
+    ? exactlyOne(`team ${idKeyOrName}`, matches, (team) => `${team.id} (${team.key}, ${team.name})`)
+    : exactlyOneActive(
+        `team ${idKeyOrName}`,
+        matches,
+        (team) => `${team.id} (${team.key}, ${team.name})`,
+        (team) => team.archivedAt
+      )
 }
 
-export const resolveInitiative = async (client: LinearClient, idOrName: string) => {
+export const resolveInitiative = async (
+  client: LinearClient,
+  idOrName: string,
+  includeArchived = false
+) => {
   const identity = normalizeUuid(idOrName)
   const normalized = identity.toLowerCase()
   const initiatives = await fetchAllPages(
@@ -62,12 +72,14 @@ export const resolveInitiative = async (client: LinearClient, idOrName: string) 
   const matches = initiatives.filter((initiative) => isUuid(identity)
     ? uuidEqual(initiative.id, identity)
     : initiative.name.toLowerCase() === normalized)
-  return exactlyOneActive(
-    `initiative ${idOrName}`,
-    matches,
-    (initiative) => `${initiative.id} (${initiative.name})`,
-    (initiative) => initiative.archivedAt
-  )
+  return includeArchived
+    ? exactlyOne(`initiative ${idOrName}`, matches, (initiative) => `${initiative.id} (${initiative.name})`)
+    : exactlyOneActive(
+        `initiative ${idOrName}`,
+        matches,
+        (initiative) => `${initiative.id} (${initiative.name})`,
+        (initiative) => initiative.archivedAt
+      )
 }
 
 export const resolveIssue = async (client: LinearClient, idOrKey: string): Promise<Issue> => {
