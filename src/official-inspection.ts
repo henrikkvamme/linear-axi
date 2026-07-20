@@ -7,10 +7,7 @@ export const officialMutationInspectionCommand = (
   const id = shellQuote(String(args.id))
   if (tool === "save_issue") {
     if (nonEmptyString(args.id)) {
-      const inclusions = [
-        ...(ISSUE_RELATION_KEYS.some((key) => args[key] !== undefined) ? ["--relations"] : []),
-        ...(ISSUE_RELEASE_KEYS.some((key) => args[key] !== undefined) ? ["--releases"] : [])
-      ]
+      const inclusions = issueInspectionInclusions(args)
       return `linear-axi issues inspect --id ${id}${inclusions.length > 0 ? ` ${inclusions.join(" ")}` : ""} --full`
     }
     const selectors = [
@@ -34,12 +31,25 @@ export const officialMutationInspectionCommand = (
 export const officialReleaseNoteNeedsReleases = (args: Readonly<Record<string, unknown>>): boolean =>
   RELEASE_NOTE_ASSOCIATION_KEYS.some((key) => args[key] !== undefined)
 
+export const officialMutationInspectionHelp = (
+  tool: string,
+  args: Readonly<Record<string, unknown>>
+): string => {
+  const inspection = officialMutationInspectionCommand(tool, args)
+  if (tool !== "save_issue" || nonEmptyString(args.id)) {
+    return `Run \`${inspection}\` to inspect the current state.`
+  }
+  const inclusions = issueInspectionInclusions(args)
+  const candidateInspection = `linear-axi issues inspect --id '<candidate-id>'${inclusions.length > 0 ? ` ${inclusions.join(" ")}` : ""} --full`
+  return `Run \`${inspection}\` to find the candidate issue ID, then run \`${candidateInspection}\` to inspect the current state.`
+}
+
 export const indeterminateOfficialMutation = (
   tool: string,
-  inspection: string
+  args: Readonly<Record<string, unknown>>
 ): LinearApiError => new LinearApiError({
   message: `${tool} was dispatched but its result could not be verified; mutation outcome is unknown`,
-  help: `Run \`${inspection}\` to inspect the current state. Do not repeat the mutation until the outcome is known.`
+  help: `${officialMutationInspectionHelp(tool, args)} Do not repeat the mutation until the outcome is known.`
 })
 
 const ISSUE_RELATION_KEYS = [
@@ -47,6 +57,11 @@ const ISSUE_RELATION_KEYS = [
 ] as const
 const ISSUE_RELEASE_KEYS = ["setReleases", "addReleases", "removeReleases"] as const
 const RELEASE_NOTE_ASSOCIATION_KEYS = ["releases", "rangeFromRelease", "rangeToRelease"] as const
+
+const issueInspectionInclusions = (args: Readonly<Record<string, unknown>>): ReadonlyArray<string> => [
+  ...(ISSUE_RELATION_KEYS.some((key) => args[key] !== undefined) ? ["--relations"] : []),
+  ...(ISSUE_RELEASE_KEYS.some((key) => args[key] !== undefined) ? ["--releases"] : [])
+]
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
 const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0

@@ -297,11 +297,7 @@ const createOfficialIssue = (
     const candidate = matches[0]!
     const candidateId = officialIssueIdentity(candidate)
     if (!candidateId) return yield* officialShapeError("list_issues identity")
-    const detail = yield* gateway.callOfficialTool("get_issue", {
-      id: candidateId,
-      includeRelations: true,
-      includeReleases: true
-    })
+    const detail = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(candidateId, input))
     if (!Predicate.isObject(detail) || !officialEntityMatchesSelector(detail, candidateId, ["id", "identifier"])) {
       return yield* officialShapeError("get_issue identity")
     }
@@ -319,12 +315,14 @@ const createOfficialIssue = (
     }))
   }
   const created = yield* gateway.callOfficialTool("save_issue", input)
-  let inspection = officialMutationInspectionCommand("save_issue", input)
+  let inspectionArgs: Readonly<Record<string, unknown>> = input
+  let inspection = officialMutationInspectionCommand("save_issue", inspectionArgs)
   return yield* Effect.gen(function*() {
     if (!Predicate.isObject(created)) return yield* officialShapeError("save_issue identity")
     const createdId = officialIssueIdentity(created)
     if (!createdId) return yield* officialShapeError("save_issue identity")
-    inspection = officialMutationInspectionCommand("save_issue", { ...input, id: createdId })
+    inspectionArgs = { ...input, id: createdId }
+    inspection = officialMutationInspectionCommand("save_issue", inspectionArgs)
     const issue = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(createdId, input))
     if (!Predicate.isObject(issue) || !officialEntityMatchesSelector(issue, createdId, ["id", "identifier"])) {
       return yield* officialShapeError("get_issue identity")
@@ -334,7 +332,7 @@ const createOfficialIssue = (
     }
     return officialIssueMutationOutput(issue, true, "issue created through official save_issue", inspection)
   }).pipe(
-    Effect.mapError(() => indeterminateOfficialMutation("save_issue", inspection))
+    Effect.mapError(() => indeterminateOfficialMutation("save_issue", inspectionArgs))
   )
 })
 
@@ -493,7 +491,7 @@ const updateOfficialIssue = (
       concurrency: DESCRIPTION_CONCURRENCY_WARNING
     }
   }).pipe(
-    Effect.mapError(() => indeterminateOfficialMutation("save_issue", inspection))
+    Effect.mapError(() => indeterminateOfficialMutation("save_issue", input))
   )
 })
 

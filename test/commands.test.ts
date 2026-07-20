@@ -1607,6 +1607,31 @@ describe("runCommand", () => {
     expect(mutations).toBe(0)
   })
 
+  test("advanced issue exact-create no-op reads only requested associations", async () => {
+    const reads: Array<Readonly<Record<string, unknown>>> = []
+    const output = await run([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "list_issues") return Effect.succeed({
+          issues: [{ id: "issue-id", title: "Launch", teamId: "team-id", priority: 2 }],
+          hasNextPage: false
+        })
+        if (name === "get_issue") {
+          reads.push(args)
+          return Effect.succeed({ id: "issue-id", title: "Launch", teamId: "team-id", priority: 2 })
+        }
+        return Effect.succeed({})
+      }
+    }))
+
+    expect(reads).toEqual([{ id: "issue-id" }])
+    expect(output).toMatchObject({ changed: false, result: "exact issue already exists (no-op)" })
+    expect(output.omitted).toBeUndefined()
+    expect(output.help).toBeUndefined()
+  })
+
   test("advanced issue create retries links and releases as an exact no-op", async () => {
     let saves = 0
     const output = await run([
@@ -1660,6 +1685,26 @@ describe("runCommand", () => {
       { name: "list_releases", args: { query: "v1.0", limit: 250 } }
     ])
     expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
+  })
+
+  test("ambiguous advanced issue create gives association-aware two-step recovery without an id", async () => {
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--blocks-json", "[\"ENG-2\"]",
+      "--releases-json", "[\"v1\"]", "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "get_issue" && args.id === "ENG-2") return Effect.succeed({ id: "blocked-id", identifier: "ENG-2", teamId: "team-id" })
+        if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1" }], hasNextPage: false })
+        if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+        if (name === "save_issue") return Effect.succeed({})
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(error.help).toContain("linear-axi issues search --team 'team-id' --query 'Launch' --full")
+    expect(error.help).toContain("then run `linear-axi issues inspect --id '<candidate-id>' --relations --releases --full`")
+    expect(error.help).not.toContain("retry")
   })
 
   test("advanced issue create preserves association-aware recovery after receiving its id", async () => {

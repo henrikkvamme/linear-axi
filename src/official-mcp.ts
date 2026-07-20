@@ -1,7 +1,7 @@
 import { Effect, Predicate, Schema } from "effect"
 import { LinearApiError } from "./errors"
 import type { Credentials, GatewayError } from "./linear"
-import { officialMutationInspectionCommand } from "./official-inspection"
+import { officialMutationInspectionHelp } from "./official-inspection"
 
 export const OFFICIAL_MCP_URL = "https://mcp.linear.app/mcp"
 export const OFFICIAL_MCP_PROTOCOL_VERSION = "2025-03-26"
@@ -476,13 +476,13 @@ const ambiguousMutationFailure = (
     error.operation !== "tools/call" || !error.outcomeUnknown || error.phase === "before-dispatch") {
     return error
   }
-  const inspection = officialMutationInspectionCommand(tool, args)
+  const inspectionHelp = officialMutationInspectionHelp(tool, args)
   const createWarning = tool === "save_issue" && !(typeof args.id === "string" && args.id.length > 0)
     ? " A missing result does not prove creation failed; do not repeat the mutation automatically."
     : " Do not repeat the mutation until the outcome is known."
   return new LinearApiError({
     message: `Official Linear MCP ${tool} failed after dispatch during ${error.phase}; mutation outcome is unknown`,
-    help: `Run \`${inspection}\` to inspect the outcome.${createWarning}`
+    help: `${inspectionHelp}${createWarning}`
   })
 }
 

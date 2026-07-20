@@ -241,6 +241,11 @@ describe("official Linear MCP tool boundary", () => {
         inspection: "linear-axi issues search --team 'team-id' --query 'Launch' --full"
       },
       {
+        args: { team: "team-id", title: "Launch", addReleases: ["release-id"], blocks: ["ENG-124"] },
+        inspection: "linear-axi issues search --team 'team-id' --query 'Launch' --full",
+        followup: "then run `linear-axi issues inspect --id '<candidate-id>' --relations --releases --full`"
+      },
+      {
         args: { id: "ENG-123", addReleases: ["release-id"], blocks: ["ENG-124"] },
         inspection: "linear-axi issues inspect --id 'ENG-123' --relations --releases --full"
       }
@@ -261,6 +266,7 @@ describe("official Linear MCP tool boundary", () => {
       expect(error._tag).toBe("LinearApiError")
       expect(error.message).toContain("mutation outcome is unknown")
       expect(error.help).toContain(entry.inspection)
+      if ("followup" in entry) expect(error.help).toContain(entry.followup)
       expect(error.help).not.toContain("retry")
     }
   }, 1_000)

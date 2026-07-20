@@ -302,7 +302,7 @@ const runVerifiedMutation = (
     )
     return preconditioned ? { ...output, concurrency: DESCRIPTION_CONCURRENCY_WARNING } : output
   }).pipe(
-    Effect.mapError(() => indeterminateOfficialMutation(entry.tool, inspection))
+    Effect.mapError(() => indeterminateOfficialMutation(entry.tool, canonicalArgs))
   )
 })
 
