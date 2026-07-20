@@ -51,24 +51,32 @@ const baseRelation = {
 }
 
 const fakeGateway = (overrides: Partial<LinearGateway> = {}): LinearGateway => ({
+  callOfficialTool: () => Effect.succeed({}),
   authStatus: () => Effect.succeed({
     authenticated: true,
     method: "apiKey",
     viewer: { id: "user-id", name: "Henrik" }
   }),
   listTeams: () => Effect.succeed([{ id: "team-id", key: "ENG", name: "Engineering" }]),
+  listWorkflowStates: () => Effect.succeed([]),
   listIssues: () => Effect.succeed(page([baseIssue])),
   viewIssue: () => Effect.succeed(detail()),
   createIssue: () => Effect.succeed(mutation(baseIssue, true, "issue created")),
   assignIssue: () => Effect.succeed(mutation(baseIssue, true, "issue assigned")),
   unassignIssue: () => Effect.succeed(mutation({ ...baseIssue, assignee: "unassigned", assigneeId: null }, true, "issue unassigned")),
   closeIssue: () => Effect.succeed(mutation({ ...baseIssue, state: "Done", stateType: "completed" }, true, "issue closed")),
+  changeIssueState: () => Effect.succeed(mutation(baseIssue, false, "already in the requested workflow state (no-op)")),
+  setIssueParent: () => Effect.succeed(mutation(baseIssue, false, "requested parent already set (no-op)")),
+  clearIssueFields: () => Effect.succeed(mutation(baseIssue, false, "requested issue fields already clear (no-op)")),
   updateIssueDescription: () => Effect.succeed(mutation(detail("updated"), true, "description updated and verified")),
   listLabels: () => Effect.succeed(page([{ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }])),
   createLabel: () => Effect.succeed(mutation({ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }, true, "label created")),
   applyLabel: () => Effect.succeed(mutation(baseIssue, false, "label already applied (no-op)")),
+  removeLabel: () => Effect.succeed(mutation(baseIssue, false, "label already absent (no-op)")),
+  replaceLabels: () => Effect.succeed(mutation(baseIssue, false, "labels already match requested replacement (no-op)")),
   listRelations: () => Effect.succeed(page([{ id: "relation-id", type: "blocks", direction: "outgoing", identifier: "ENG-124", title: "Target", state: "Todo", sourceId: baseIssue.id, targetId: "target-id" }])),
   createRelation: () => Effect.succeed(mutation({ id: "relation-id", type: "blocks", direction: "outgoing", identifier: "ENG-124", title: "Target", state: "Todo", sourceId: baseIssue.id, targetId: "target-id" }, true, "directed relation created")),
+  removeRelation: () => Effect.succeed(mutation({ id: "relation-id" }, false, "directed relation already absent (no-op)")),
   listComments: () => Effect.succeed(page([{ id: "comment-id", issueId: baseIssue.id, body: "Done", createdAt: "2026-07-08T00:00:00.000Z", updatedAt: "2026-07-08T00:00:00.000Z", author: "Henrik", url: `${baseIssue.url}#comment-id` }])),
   createComment: () => Effect.succeed(mutation({ id: "comment-id", issueId: baseIssue.id, body: "Done", createdAt: "2026-07-08T00:00:00.000Z", updatedAt: "2026-07-08T00:00:00.000Z", author: "Henrik", url: `${baseIssue.url}#comment-id` }, true, "comment created")),
   frontier: () => Effect.succeed({
@@ -86,6 +94,165 @@ const run = async (argv: ReadonlyArray<string>, gateway = fakeGateway()) => {
 }
 
 describe("runCommand", () => {
+  test("official list commands pass validated arguments and render a minimal page", async () => {
+    let called: { name: string; args: Readonly<Record<string, unknown>> } | undefined
+    const output = await run(
+      ["users", "list", "--query", "Alice", "--limit", "2", "--after", "cursor-1"],
+      fakeGateway({
+        callOfficialTool: (name, args) => {
+          called = { name, args }
+          return Effect.succeed({
+            users: [{ id: "user-1", name: "Alice", email: "alice@example.com", active: true, ignored: "large" }],
+            hasNextPage: true,
+            cursor: "cursor-2"
+          })
+        }
+      })
+    )
+
+    expect(called).toEqual({
+      name: "list_users",
+      args: { query: "Alice", limit: 2, cursor: "cursor-1" }
+    })
+    expect(output.users).toEqual([{ id: "user-1", name: "Alice", email: "alice@example.com", active: true }])
+    expect(output.page).toEqual({ hasNext: true, endCursor: "cursor-2" })
+    expect(output.help).toEqual(["Run `linear-axi users list --query 'Alice' --limit '2' --after 'cursor-2'` for the next page."])
+  })
+
+  test("official direct-array tools render definitive non-paginated lists", async () => {
+    const output = await run(["cycles", "list", "--team-id", "team-id", "--type", "current"], fakeGateway({
+      callOfficialTool: (name, args) => {
+        expect(name).toBe("list_cycles")
+        expect(args).toEqual({ teamId: "team-id", type: "current" })
+        return Effect.succeed([{ id: "cycle-id", number: 7, name: "Cycle 7", startsAt: "2026-07-01", endsAt: "2026-07-14", ignored: true }])
+      }
+    }))
+    expect(output.cycles).toEqual([{ id: "cycle-id", number: 7, name: "Cycle 7", startsAt: "2026-07-01" }])
+    expect(output.page).toEqual({ hasNext: false, endCursor: null })
+  })
+
+  test("official command validation and shape drift fail before false output", async () => {
+    let calls = 0
+    const gateway = fakeGateway({
+      callOfficialTool: () => {
+        calls += 1
+        return Effect.succeed({ users: "not-an-array", hasNextPage: false })
+      }
+    })
+    const invalid = parseArgs(["users", "list", "--order-by", "deletedAt"], commandSpecs)
+    const usageError = await Effect.runPromise(Effect.flip(runCommand(invalid, gateway, "/repo/src/main.ts")))
+    expect(usageError._tag).toBe("UsageError")
+    expect(calls).toBe(0)
+
+    const drifted = parseArgs(["users", "list"], commandSpecs)
+    const driftError = await Effect.runPromise(Effect.flip(runCommand(drifted, gateway, "/repo/src/main.ts")))
+    expect(driftError._tag).toBe("LinearDomainError")
+    expect(driftError.message).toContain("output shape drifted")
+    expect(calls).toBe(1)
+  })
+
+  test("official update commands reject ambiguous parents and send typed arrays", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    let projectReads = 0
+    const gateway = fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_project") {
+          return Effect.succeed(projectReads++ === 0
+            ? { id: "project-id", name: "Roadmap", teams: [], priority: 0 }
+            : { id: "project-id", name: "Roadmap", teams: [{ key: "ENG" }, { key: "OPS" }], priority: 2 })
+        }
+        return Effect.succeed({ id: "project-id", name: "Roadmap" })
+      }
+    })
+    const invalid = parseArgs([
+      "documents", "update", "--id", "document-id", "--project", "A", "--team", "ENG"
+    ], commandSpecs)
+    const error = await Effect.runPromise(Effect.flip(runCommand(invalid, gateway, "/repo/src/main.ts")))
+    expect(error._tag).toBe("UsageError")
+    expect(calls).toHaveLength(0)
+
+    const output = await run([
+      "projects", "update", "--id", "project-id", "--teams-json", "[\"ENG\",\"OPS\"]", "--priority", "2"
+    ], gateway)
+    expect(output.project).toMatchObject({ id: "project-id", name: "Roadmap", priority: 2 })
+    expect(calls).toEqual([
+      { name: "get_project", args: { query: "project-id" } },
+      { name: "save_project", args: { id: "project-id", setTeams: ["ENG", "OPS"], priority: 2 } },
+      { name: "get_project", args: { query: "project-id" } }
+    ])
+    expect(output).toMatchObject({ changed: true, result: "official save_project update verified" })
+  })
+
+  test("official updates reject id-only calls before I/O", async () => {
+    let calls = 0
+    const parsed = parseArgs(["projects", "update", "--id", "project-id"], commandSpecs)
+    const error = await Effect.runPromise(Effect.flip(runCommand(parsed, fakeGateway({
+      callOfficialTool: () => { calls += 1; return Effect.succeed({}) }
+    }), "/repo/src/main.ts")))
+    expect(error._tag).toBe("UsageError")
+    expect(calls).toBe(0)
+  })
+
+  test("official validators preserve cycle disambiguation and reject invalid typed inputs before I/O", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    let documentReads = 0
+    const gateway = fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_document") return Effect.succeed(documentReads++ === 0
+          ? { id: "document-id", cycle: null, team: null }
+          : { id: "document-id", cycle: { id: "cycle-id", name: "Cycle 7" }, team: { id: "team-id", name: "Engineering" } })
+        if (name === "save_document") return Effect.succeed({ id: "document-id" })
+        return Effect.succeed({})
+      }
+    })
+    await run(["documents", "update", "--id", "document-id", "--cycle", "Cycle 7", "--team", "Engineering"], gateway)
+    expect(calls[1]).toEqual({ name: "save_document", args: { id: "document-id", cycle: "Cycle 7", team: "Engineering" } })
+
+    for (const argv of [
+      ["comments", "search", "--limit", "10"],
+      ["documents", "update", "--id", "document-id", "--color", "red"],
+      ["projects", "update", "--id", "project-id", "--target-date", "2026-02-30"],
+      ["releases", "update", "--id", "release-id", "--started-at", "tomorrow"]
+    ]) {
+      const before = calls.length
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs(argv, commandSpecs), gateway, "/repo/src/main.ts")))
+      expect(error._tag).toBe("UsageError")
+      expect(calls).toHaveLength(before)
+    }
+    expect(() => parseArgs(["status-updates", "update", "--type", "project", "--id", "update-id", "--diff-hidden"], commandSpecs)).toThrow("unknown flag --diff-hidden")
+  })
+
+  test("release-note association updates request associations for readback verification", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    let reads = 0
+    const output = await run(["release-notes", "update", "--id", "note-id", "--releases-json", "[\"release-1\"]"], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_release_note") {
+          return Effect.succeed({ id: "note-id", releases: reads++ === 0 ? [] : [{ id: "release-1" }] })
+        }
+        return Effect.succeed({ id: "note-id" })
+      }
+    }))
+    expect(calls).toEqual([
+      { name: "get_release_note", args: { id: "note-id", includeReleases: true } },
+      { name: "save_release_note", args: { id: "note-id", releases: ["release-1"] } },
+      { name: "get_release_note", args: { id: "note-id", includeReleases: true } }
+    ])
+    expect(output).toMatchObject({ changed: true, result: "official save_release_note update verified" })
+  })
+
+  test("official detail truncation reports totals and a full escape hatch", async () => {
+    const output = await run(["projects", "view", "--query", "Roadmap"], fakeGateway({
+      callOfficialTool: () => Effect.succeed({ id: "project-id", name: "Roadmap", description: "x".repeat(1300) })
+    }))
+    expect(String((output.project as Record<string, unknown>).description)).toEndWith("...")
+    expect(output.truncated).toEqual([{ field: "description", total: 1300 }])
+    expect(output.help).toEqual(["Run `linear-axi projects view --query 'Roadmap' --full` for complete text fields."])
+  })
+
   test("home includes assigned issues when authenticated", async () => {
     const output = await run([])
     expect(output.auth).toMatchObject({ authenticated: true })
@@ -174,6 +341,124 @@ describe("runCommand", () => {
     await run(["issues", "create", "--team", "ENG", "--title", "Child", "--description-file", file, "--parent", "ENG-100", "--label", "wayfinder:task", "--id", id], gateway)
   })
 
+  test("advanced issue create preflights exact identity and performs one mutation", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const gateway = fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering" })
+        if (name === "list_issue_labels") return Effect.succeed({ labels: [{ id: "label-id", name: "Bug" }], hasNextPage: false })
+        if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+        if (name === "list_users") return Effect.succeed({ users: [{ id: "user-id", email: "alice@example.com", name: "Alice" }], hasNextPage: false })
+        return Effect.succeed({ id: "issue-id", title: "Launch", team: "ENG", priority: 2 })
+      }
+    })
+    const output = await run([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2",
+      "--assignee", "alice@example.com", "--labels-json", "[\"Bug\"]", "--if-absent"
+    ], gateway)
+
+    expect(calls).toEqual([
+      { name: "get_team", args: { query: "ENG" } },
+      { name: "list_users", args: { query: "alice@example.com", limit: 100 } },
+      { name: "list_issue_labels", args: { team: "team-id", limit: 250 } },
+      { name: "list_issues", args: { query: "Launch", team: "team-id", limit: 100 } },
+      { name: "save_issue", args: { title: "Launch", assignee: "user-id", priority: 2, labels: ["label-id"], team: "team-id" } }
+    ])
+    expect(output).toMatchObject({ changed: true, result: "issue created through official save_issue" })
+  })
+
+  test("advanced issue create retries as an exact no-op", async () => {
+    let mutations = 0
+    const output = await run([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"
+    ], fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_issue") mutations += 1
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering" })
+        if (name === "get_issue") return Effect.succeed({ id: "issue-id", title: "Launch", teamId: "team-id", priority: 2, labels: [], relations: {}, releases: [] })
+        return Effect.succeed({ issues: [{ id: "issue-id", title: "Launch", teamId: "team-id", priority: 2 }], hasNextPage: false })
+      }
+    }))
+    expect(output).toMatchObject({ changed: false, result: "exact issue already exists (no-op)" })
+    expect(mutations).toBe(0)
+  })
+
+  test("advanced issue create includes official relation fields in the single mutation", async () => {
+    const saves: Array<Readonly<Record<string, unknown>>> = []
+    const output = await run([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--blocks-json", "[\"ENG-2\"]",
+      "--duplicate-of", "ENG-1", "--if-absent"
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "get_issue") return Effect.succeed({ id: args.id === "ENG-2" ? "blocked-id" : "duplicate-id", teamId: "team-id" })
+        if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+        if (name === "save_issue") saves.push(args)
+        return Effect.succeed({ id: "new-id", title: "Launch" })
+      }
+    }))
+    expect(saves).toEqual([{ title: "Launch", team: "team-id", blocks: ["blocked-id"], duplicateOf: "duplicate-id" }])
+    expect(output).toMatchObject({ changed: true })
+  })
+
+  test("issue update sends explicit clears in one official mutation", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const gateway = fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        return Effect.succeed(name === "get_issue"
+          ? { id: "issue-id", teamId: "team-id", updatedAt: baseIssue.updatedAt }
+          : { id: "issue-id", title: "Renamed" })
+      }
+    })
+    const output = await run([
+      "issues", "update", "--id", "ENG-123", "--title", "Renamed", "--clear-assignee",
+      "--clear-estimate", "--clear-project", "--clear-cycle", "--clear-parent", "--clear-labels"
+    ], gateway)
+    expect(calls).toEqual([
+      { name: "get_issue", args: { id: "ENG-123" } },
+      { name: "save_issue", args: { id: "ENG-123", title: "Renamed", assignee: null, estimate: null, project: null, cycle: null, parentId: null, labels: [] } }
+    ])
+    expect(output).toMatchObject({ changed: true, result: "requested issue properties saved in one mutation" })
+  })
+
+  test("schema-incompatible issue clears use one verified native mutation", async () => {
+    let received: unknown
+    const output = await run([
+      "issues", "update", "--id", "ENG-123", "--clear-due-date", "--clear-milestone"
+    ], fakeGateway({
+      clearIssueFields: (input) => {
+        received = input
+        return Effect.succeed(mutation(baseIssue, true, "requested issue fields cleared"))
+      }
+    }))
+    expect(received).toEqual({ id: "ENG-123", dueDate: true, milestone: true })
+    expect(output).toMatchObject({ changed: true, result: "requested issue fields cleared" })
+  })
+
+  test("issue update avoids an already-satisfied official mutation", async () => {
+    let saves = 0
+    const output = await run(["issues", "update", "--id", "ENG-123", "--priority", "2"], fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_issue") saves += 1
+        return Effect.succeed({ id: baseIssue.id, teamId: "team-id", priority: 2, updatedAt: baseIssue.updatedAt })
+      }
+    }))
+    expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
+    expect(saves).toBe(0)
+  })
+
+  test("issue set and clear conflicts fail before official I/O", async () => {
+    let calls = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "update", "--id", "ENG-123", "--assignee", "me", "--clear-assignee"
+    ], commandSpecs), fakeGateway({ callOfficialTool: () => { calls += 1; return Effect.succeed({}) } }), "/repo/src/main.ts")))
+    expect(error._tag).toBe("UsageError")
+    expect(error.message).toContain("mutually exclusive")
+    expect(calls).toBe(0)
+  })
+
   test("assignment, release, close, and update pass conflict-aware inputs", async () => {
     const assignee = "55555555-5555-4555-8555-555555555555"
     const calls: unknown[] = []
@@ -194,6 +479,59 @@ describe("runCommand", () => {
     expect(updated.concurrency).toContain("no atomic compare-and-swap")
   })
 
+  test("assignment accepts official user name and email selectors", async () => {
+    const calls: unknown[] = []
+    const gateway = fakeGateway({
+      assignIssue: (input) => { calls.push(input); return Effect.succeed(mutation(baseIssue)) }
+    })
+
+    await run(["issues", "assign", "--id", "ENG-123", "--assignee", "Alice Example"], gateway)
+    await run(["issues", "assign", "--id", "ENG-123", "--assignee", "alice@example.com"], gateway)
+
+    expect(calls).toEqual([
+      { id: "ENG-123", assignee: "Alice Example", replace: false },
+      { id: "ENG-123", assignee: "alice@example.com", replace: false }
+    ])
+  })
+
+  test("workflow state commands list states and transition by stable selector", async () => {
+    const calls: unknown[] = []
+    const states = [{
+      id: "44444444-4444-4444-8444-444444444444",
+      name: "In Progress",
+      type: "started",
+      color: "#facc15",
+      position: 2,
+      teamId: detail().teamId
+    }]
+    const gateway = fakeGateway({
+      listWorkflowStates: (input) => { calls.push(input); return Effect.succeed(states) },
+      changeIssueState: (input) => { calls.push(input); return Effect.succeed(mutation({ ...baseIssue, state: "In Progress", stateType: "started" })) }
+    })
+
+    const listed = await run(["workflow-states", "list", "--team", "ENG"], gateway)
+    const changed = await run(["issues", "state", "--id", "ENG-123", "--state", "In Progress"], gateway)
+
+    expect(calls).toEqual([{ team: "ENG" }, { id: "ENG-123", state: "In Progress" }])
+    expect(listed).toMatchObject({ count: "1 workflow states shown", states })
+    expect(changed).toMatchObject({ changed: true, issue: { state: "In Progress" } })
+  })
+
+  test("parent commands make set and clear direction explicit", async () => {
+    const calls: unknown[] = []
+    const gateway = fakeGateway({
+      setIssueParent: (input) => { calls.push(input); return Effect.succeed(mutation(baseIssue)) }
+    })
+
+    await run(["issues", "parent", "set", "--id", "ENG-123", "--parent", "ENG-100"], gateway)
+    await run(["issues", "parent", "clear", "--id", "ENG-123"], gateway)
+
+    expect(calls).toEqual([
+      { id: "ENG-123", parent: "ENG-100" },
+      { id: "ENG-123", parent: null }
+    ])
+  })
+
   test("labels commands preserve scope, exact fields, and idempotent status", async () => {
     const gateway = fakeGateway({
       listLabels: (input) => {
@@ -208,6 +546,39 @@ describe("runCommand", () => {
     expect(created.changed).toBe(true)
     expect(listed.labels).toEqual([{ id: "label-id", name: "wayfinder:task", color: "#123456" }])
     expect(applied).toMatchObject({ changed: false, result: "label already applied (no-op)" })
+  })
+
+  test("label add, remove, and replace keep mutation intent explicit", async () => {
+    const calls: unknown[] = []
+    const gateway = fakeGateway({
+      removeLabel: (input) => { calls.push(input); return Effect.succeed(mutation(baseIssue)) },
+      replaceLabels: (input) => { calls.push(input); return Effect.succeed(mutation(baseIssue)) }
+    })
+
+    const added = await run(["labels", "add", "--issue", "ENG-123", "--label", "Bug"], gateway)
+    await run(["labels", "remove", "--issue", "ENG-123", "--label", "Bug"], gateway)
+    await run(["labels", "replace", "--issue", "ENG-123", "--labels-json", "[\"Bug\",\"Urgent\"]"], gateway)
+
+    expect(added).toMatchObject({ changed: false, result: "label already applied (no-op)" })
+    expect(calls).toEqual([
+      { issue: "ENG-123", label: "Bug" },
+      { issue: "ENG-123", labels: ["Bug", "Urgent"] }
+    ])
+  })
+
+  test("label replacement rejects malformed JSON before gateway access", async () => {
+    let calls = 0
+    const gateway = fakeGateway({
+      replaceLabels: () => { calls += 1; return Effect.succeed(mutation(baseIssue)) }
+    })
+    const error = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["labels", "replace", "--issue", "ENG-123", "--labels-json", "Bug,Urgent"], commandSpecs),
+      gateway,
+      "/repo/src/main.ts"
+    )))
+
+    expect(error).toBeInstanceOf(UsageError)
+    expect(calls).toBe(0)
   })
 
   test("relations preserve directed blocker and target inputs", async () => {
@@ -264,6 +635,28 @@ describe("runCommand", () => {
     ], gateway)
 
     expect(output).toMatchObject({ blockedIssue: "ENG-124", blockerIssue: "ENG-123" })
+  })
+
+  test("relation removal supports exact ids and blocked-by direction", async () => {
+    const calls: unknown[] = []
+    const relationId = "88888888-8888-4888-8888-888888888888"
+    const gateway = fakeGateway({
+      removeRelation: (input) => { calls.push(input); return Effect.succeed(mutation({ id: relationId }, true, "directed relation removed")) }
+    })
+
+    await run(["relations", "remove", "--id", relationId], gateway)
+    await run(["relations", "remove", "--issue", "ENG-124", "--blocked-by", "ENG-123"], gateway)
+
+    expect(calls).toEqual([
+      { id: relationId },
+      { issue: "ENG-123", relatedIssue: "ENG-124", type: "blocks" }
+    ])
+
+    const error = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["relations", "remove", "--id", "not-a-uuid"], commandSpecs), gateway, "/repo/src/main.ts"
+    )))
+    expect(error._tag).toBe("UsageError")
+    expect(calls).toHaveLength(2)
   })
 
   test("blocked-by list normalizes to incoming blocks centered on the blocked issue", async () => {

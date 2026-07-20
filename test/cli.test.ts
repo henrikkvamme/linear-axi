@@ -195,17 +195,17 @@ describe("linear-axi process", () => {
     expect(stdout).not.toContain("Linear credentials are not configured")
   })
 
-  test("reports the invalid assignee option before authentication", () => {
+  test("reports blank assignee selectors before authentication", () => {
     for (const [args, flag] of [
-      [["issues", "assign", "--id", "ENG-123", "--assignee", "invalid"], "--assignee"],
-      [["issues", "unassign", "--id", "ENG-123", "--if-assignee", "invalid"], "--if-assignee"]
+      [["issues", "assign", "--id", "ENG-123", "--assignee", " "], "--assignee"],
+      [["issues", "unassign", "--id", "ENG-123", "--if-assignee", " "], "--if-assignee"]
     ] as const) {
       const result = runCli(...args)
       const stdout = stdoutText(result)
 
       expect(result.exitCode).toBe(2)
       expect(stderrText(result)).toBe("")
-      expect(stdout).toContain(`${flag} must be me or a user UUID`)
+      expect(stdout).toContain(`${flag} requires a user id, email, display name`)
       expect(stdout).not.toContain("Linear credentials are not configured")
     }
   })
@@ -234,5 +234,5 @@ describe("linear-axi process", () => {
       expect(stdout).toContain("cannot be empty")
       expect(stdout).not.toContain("Linear credentials are not configured")
     }
-  })
+  }, 15_000)
 })

@@ -341,6 +341,29 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(updates).toBe(0)
   })
 
+  test("due date and milestone clears use one mutation and verify both fields", async () => {
+    const before = issue({ dueDate: "2026-08-01", projectMilestoneId: "milestone-id" })
+    const after = issue({ dueDate: undefined, projectMilestoneId: undefined })
+    let reads = 0
+    let sent: Record<string, unknown> | undefined
+    const client = clientWithIssues([], {
+      issues: async () => page([reads++ === 0 ? before : after]),
+      updateIssue: async (_id: string, input: Record<string, unknown>) => {
+        sent = input
+        return { success: true, issue: Promise.resolve(after) }
+      }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).clearIssueFields({
+      id: "BEN-1",
+      dueDate: true,
+      milestone: true
+    }))
+
+    expect(sent).toEqual({ dueDate: null, projectMilestoneId: null })
+    expect(result.changed).toBe(true)
+  })
+
   test("successful description update refetches and verifies content and timestamp", async () => {
     const before = issue()
     const after = issue({ description: "replacement", updatedAt: new Date("2026-07-13T12:01:00.000Z") })
@@ -599,6 +622,48 @@ describe("SDK LinearGateway conflict contracts", () => {
     const gateway = makeLinearGateway({}, { client })
     expect((await Effect.runPromise(gateway.closeIssue({ id: "BEN-1" }))).changed).toBe(false)
     expect((await Effect.runPromise(gateway.assignIssue({ id: "BEN-1", assignee: "me", replace: false }))).changed).toBe(false)
+    expect(updates).toBe(0)
+  })
+
+  test("assignment resolves exact user email, name, and display name selectors", async () => {
+    const selected = user({
+      name: "Alice Example",
+      displayName: "alice",
+      email: "alice@example.com"
+    })
+    const client = clientWithIssues([issue({
+      assigneeId: selected.id,
+      assignee: Promise.resolve(selected)
+    })], {
+      users: async () => page([selected])
+    })
+    const gateway = makeLinearGateway({}, { client })
+
+    for (const selector of [selected.id, "Alice Example", "alice", "ALICE@EXAMPLE.COM"]) {
+      const result = await Effect.runPromise(gateway.assignIssue({ id: "BEN-1", assignee: selector, replace: false }))
+      expect(result).toMatchObject({ changed: false })
+    }
+  })
+
+  test("ambiguous user names return candidate ids without mutating", async () => {
+    const first = user({ name: "Alex", email: "first@example.com" })
+    const second = user({
+      id: "77777777-7777-4777-8777-777777777777",
+      name: "Alex",
+      email: "second@example.com"
+    })
+    let updates = 0
+    const client = clientWithIssues([issue()], {
+      users: async () => page([first, second]),
+      updateIssue: async () => { updates += 1; return { success: true } }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client }).assignIssue({ id: "BEN-1", assignee: "Alex", replace: false })
+    ))
+
+    expect(error.message).toContain(first.id)
+    expect(error.message).toContain(second.id)
     expect(updates).toBe(0)
   })
 
@@ -972,6 +1037,37 @@ describe("SDK LinearGateway conflict contracts", () => {
       { id: { eq: id } },
       { name: { eqIgnoreCase: created.name }, team: { id: { eq: team.id } } }
     ])
+  })
+
+  test("label creation resolves a same-scope group and sends group metadata", async () => {
+    const parent = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Engineering", isGroup: true })
+    const child = issueLabel({ name: "Backend", parentId: parent.id })
+    let sent: Record<string, unknown> | undefined
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async (variables: { filter: unknown }) => {
+        const text = JSON.stringify(variables.filter)
+        if (text.includes("Engineering")) return page([parent])
+        return page([])
+      },
+      createIssueLabel: async (input: Record<string, unknown>) => {
+        sent = input
+        return { success: true, issueLabel: Promise.resolve(child) }
+      }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).createLabel({
+      name: "Backend",
+      color: child.color,
+      workspace: false,
+      team: "BEN",
+      id: child.id,
+      ifAbsent: false,
+      parent: "Engineering"
+    }))
+
+    expect(result.changed).toBe(true)
+    expect(sent).toMatchObject({ id: child.id, name: "Backend", parentId: parent.id })
   })
 
   test("label create with caller UUID and if-absent is a no-op when both identities match", async () => {

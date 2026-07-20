@@ -15,6 +15,19 @@ describe("parseArgs", () => {
     expect(parsed.flags.get("limit")).toBe("5")
   })
 
+  test("parses workflow state listing and transition commands", () => {
+    const list = parseArgs(["workflow-states", "list", "--team", "ENG"], commandSpecs)
+    const change = parseArgs(["issues", "state", "--id", "ENG-123", "--state", "In Progress"], commandSpecs)
+
+    expect(list.flags.get("team")).toBe("ENG")
+    expect(change.flags.get("state")).toBe("In Progress")
+  })
+
+  test("parses explicit parent set and clear commands", () => {
+    expect(parseArgs(["issues", "parent", "set", "--id", "ENG-2", "--parent", "ENG-1"], commandSpecs).flags.get("parent")).toBe("ENG-1")
+    expect(parseArgs(["issues", "parent", "clear", "--id", "ENG-2"], commandSpecs).flags.get("id")).toBe("ENG-2")
+  })
+
   test("parses blocked-by relation shorthands with command-specific flag shapes", () => {
     const create = parseArgs([
       "relations", "create", "--issue", "ENG-124", "--blocked-by", "ENG-123"
@@ -25,6 +38,19 @@ describe("parseArgs", () => {
 
     expect(create.flags.get("blocked-by")).toBe("ENG-123")
     expect(list.flags.get("blocked-by")).toBe(true)
+  })
+
+  test("parses relation removal by id and blocked-by tuple", () => {
+    expect(parseArgs(["relations", "remove", "--id", "relation-id"], commandSpecs).flags.get("id")).toBe("relation-id")
+    const blockedBy = parseArgs(["relations", "remove", "--issue", "ENG-2", "--blocked-by", "ENG-1"], commandSpecs)
+    expect(blockedBy.flags.get("issue")).toBe("ENG-2")
+    expect(blockedBy.flags.get("blocked-by")).toBe("ENG-1")
+  })
+
+  test("parses additive, subtractive, and explicit replacement label commands", () => {
+    expect(parseArgs(["labels", "add", "--issue", "ENG-1", "--label", "Bug"], commandSpecs).flags.get("label")).toBe("Bug")
+    expect(parseArgs(["labels", "remove", "--issue", "ENG-1", "--label", "Bug"], commandSpecs).flags.get("label")).toBe("Bug")
+    expect(parseArgs(["labels", "replace", "--issue", "ENG-1", "--labels-json", "[]"], commandSpecs).flags.get("labels-json")).toBe("[]")
   })
 
   test("rejects unknown flags", () => {

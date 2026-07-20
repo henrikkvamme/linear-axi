@@ -17,6 +17,8 @@ import type {
   AssignIssueInput,
   AuthStatus,
   CloseIssueInput,
+  ChangeIssueStateInput,
+  ClearIssueFieldsInput,
   CommentSummary,
   CreateCommentInput,
   CreateIssueInput,
@@ -33,22 +35,29 @@ import type {
   ListIssuesInput,
   ListLabelsInput,
   ListRelationsInput,
+  ListWorkflowStatesInput,
   MutationResult,
   PageResult,
   RelationDirection,
   RelationSummary,
   RelationType,
+  RemoveRelationInput,
+  RelationRemovalSummary,
+  ReplaceLabelsInput,
+  SetIssueParentInput,
   TeamSummary,
   UnassignIssueInput,
   UpdateIssueDescriptionInput
 } from "./linear"
 import { decodeLocalCursorOffset, fetchAllPages, type ConnectionLike, type LocalCursorKind } from "./linear-pagination"
+import { makeOfficialMcpToolCaller } from "./official-mcp"
 import {
   completedStates,
   findIssueByUuid,
   findLabelByNameInScope,
   findLabelByUuid,
   findRelationByUuid,
+  lookupRelationByUuid,
   normalizeUuid,
   resolveAssignableUser,
   resolveIssue,
@@ -73,6 +82,7 @@ export const makeSdkLinearGateway = (
   credentials: Credentials | undefined,
   options: { readonly client?: LinearClient } = {}
 ): LinearGateway => {
+  const callOfficialTool = credentials ? makeOfficialMcpToolCaller(credentials) : undefined
   const getClient = (): Effect.Effect<LinearClient, AuthError> => {
     if (options.client) {
       return Effect.succeed(options.client)
@@ -109,6 +119,12 @@ export const makeSdkLinearGateway = (
     })
 
   return {
+    callOfficialTool: (name, args) => callOfficialTool
+      ? callOfficialTool(name, args)
+      : Effect.fail(new AuthError({
+          message: "Linear credentials are not configured",
+          help: "Run `linear-axi auth login` or set LINEAR_API_KEY or LINEAR_ACCESS_TOKEN."
+        })),
     authStatus: () =>
       credentials === undefined && !options.client
         ? Effect.succeed({ authenticated: false, method: "none" })
@@ -127,22 +143,107 @@ export const makeSdkLinearGateway = (
         return teams.nodes.map(teamSummary)
       }),
 
+    listWorkflowStates: (input) => call("workflow-states list", (client) => listWorkflowStates(client, input)),
+
     listIssues: (input) => call("issues list", (client) => listIssues(client, input)),
     viewIssue: (id) => call("issues view", async (client) => issueDetail(await resolveIssue(client, id))),
     createIssue: (input) => call("issues create", (client) => createIssue(client, input)),
     assignIssue: (input) => call("issues assign", (client) => assignIssue(client, input)),
     unassignIssue: (input) => call("issues unassign", (client) => unassignIssue(client, input)),
     closeIssue: (input) => call("issues close", (client) => closeIssue(client, input)),
+    changeIssueState: (input) => call("issues state", (client) => changeIssueState(client, input)),
+    setIssueParent: (input) => call("issues parent", (client) => setIssueParent(client, input)),
+    clearIssueFields: (input) => call("issues update clear", (client) => clearIssueFields(client, input)),
     updateIssueDescription: (input) => call("issues update", (client) => updateIssueDescription(client, input)),
     listLabels: (input) => call("labels list", (client) => listLabels(client, input)),
     createLabel: (input) => call("labels create", (client) => createLabel(client, input)),
     applyLabel: (input) => call("labels apply", (client) => applyLabel(client, input)),
+    removeLabel: (input) => call("labels remove", (client) => removeLabel(client, input)),
+    replaceLabels: (input) => call("labels replace", (client) => replaceLabels(client, input)),
     listRelations: (input) => call("relations list", (client) => listRelations(client, input)),
     createRelation: (input) => call("relations create", (client) => createRelation(client, input)),
+    removeRelation: (input) => call("relations remove", (client) => removeRelation(client, input)),
     listComments: (input) => call("comments list", (client) => listComments(client, input)),
     createComment: (input) => call("comments create", (client) => createComment(client, input)),
     frontier: (input) => call("wayfinder frontier", (client) => frontier(client, input.map, input.first, input.after))
   }
+}
+
+const listWorkflowStates = async (client: LinearClient, input: ListWorkflowStatesInput) => {
+  const team = await resolveTeam(client, input.team)
+  const states = await fetchAllPages(await client.workflowStates({
+    first: 50,
+    includeArchived: false,
+    filter: { team: { id: { eq: team.id } } }
+  }))
+  return states
+    .map((state) => ({
+      id: state.id,
+      name: state.name,
+      type: state.type,
+      color: state.color,
+      position: state.position,
+      teamId: team.id
+    }))
+    .sort((left, right) => left.position - right.position || compareText(left.id, right.id))
+}
+
+const changeIssueState = async (client: LinearClient, input: ChangeIssueStateInput): Promise<MutationResult<IssueSummary>> => {
+  const issue = await resolveIssue(client, input.id)
+  const target = await resolveWorkflowState(client, input.state, requireTeamId(issue))
+  const current = await issue.state
+  if (current && uuidEqual(current.id, target.id)) {
+    return unchanged(await issueSummary(issue), "already in the requested workflow state (no-op)")
+  }
+  const payload = await client.updateIssue(issue.id, { stateId: target.id })
+  await requirePayload(payload.success, payload.issue, "change the issue workflow state")
+  const verified = await resolveIssue(client, issue.id)
+  const verifiedState = await verified.state
+  if (!verifiedState || !uuidEqual(verifiedState.id, target.id)) {
+    throw conflict(`${issue.identifier} state transition could not be verified`, "Refetch the issue before retrying.")
+  }
+  return changed(await issueSummary(verified), "issue workflow state changed")
+}
+
+const setIssueParent = async (client: LinearClient, input: SetIssueParentInput): Promise<MutationResult<IssueSummary>> => {
+  const issue = await resolveIssue(client, input.id)
+  const parent = input.parent === null ? undefined : await resolveIssue(client, input.parent)
+  if (parent && uuidEqual(issue.id, parent.id)) {
+    throw conflict(`${issue.identifier} cannot be its own parent`, "Choose a different parent issue.")
+  }
+  if (parent && !uuidEqual(requireTeamId(issue), requireTeamId(parent))) {
+    throw conflict(`parent ${parent.identifier} belongs to another team`, "Choose a parent from the issue's team.")
+  }
+  const desiredParentId = parent?.id ?? null
+  if (nullableUuidEqual(issue.parentId ?? null, desiredParentId)) {
+    return unchanged(await issueSummary(issue), parent ? "requested parent already set (no-op)" : "parent already clear (no-op)")
+  }
+  const payload = await client.updateIssue(issue.id, { parentId: desiredParentId })
+  await requirePayload(payload.success, payload.issue, parent ? "set the issue parent" : "clear the issue parent")
+  const verified = await resolveIssue(client, issue.id)
+  if (!nullableUuidEqual(verified.parentId ?? null, desiredParentId)) {
+    throw conflict(`${issue.identifier} parent update could not be verified`, "Refetch the issue before retrying.")
+  }
+  return changed(await issueSummary(verified), parent ? "issue parent set" : "issue parent cleared")
+}
+
+const clearIssueFields = async (client: LinearClient, input: ClearIssueFieldsInput): Promise<MutationResult<IssueSummary>> => {
+  const issue = await resolveIssue(client, input.id)
+  const dueDateAlreadyClear = !input.dueDate || issue.dueDate === undefined || issue.dueDate === null
+  const milestoneAlreadyClear = !input.milestone || issue.projectMilestoneId === undefined || issue.projectMilestoneId === null
+  if (dueDateAlreadyClear && milestoneAlreadyClear) {
+    return unchanged(await issueSummary(issue), "requested issue fields already clear (no-op)")
+  }
+  const payload = await client.updateIssue(issue.id, {
+    ...(input.dueDate ? { dueDate: null } : {}),
+    ...(input.milestone ? { projectMilestoneId: null } : {})
+  })
+  await requirePayload(payload.success, payload.issue, "clear issue fields")
+  const verified = await resolveIssue(client, issue.id)
+  if ((input.dueDate && verified.dueDate != null) || (input.milestone && verified.projectMilestoneId != null)) {
+    throw conflict(`${issue.identifier} cleared fields could not be verified`, "Refetch the issue before retrying.")
+  }
+  return changed(await issueSummary(verified), "requested issue fields cleared")
 }
 
 const listIssues = async (client: LinearClient, input: ListIssuesInput): Promise<PageResult<IssueSummary>> => {
@@ -453,16 +554,35 @@ const createLabel = async (
   const callerId = input.id ? normalizeUuid(input.id) : undefined
   const team = input.team ? await resolveTeam(client, input.team) : undefined
   const teamId = team?.id ?? null
+  const parent = input.parent
+    ? (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.parent)
+        ? await findLabelByUuid(client, input.parent)
+        : await findLabelByNameInScope(client, input.parent, teamId))
+    : undefined
+  if (input.parent && !parent) {
+    throw new LinearDomainError({
+      message: `No label group matched ${input.parent}`,
+      help: "Run `linear-axi labels list` to find the exact group id or name."
+    })
+  }
+  if (parent && (!parent.isGroup || !labelBelongsToScope(parent, teamId))) {
+    throw conflict(
+      `label parent ${input.parent} is not a group in the requested scope`,
+      "Choose a group from the same workspace or team scope."
+    )
+  }
   const classify = async (label: IssueLabel): Promise<MutationResult<LabelSummary>> => {
-    requireOrdinaryLabel(label)
+    if (!input.isGroup) requireOrdinaryLabel(label)
     const summary = await labelSummary(label, team?.key)
     if (
       summary.name.toLowerCase() !== input.name.toLowerCase() ||
       summary.color.toLowerCase() !== input.color.toLowerCase() ||
-      summary.description !== (input.description ?? "")
+      summary.description !== (input.description ?? "") ||
+      summary.isGroup !== (input.isGroup ?? false) ||
+      (label.parentId ?? null) !== (parent?.id ?? null)
     ) {
       throw conflict(
-        `label ${summary.name} already exists with a different name, color, or description`,
+        `label ${summary.name} already exists with different requested properties`,
         "Choose a different name or make the requested properties match the existing label."
       )
     }
@@ -479,16 +599,11 @@ const createLabel = async (
         "Use a new caller-retained UUID or create the label in its existing scope."
       )
     }
-
-    if (idMatch) {
-      requireOrdinaryLabel(idMatch)
-    }
+    if (idMatch && !input.isGroup) requireOrdinaryLabel(idMatch)
 
     if (callerId && input.ifAbsent) {
       const nameMatch = await findLabelByNameInScope(client, input.name, teamId)
-      if (nameMatch) {
-        requireOrdinaryLabel(nameMatch)
-      }
+      if (nameMatch && !input.isGroup) requireOrdinaryLabel(nameMatch)
       if (!nameMatch && !idMatch) {
         return undefined
       }
@@ -534,7 +649,9 @@ const createLabel = async (
       color: input.color,
       description: input.description,
       teamId: team?.id,
-      id: callerId
+      id: callerId,
+      isGroup: input.isGroup,
+      parentId: parent?.id
     })
     const label = await requirePayload(payload.success, payload.issueLabel, "create the label")
     return changed(await labelSummary(label, team?.key), "label created")
@@ -573,6 +690,48 @@ const applyLabel = async (
     throw conflict(`${label.name} was not present after apply`, "Refetch the issue before retrying.")
   }
   return changed(await issueSummary(verified), "label applied")
+}
+
+const removeLabel = async (
+  client: LinearClient,
+  input: ApplyLabelInput
+): Promise<MutationResult<IssueSummary>> => {
+  const issue = await resolveIssue(client, input.issue)
+  const label = await resolveLabelForTeam(client, input.label, requireTeamId(issue))
+  requireOrdinaryLabel(label)
+  if (!issue.labelIds.some((id) => uuidEqual(id, label.id))) {
+    return unchanged(await issueSummary(issue), "label already absent (no-op)")
+  }
+  const payload = await client.issueRemoveLabel(issue.id, label.id)
+  await requirePayload(payload.success, payload.issue, "remove the label")
+  const verified = await resolveIssue(client, issue.id)
+  if (verified.labelIds.some((id) => uuidEqual(id, label.id))) {
+    throw conflict(`${label.name} remained present after removal`, "Refetch the issue before retrying.")
+  }
+  return changed(await issueSummary(verified), "label removed")
+}
+
+const replaceLabels = async (
+  client: LinearClient,
+  input: ReplaceLabelsInput
+): Promise<MutationResult<IssueSummary>> => {
+  const issue = await resolveIssue(client, input.issue)
+  const labels = await Promise.all(input.labels.map((selector) =>
+    resolveLabelForTeam(client, selector, requireTeamId(issue))))
+  labels.forEach(requireOrdinaryLabel)
+  const desiredIds = [...new Set(labels.map((label) => normalizeUuid(label.id)))].sort(compareText)
+  const currentIds = issue.labelIds.map(normalizeUuid).sort(compareText)
+  if (desiredIds.length === currentIds.length && desiredIds.every((id, index) => id === currentIds[index])) {
+    return unchanged(await issueSummary(issue), "labels already match requested replacement (no-op)")
+  }
+  const payload = await client.updateIssue(issue.id, { labelIds: desiredIds })
+  await requirePayload(payload.success, payload.issue, "replace the issue labels")
+  const verified = await resolveIssue(client, issue.id)
+  const verifiedIds = verified.labelIds.map(normalizeUuid).sort(compareText)
+  if (desiredIds.length !== verifiedIds.length || desiredIds.some((id, index) => id !== verifiedIds[index])) {
+    throw conflict(`${issue.identifier} labels could not be verified after replacement`, "Refetch the issue before retrying.")
+  }
+  return changed(await issueSummary(verified), "issue labels replaced")
 }
 
 const listRelations = async (
@@ -679,6 +838,49 @@ const createRelation = async (
     }
     throw cause
   }
+}
+
+const removeRelation = async (
+  client: LinearClient,
+  input: RemoveRelationInput
+): Promise<MutationResult<RelationRemovalSummary>> => {
+  let relation: IssueRelation | undefined
+  let desired: RelationRemovalSummary
+  if (input.id) {
+    relation = await lookupRelationByUuid(client, input.id)
+    desired = { id: input.id }
+  } else {
+    const source = await resolveIssue(client, input.issue!)
+    const target = await resolveIssue(client, input.relatedIssue!)
+    const type = input.type!
+    const relations = await fetchAllPages(await source.relations({ first: 100, includeArchived: true }))
+    const matches = relations.filter((candidate) => relationMatches(candidate, source.id, target.id, type))
+    if (matches.length > 1) {
+      throw conflict(
+        `Ambiguous directed relation; matched ${matches.map((candidate) => candidate.id).join(", ")}`,
+        "Retry with `relations remove --id <relation-id>`."
+      )
+    }
+    relation = matches[0]
+    desired = { id: relation?.id ?? null, type, sourceId: source.id, targetId: target.id }
+  }
+  if (!relation || relation.archivedAt) {
+    return unchanged(desired, "directed relation already absent (no-op)")
+  }
+  const payload = await client.deleteIssueRelation(relation.id)
+  if (!payload.success) {
+    throw conflict(`relation ${relation.id} was not removed`, "Refetch the relation before retrying.")
+  }
+  const verified = await lookupRelationByUuid(client, relation.id)
+  if (verified && !verified.archivedAt) {
+    throw conflict(`relation ${relation.id} remained active after removal`, "Refetch the relation before retrying.")
+  }
+  return changed({
+    id: relation.id,
+    type: relation.type as RelationType,
+    sourceId: relation.issueId,
+    targetId: relation.relatedIssueId
+  }, "directed relation removed")
 }
 
 const listComments = async (

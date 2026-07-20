@@ -15,20 +15,28 @@ export interface Credentials {
 export type GatewayError = AuthError | LinearApiError | LinearDomainError
 
 export interface LinearGateway {
+  callOfficialTool(name: string, args: Readonly<Record<string, unknown>>): Effect.Effect<unknown, GatewayError>
   authStatus(): Effect.Effect<AuthStatus, GatewayError>
   listTeams(limit: number): Effect.Effect<ReadonlyArray<TeamSummary>, GatewayError>
+  listWorkflowStates(input: ListWorkflowStatesInput): Effect.Effect<ReadonlyArray<WorkflowStateSummary>, GatewayError>
   listIssues(input: ListIssuesInput): Effect.Effect<PageResult<IssueSummary>, GatewayError>
   viewIssue(id: string): Effect.Effect<IssueDetail, GatewayError>
   createIssue(input: CreateIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
   assignIssue(input: AssignIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
   unassignIssue(input: UnassignIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
   closeIssue(input: CloseIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  changeIssueState(input: ChangeIssueStateInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  setIssueParent(input: SetIssueParentInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  clearIssueFields(input: ClearIssueFieldsInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
   updateIssueDescription(input: UpdateIssueDescriptionInput): Effect.Effect<MutationResult<IssueDetail>, GatewayError>
   listLabels(input: ListLabelsInput): Effect.Effect<PageResult<LabelSummary>, GatewayError>
   createLabel(input: CreateLabelInput): Effect.Effect<MutationResult<LabelSummary>, GatewayError>
   applyLabel(input: ApplyLabelInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  removeLabel(input: ApplyLabelInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  replaceLabels(input: ReplaceLabelsInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
   listRelations(input: ListRelationsInput): Effect.Effect<PageResult<RelationSummary>, GatewayError>
   createRelation(input: CreateRelationInput): Effect.Effect<MutationResult<RelationSummary>, GatewayError>
+  removeRelation(input: RemoveRelationInput): Effect.Effect<MutationResult<RelationRemovalSummary>, GatewayError>
   listComments(input: ListCommentsInput): Effect.Effect<PageResult<CommentSummary>, GatewayError>
   createComment(input: CreateCommentInput): Effect.Effect<MutationResult<CommentSummary>, GatewayError>
   frontier(input: FrontierInput): Effect.Effect<FrontierResult, GatewayError>
@@ -47,6 +55,15 @@ export interface TeamSummary {
   readonly id: string
   readonly key: string
   readonly name: string
+}
+
+export interface WorkflowStateSummary {
+  readonly id: string
+  readonly name: string
+  readonly type: string
+  readonly color: string
+  readonly position: number
+  readonly teamId: string
 }
 
 export interface LabelRef {
@@ -160,6 +177,26 @@ export interface CloseIssueInput {
   readonly state?: string
 }
 
+export interface ListWorkflowStatesInput {
+  readonly team: string
+}
+
+export interface ChangeIssueStateInput {
+  readonly id: string
+  readonly state: string
+}
+
+export interface SetIssueParentInput {
+  readonly id: string
+  readonly parent: string | null
+}
+
+export interface ClearIssueFieldsInput {
+  readonly id: string
+  readonly dueDate: boolean
+  readonly milestone: boolean
+}
+
 export interface UpdateIssueDescriptionInput {
   readonly id: string
   readonly description: string
@@ -185,11 +222,18 @@ export interface CreateLabelInput {
   readonly description?: string
   readonly id?: string
   readonly ifAbsent: boolean
+  readonly isGroup?: boolean
+  readonly parent?: string
 }
 
 export interface ApplyLabelInput {
   readonly issue: string
   readonly label: string
+}
+
+export interface ReplaceLabelsInput {
+  readonly issue: string
+  readonly labels: ReadonlyArray<string>
 }
 
 export type RelationType = "blocks" | "related" | "duplicate" | "similar"
@@ -208,6 +252,20 @@ export interface CreateRelationInput {
   readonly relatedIssue: string
   readonly type: RelationType
   readonly id?: string
+}
+
+export interface RemoveRelationInput {
+  readonly id?: string
+  readonly issue?: string
+  readonly relatedIssue?: string
+  readonly type?: RelationType
+}
+
+export interface RelationRemovalSummary {
+  readonly id: string | null
+  readonly type?: RelationType
+  readonly sourceId?: string
+  readonly targetId?: string
 }
 
 export interface ListCommentsInput {

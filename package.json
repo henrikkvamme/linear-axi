@@ -36,7 +36,9 @@
   },
   "scripts": {
     "build": "bun build --compile --no-compile-autoload-dotenv --outfile dist/linear-axi src/main.ts",
-    "check": "bun run typecheck && bun run test && bun run build",
+    "check": "bun run parity:check && bun run typecheck && bun run test && bun run build",
+    "parity:check": "bun scripts/check-parity.ts",
+    "parity:capture": "bun scripts/capture-official-mcp.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test ./test/*.test.ts"
   },

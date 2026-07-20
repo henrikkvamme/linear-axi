@@ -27,20 +27,77 @@ linear-axi issues create --team <key-or-id> --title "..." --description-file <pa
 linear-axi issues assign --id <issue-id-or-key> --assignee me
 linear-axi issues unassign --id <issue-id-or-key> --if-assignee me
 linear-axi issues close --id <issue-id-or-key>
+linear-axi workflow-states list --team <key-or-id>
+linear-axi issues state --id <issue> --state <id-or-unambiguous-name>
+linear-axi issues parent set --id <child> --parent <parent>
+linear-axi issues parent clear --id <child>
 linear-axi issues update --id <issue-id-or-key> --description-file <path> --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ>
+linear-axi issues update --id <issue> --priority 2 --due-date 2026-08-01 --project <project> --cycle <cycle>
 linear-axi labels list --workspace --name <exact-name>
 linear-axi labels list --team <key-or-id> --name <exact-name>
 linear-axi labels list --issue <issue-id-or-key> --include-archived --fields id,name,archivedAt
 linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
-linear-axi labels apply --issue <issue> --label <label>
+linear-axi labels add --issue <issue> --label <label>
+linear-axi labels remove --issue <issue> --label <label>
+linear-axi labels replace --issue <issue> --labels-json '["Bug","Urgent"]'
 linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue>
 linear-axi relations list --issue <blocked-issue> --blocked-by
 linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks
 linear-axi relations list --issue <issue> --type blocks --direction both
+linear-axi relations remove --issue <blocked> --blocked-by <blocker>
 linear-axi comments list --issue <issue> --limit 50 --full
 linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
 linear-axi wayfinder frontier --map <map-issue> --first 20
+linear-axi teams search --query <name>
+linear-axi teams view --query <id-key-or-name>
+linear-axi users list --query <name-or-email>
+linear-axi users view --query <id-name-or-email>
+linear-axi issues search --team <team> --query <text>
+linear-axi issues inspect --id <issue> --relations --full
+linear-axi comments search --project-id <project-id>
+linear-axi cycles list --team-id <team-id> --type current
+linear-axi documents list --query <text>
+linear-axi documents view --id <id-or-slug> --full
+linear-axi documents update --id <document-id> --title "New title"
+linear-axi projects list --team <team>
+linear-axi projects view --query <id-name-or-slug> --full
+linear-axi projects update --id <project-id> --state <state>
+linear-axi project-labels list --name <name>
+linear-axi milestones list --project <project>
+linear-axi milestones view --project <project> --query <id-or-name>
+linear-axi milestones update --project <project> --id <milestone-id> --target-date YYYY-MM-DD
+linear-axi release-pipelines list --team <team>
+linear-axi releases list --pipeline <pipeline>
+linear-axi releases view --id <id-or-slug>
+linear-axi releases update --id <release-id> --stage <stage>
+linear-axi release-notes list --pipeline <pipeline>
+linear-axi release-notes view --id <id-or-slug> --full
+linear-axi release-notes update --id <note-id> --title "New title"
+linear-axi diffs list --repo <repository>
+linear-axi diffs view --id <url-or-id> --full
+linear-axi diffs threads --id <url-or-id>
+linear-axi status-updates list --type project --project <project>
+linear-axi status-updates view --type project --id <update-id>
+linear-axi status-updates update --type project --id <update-id> --health onTrack
+linear-axi agent-skills list
+linear-axi agent-skills view --id <skill-id> --full
+linear-axi docs search --query <question>
 ```
+
+Official MCP intent mapping:
+
+- Find richer issues or relations: `issues search`, then `issues inspect --relations --full`.
+- Find or change workflow: `workflow-states list`, then `issues state`.
+- Manage labels safely: `labels list`, then `labels add`, `labels remove`, or explicit `labels replace`.
+- Manage hierarchy and dependencies: `issues parent set|clear`, `issues list --parent`, and `relations create|list|remove` with `--blocked-by`.
+- Resolve members: `users list|view`; assignment accepts `me`, id, email, name, or display name and rejects ambiguous matches.
+- Inspect product work: `projects list|view`, `milestones list|view`, `documents list|view`, `cycles list`, and `project-labels list`.
+- Update existing product objects: `projects update`, `milestones update`, `documents update`, `status-updates update`, `releases update`, and `release-notes update`.
+- Inspect releases and engineering context: `release-pipelines list`, `releases list|view`, `release-notes list|view`, and `diffs list|view|threads`.
+- Inspect comments on any official parent: `comments search`; use `comments list` for the richer native issue view.
+- Discover official guidance: `agent-skills list|view` and `docs search`.
+
+The checked `docs/linear-mcp-parity.json` records all 47 observed official tools and every intentional `needs-decision`. Do not improvise raw GraphQL or retry an unavailable create, delete, or binary operation. Ask for the scoped decision named in that manifest.
 
 ## Rules
 
@@ -54,7 +111,7 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
    Completion criterion: start `linear-axi auth login --notify` in a persistent exec session, copy the exact authorize URL from stderr, use `chrome-devtools-axi open <authorize-url>`, and verify the snapshot shows `axi-cli is requesting access`. Hand the browser to the user so they can select the intended workspace and click Authorize. The live WebRTC URL mirrors the shared browser's current tab and does not navigate by itself.
 
 4. Treat every mutating command as a live mutation.
-   Completion criterion: run issue create, assign, unassign, close, or description update; label create or apply; relation create; and comment create only after explicit user intent identifies the target and desired change. Auth status, team, issue, label, relation, and comment reads plus Wayfinder frontier remain read-only.
+   Completion criterion: run any `create`, `update`, `assign`, `unassign`, `state`, `close`, `set`, `clear`, `add`, `remove`, or `replace` command only after explicit user intent identifies the target and desired change. Auth status and `list`, `view`, `inspect`, `search`, `threads`, and Wayfinder frontier commands remain read-only.
 
 5. Interpret state filters and resolve ambiguity explicitly.
    Completion criterion: treat completed, canceled, and duplicate as the three terminal workflow types. `issues list --state open` excludes all three, while `--state closed` includes all three. Treat missing, archived, and ambiguous identity errors as authoritative. Never pick the first team, issue, label, workflow state, or user candidate. Retry with the intended UUID. Assign only to an active, unarchived, assignable user. Issue summaries retain attached archived label names, so use `labels list --issue <issue> --include-archived --fields id,name,archivedAt` when label status matters.
@@ -83,13 +140,16 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
 13. Reuse caller-retained mutation UUIDs safely.
     Completion criterion: pass a UUID v4 with `--id` when issue, label, relation, or comment creation must be retryable. Reuse it only for the same intended content and scope. Rich-text comparisons tolerate normalized newlines and Linear's angle-bracket form for HTTP(S) Markdown links. Treat `changed: false` as a successful no-op and any UUID/content conflict as a stop condition.
 
-14. Follow every list cursor exactly.
+14. Use explicit set and clear semantics.
+    Completion criterion: never encode clearing as an empty selector. Use the matching `--clear-*` flag and never combine it with its set flag. Use `labels add` or `labels remove` when unrelated labels must survive; `labels replace` deliberately removes labels omitted from its JSON array.
+
+15. Follow every list cursor exactly.
     Completion criterion: for issue, label, relation, and comment lists, replay the same filters with the returned `page.endCursor` as `--after`. For Wayfinder frontier, use `pageInfo.endCursor`. Never construct or edit a cursor. Relation pages and issue-scoped exact-name label pages are current-state projections, so restart without `--after` when current membership matters.
 
-15. Validate the Wayfinder projection before claiming.
+16. Validate the Wayfinder projection before claiming.
     Completion criterion: require exactly one active production `wayfinder:map` label, or for isolated verification one `WF-VERIFY-<run>:map` label whose type labels use the same prefix. Before candidate loading, require all four active, ordinary, non-group labels to resolve uniquely among workspace and map-team labels, even when the map has no candidates: `<prefix>:research`, `<prefix>:prototype`, `<prefix>:grilling`, and `<prefix>:task`. Then require exactly one of those labels on every direct open, unblocked, unassigned child. Treat any projection error as a metadata repair task, not as an empty frontier.
 
-16. Treat frontier pages as current-state projections.
+17. Treat frontier pages as current-state projections.
     Completion criterion: restart without `--after` when current membership or ordering matters. Frontier pagination does not provide snapshot isolation.
 
 ## Updating The CLI

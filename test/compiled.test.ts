@@ -41,13 +41,24 @@ test("standalone binary runs without a source checkout", () => {
       ["issues", "unassign"],
       ["issues", "close"],
       ["issues", "update"],
+      ["issues", "state"],
+      ["issues", "parent", "set"],
+      ["workflow-states", "list"],
       ["labels", "list"],
       ["labels", "create"],
       ["labels", "apply"],
+      ["labels", "remove"],
+      ["labels", "replace"],
       ["relations", "list"],
       ["relations", "create"],
+      ["relations", "remove"],
       ["comments", "list"],
       ["comments", "create"],
+      ["projects", "list"],
+      ["projects", "update"],
+      ["documents", "update"],
+      ["users", "list"],
+      ["status-updates", "update"],
       ["wayfinder", "frontier"]
     ]) {
       const helpResult = Bun.spawnSync({
@@ -68,6 +79,17 @@ test("standalone binary runs without a source checkout", () => {
         expect(helpStdout).toContain("--issue <blocked-issue> --blocked-by")
       }
     }
+
+    const rejected = Bun.spawnSync({
+      cmd: [binary, "projects", "update", "--bogus"],
+      cwd: root,
+      env: { HOME: home, PATH: process.env.PATH ?? "" },
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    expect(rejected.exitCode).toBe(2)
+    expect(new TextDecoder().decode(rejected.stderr)).toBe("")
+    expect(new TextDecoder().decode(rejected.stdout)).toContain("unknown flag --bogus")
 
     const homeResult = Bun.spawnSync({
       cmd: [binary],
