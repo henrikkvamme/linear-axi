@@ -7,6 +7,13 @@ export const OFFICIAL_MCP_PROTOCOL_VERSION = "2025-03-26"
 
 interface OfficialMcpOptions {
   readonly fetcher?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+  readonly requestTimeoutMs?: number
+}
+
+interface PendingResponse {
+  readonly response: Response
+  readonly controller: AbortController
+  readonly complete: () => void
 }
 
 interface OfficialMcpClient {
@@ -38,6 +45,7 @@ export const makeOfficialMcpClient = (
   options: OfficialMcpOptions = {}
 ): OfficialMcpClient => {
   const fetcher = options.fetcher ?? fetch
+  const requestTimeoutMs = options.requestTimeoutMs ?? 30_000
   let requestId = 0
   let initialized = false
   let sessionId: string | undefined
@@ -56,45 +64,49 @@ export const makeOfficialMcpClient = (
     if (sessionId !== undefined) headers["mcp-session-id"] = sessionId
     if (protocolVersion !== undefined) headers["mcp-protocol-version"] = protocolVersion
     const controller = new AbortController()
+    const timeout = setTimeout(() => {
+      controller.abort(new Error(`request timed out after ${requestTimeoutMs}ms`))
+    }, requestTimeoutMs)
+    const complete = () => {
+      clearTimeout(timeout)
+      if (!controller.signal.aborted) controller.abort()
+    }
     const response = yield* Effect.tryPromise({
-      try: () => fetcher(OFFICIAL_MCP_URL, {
+      try: () => abortable(fetcher(OFFICIAL_MCP_URL, {
         method: "POST",
         headers,
         body: JSON.stringify(message),
         signal: controller.signal
-      }),
+      }), controller.signal),
       catch: (cause) => {
-        controller.abort()
+        complete()
         return fail(operation, readableCause(cause))
       }
     })
-    return { response, controller }
+    return { response, controller, complete }
   })
 
   const responseMessage = (
     operation: string,
-    response: Response,
-    id: JsonRpcId,
-    controller: AbortController
-  ): Effect.Effect<Schema.Schema.Type<typeof RpcResponseSchema>, LinearApiError> => {
-    if (!response.ok) {
-      void response.body?.cancel().catch(() => undefined)
-      controller.abort()
-      return Effect.fail(fail(operation, `HTTP ${response.status}`))
-    }
-    return Effect.tryPromise({
-      try: () => readStreamableHttpMessage(response, id, controller),
-      catch: (cause) => fail(operation, readableCause(cause))
-    }).pipe(
-      Effect.flatMap((value) => Effect.try({
-        try: () => decodeRpcResponse(value),
-        catch: (cause) => fail(operation, readableCause(cause))
-      })),
-      Effect.flatMap((message) => message.error
-        ? Effect.fail(fail(operation, message.error.message ?? "request failed"))
-        : Effect.succeed(message))
-    )
-  }
+    pending: PendingResponse,
+    id: JsonRpcId
+  ): Effect.Effect<Schema.Schema.Type<typeof RpcResponseSchema>, LinearApiError> => Effect.tryPromise({
+    try: async () => {
+      try {
+        if (!pending.response.ok) {
+          void pending.response.body?.cancel().catch(() => undefined)
+          throw new Error(`HTTP ${pending.response.status}`)
+        }
+        const value = await readStreamableHttpMessage(pending.response, id, pending.controller.signal)
+        const message = decodeRpcResponse(value)
+        if (message.error) throw new Error(message.error.message ?? "request failed")
+        return message
+      } finally {
+        pending.complete()
+      }
+    },
+    catch: (cause) => fail(operation, readableCause(cause))
+  })
 
   const initialize = Effect.fn("OfficialMcp.initialize")(function*() {
     sessionId = undefined
@@ -110,7 +122,7 @@ export const makeOfficialMcpClient = (
         clientInfo: { name: "linear-axi", version: "0.1.0" }
       }
     })
-    const message = yield* responseMessage("initialize", initializedResponse.response, id, initializedResponse.controller)
+    const message = yield* responseMessage("initialize", initializedResponse, id)
     if (!Predicate.isObject(message.result) || message.result.protocolVersion !== OFFICIAL_MCP_PROTOCOL_VERSION) {
       return yield* Effect.fail(fail("initialize", "server negotiated an unsupported protocol version"))
     }
@@ -121,7 +133,7 @@ export const makeOfficialMcpClient = (
       method: "notifications/initialized"
     })
     void notification.response.body?.cancel().catch(() => undefined)
-    notification.controller.abort()
+    notification.complete()
     if (!notification.response.ok) {
       return yield* Effect.fail(fail("notifications/initialized", `HTTP ${notification.response.status}`))
     }
@@ -141,13 +153,13 @@ export const makeOfficialMcpClient = (
     let result = yield* post(method, { jsonrpc: "2.0", id, method, params })
     if (result.response.status === 404 && sessionId !== undefined) {
       void result.response.body?.cancel().catch(() => undefined)
-      result.controller.abort()
+      result.complete()
       initialized = false
       yield* ensureInitialized()
       id = ++requestId
       result = yield* post(method, { jsonrpc: "2.0", id, method, params })
     }
-    const message = yield* responseMessage(method, result.response, id, result.controller)
+    const message = yield* responseMessage(method, result, id)
     return message.result
   })
 
@@ -204,45 +216,66 @@ export const decodeStreamableHttpMessage = (
 const readStreamableHttpMessage = async (
   response: Response,
   requestId: JsonRpcId,
-  controller: AbortController
+  signal: AbortSignal
 ): Promise<unknown> => {
   const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase()
   if (mediaType !== "text/event-stream") {
-    try {
-      return decodeStreamableHttpMessage(await response.text(), response.headers.get("content-type"), requestId)
-    } finally {
-      controller.abort()
-    }
+    return decodeStreamableHttpMessage(
+      await abortable(response.text(), signal),
+      response.headers.get("content-type"),
+      requestId
+    )
   }
-  if (!response.body) {
-    controller.abort()
-    throw new Error("response contained no MCP data message")
-  }
+  if (!response.body) throw new Error("response contained no MCP data message")
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ""
   try {
     while (true) {
-      const chunk = await reader.read()
+      const chunk = await abortable(reader.read(), signal)
       buffer += decoder.decode(chunk.value, { stream: !chunk.done })
       const parsed = takeSseEvents(buffer, requestId)
       buffer = parsed.remaining
       if (parsed.message !== undefined) {
-        controller.abort()
-        void reader.cancel()
+        cancelReader(reader)
         return parsed.message
       }
       if (chunk.done) {
-        const final = decodeSseMessage(buffer, requestId)
-        controller.abort()
-        return final
+        reader.releaseLock()
+        return decodeSseMessage(buffer, requestId)
       }
     }
   } catch (cause) {
-    controller.abort()
+    cancelReader(reader)
     throw cause
   }
 }
+
+const cancelReader = (reader: ReadableStreamDefaultReader<Uint8Array>): void => {
+  void reader.cancel().catch(() => undefined).finally(() => reader.releaseLock()).catch(() => undefined)
+}
+
+const abortable = <Value>(promise: Promise<Value>, signal: AbortSignal): Promise<Value> => {
+  if (signal.aborted) return Promise.reject(abortCause(signal))
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (continuation: () => void) => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener("abort", onAbort)
+      continuation()
+    }
+    const onAbort = () => finish(() => reject(abortCause(signal)))
+    signal.addEventListener("abort", onAbort, { once: true })
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (cause) => finish(() => reject(cause))
+    )
+  })
+}
+
+const abortCause = (signal: AbortSignal): Error =>
+  signal.reason instanceof Error ? signal.reason : new Error("request aborted")
 
 const takeSseEvents = (
   body: string,

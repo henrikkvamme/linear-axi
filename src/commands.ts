@@ -767,7 +767,7 @@ const officialCollectionAbsent = (current: unknown, desired: unknown): boolean =
     desired.every((value) => !references.some((values) => values.some((reference) => officialTextEqual(reference, String(value)))))
 }
 const officialCollectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
-  if (!Array.isArray(desired)) return false
+  if (!Array.isArray(current) || !Array.isArray(desired)) return false
   const remaining = officialCollectionReferences(current).map((references) => [...references])
   for (const value of desired) {
     const index = remaining.findIndex((references) => references.some((reference) => officialTextEqual(reference, String(value))))

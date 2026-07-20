@@ -166,6 +166,16 @@ describe("runCommand", () => {
     )))
     expect(paginationError._tag).toBe("LinearDomainError")
     expect(paginationError.message).toContain("hasNextPage")
+
+    for (const cursor of ["", "   "]) {
+      const cursorError = await Effect.runPromise(Effect.flip(runCommand(
+        parseArgs(["users", "list"], commandSpecs),
+        fakeGateway({ callOfficialTool: () => Effect.succeed({ users: [], hasNextPage: true, cursor }) }),
+        "/repo/src/main.ts"
+      )))
+      expect(cursorError._tag).toBe("LinearDomainError")
+      expect(cursorError.message).toContain("non-blank cursor")
+    }
   })
 
   test("official mutation preflights reject empty and mismatched entities", async () => {
@@ -280,6 +290,24 @@ describe("runCommand", () => {
 
     expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
     expect(saves).toBe(0)
+  })
+
+  test("official exact collection verification requires an explicit array readback", async () => {
+    for (const project of [{ id: "project-id" }, { id: "project-id", teams: null }]) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "projects", "update", "--id", "project-id", "--teams-json", "[]"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "save_project") saves += 1
+          return Effect.succeed(project)
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(saves).toBe(1)
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("could not be verified")
+    }
   })
 
   test("official removal verification requires an explicit valid collection readback", async () => {
@@ -980,6 +1008,22 @@ describe("runCommand", () => {
       { name: "get_issue", args: { id: "eng-123", includeReleases: true, includeRelations: true } }
     ])
     expect(output).toMatchObject({ changed: true, result: "requested issue properties saved and verified" })
+  })
+
+  test("issue exact collection verification requires an explicit array readback", async () => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "update", "--id", "ENG-123", "--set-releases-json", "[]"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_issue") saves += 1
+        return Effect.succeed({ id: "issue-id", identifier: "ENG-123", teamId: "team-id" })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(saves).toBe(1)
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("could not be verified")
   })
 
   test("issue removals require explicit association and duplicate readbacks", async () => {

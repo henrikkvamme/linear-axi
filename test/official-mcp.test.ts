@@ -161,6 +161,40 @@ describe("official Linear MCP tool boundary", () => {
     expect((requests.at(-1)!.request.params as { arguments: unknown }).arguments).toEqual({ query: "Two" })
   })
 
+  test("times out when fetch remains silent", async () => {
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, {
+      fetcher: () => new Promise<Response>(() => undefined),
+      requestTimeoutMs: 25
+    })
+
+    const error = await Effect.runPromise(Effect.flip(call("get_project", { query: "Roadmap" })))
+
+    expect(error._tag).toBe("LinearApiError")
+    expect(error.message).toContain("request timed out after 25ms")
+    expect(error.help).toBe("Check Linear access and retry the same command.")
+  }, 1_000)
+
+  test("times out and cancels an SSE stream with no matching response", async () => {
+    let canceled = false
+    const transport = initializedFetcher(() => new Response(new ReadableStream({
+      start() {},
+      cancel() {
+        canceled = true
+        return new Promise<void>(() => undefined)
+      }
+    }), { status: 200, headers: { "content-type": "text/event-stream" } }))
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, {
+      fetcher: transport.fetcher,
+      requestTimeoutMs: 25
+    })
+
+    const error = await Effect.runPromise(Effect.flip(call("get_project", { query: "Roadmap" })))
+
+    expect(error._tag).toBe("LinearApiError")
+    expect(error.message).toContain("request timed out after 25ms")
+    expect(canceled).toBe(true)
+  }, 1_000)
+
   test("translates tool and malformed response errors without echoing credentials", async () => {
     const transport = initializedFetcher((request) => new Response(
       `event: message\ndata: ${JSON.stringify({ result: { content: [{ type: "text", text: "permission denied for never-print-me" }], isError: true }, jsonrpc: "2.0", id: request.id })}\n`,

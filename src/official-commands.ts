@@ -187,8 +187,8 @@ const renderResult = (
     if (typeof result.hasNextPage !== "boolean") {
       return shapeDrift(entry, "expected hasNextPage to be a boolean")
     }
-    if (result.hasNextPage === true && typeof result.cursor !== "string") {
-      return shapeDrift(entry, "expected a cursor when hasNextPage is true")
+    if (result.hasNextPage === true && (typeof result.cursor !== "string" || result.cursor.trim().length === 0)) {
+      return shapeDrift(entry, "expected a non-blank cursor when hasNextPage is true")
     }
     const rows: ReadonlyArray<unknown> = candidateRows
     if (rows.some((row) => !Predicate.isObject(row))) return shapeDrift(entry, `expected every ${entry.listKey} row to be an object`)
@@ -325,7 +325,7 @@ const collectionAbsent = (current: unknown, desired: unknown): boolean => {
     desired.every((value) => !references.some((values) => values.some((reference) => referenceTextEqual(reference, String(value)))))
 }
 const collectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
-  if (!Array.isArray(desired)) return false
+  if (!Array.isArray(current) || !Array.isArray(desired)) return false
   const remaining = collectionReferences(current).map((references) => [...references])
   for (const value of desired) {
     const index = remaining.findIndex((references) => references.some((reference) => referenceTextEqual(reference, String(value))))
