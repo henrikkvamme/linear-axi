@@ -21,7 +21,7 @@ export const ISSUE_FIELDS = [
   "id", "identifier", "title", "state", "assignee", "parent", "labels", "updatedAt", "url", "subIssueSortOrder"
 ] as const
 export const DEFAULT_ISSUE_FIELDS: ReadonlyArray<string> = ["id", "identifier", "title", "state"]
-export const LABEL_FIELDS = ["id", "name", "scope", "color", "description", "isGroup", "archivedAt"] as const
+export const LABEL_FIELDS = ["id", "name", "scope", "color", "description", "isGroup", "parentId", "archivedAt"] as const
 export const DEFAULT_LABEL_FIELDS: ReadonlyArray<string> = ["id", "name", "scope"]
 
 const isFlag = (value: string): boolean => value.startsWith("--")

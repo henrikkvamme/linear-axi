@@ -286,7 +286,7 @@ Options:
   --include-archived
   --after <cursor>
   --limit <1-100>
-  --fields <id,name,scope,color,description,isGroup,archivedAt>
+  --fields <id,name,scope,color,description,isGroup,parentId,archivedAt>
 Example:
   linear-axi labels list --team ENG --name wayfinder:task
   linear-axi labels list --workspace --include-archived --fields id,name,archivedAt

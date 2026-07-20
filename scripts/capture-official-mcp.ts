@@ -22,7 +22,10 @@ const main = async (): Promise<void> => {
     throw new Error("No local Linear credential is available for read-only MCP schema discovery")
   }
 
-  const tools = await Effect.runPromise(collectOfficialMcpTools(makeOfficialMcpClient(credentials)))
+  const client = makeOfficialMcpClient(credentials)
+  const tools = await Effect.runPromise(collectOfficialMcpTools(client).pipe(
+    Effect.ensuring(client.close())
+  ))
   if (tools.length === 0) throw new Error("Official Linear MCP tools/list returned no tools")
   const output = {
     generated: true,

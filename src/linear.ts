@@ -15,6 +15,7 @@ export interface Credentials {
 export type GatewayError = AuthError | LinearApiError | LinearDomainError
 
 export interface LinearGateway {
+  close(): Effect.Effect<void>
   callOfficialTool(name: string, args: Readonly<Record<string, unknown>>): Effect.Effect<unknown, GatewayError>
   authStatus(): Effect.Effect<AuthStatus, GatewayError>
   listTeams(limit: number): Effect.Effect<ReadonlyArray<TeamSummary>, GatewayError>

@@ -429,6 +429,25 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(result.changed).toBe(true)
   })
 
+  test("indeterminate due date and milestone clears require full issue inspection", async () => {
+    const before = issue({ dueDate: "2026-08-01", projectMilestoneId: "milestone-id" })
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([before], {
+        updateIssue: async () => { throw new Error("connection reset") }
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.clearIssueFields({
+      id: "BEN-1",
+      dueDate: true,
+      milestone: true
+    })))
+
+    expect(error.message).toContain("outcome is unknown")
+    expect(error.help).toContain("linear-axi issues inspect --id BEN-1 --full")
+    expect(error.help).not.toContain("issues view")
+  })
+
   test("new issue mutations reconcile desired state after indeterminate SDK failures", async () => {
     const targetState = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "In Progress", type: "started", position: 1 }
     const beforeState = issue()
@@ -1328,6 +1347,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(reads).toBe(2)
     expect(error.message).toContain("mutation outcome is unknown")
     expect(error.help).toContain(`linear-axi labels list --team 'BEN' --name '${created.name}'`)
+    expect(error.help).toContain("--fields id,name,scope,color,description,isGroup,parentId,archivedAt")
     expect(error.help).not.toContain("retry")
   })
 

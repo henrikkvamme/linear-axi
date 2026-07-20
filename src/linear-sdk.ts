@@ -124,6 +124,7 @@ export const makeSdkLinearGateway = (
     })
 
   return {
+    close: () => callOfficialTool?.close() ?? Effect.void,
     callOfficialTool: (name, args) => callOfficialTool
       ? callOfficialTool(name, args)
       : Effect.fail(new AuthError({
@@ -270,7 +271,8 @@ const clearIssueFields = async (client: LinearClient, input: ClearIssueFieldsInp
     },
     (candidate) => (!input.dueDate || candidate.dueDate == null) &&
       (!input.milestone || candidate.projectMilestoneId == null),
-    "requested issue fields cleared"
+    "requested issue fields cleared",
+    `linear-axi issues inspect --id ${issue.identifier} --full`
   )
 }
 
@@ -1228,7 +1230,7 @@ const indeterminateLabelCreation = (
   const scope = input.workspace
     ? "--workspace"
     : `--team ${shellQuote(teamKey ?? input.team ?? "")}`
-  const inspection = `linear-axi labels list ${scope} --name ${shellQuote(input.name)} --include-archived --fields id,name,scope,color,description,isGroup,archivedAt`
+  const inspection = `linear-axi labels list ${scope} --name ${shellQuote(input.name)} --include-archived --fields id,name,scope,color,description,isGroup,parentId,archivedAt`
   return new LinearApiError({
     message: `label ${input.name} creation could not be verified after dispatch; mutation outcome is unknown`,
     help: `Run \`${inspection}\` to inspect the requested scope and name. Do not repeat \`linear-axi labels create\` until the outcome is known.`
@@ -1243,7 +1245,8 @@ const executeVerifiedIssueMutation = async (
   operation: string,
   mutate: () => Promise<IssueMutationOutcome>,
   desiredState: (candidate: Issue) => boolean | Promise<boolean>,
-  result: string
+  result: string,
+  inspection = `linear-axi issues view --id ${issue.identifier} --full`
 ): Promise<MutationResult<IssueSummary>> => {
   let mutationFailed = false
   let mutationCause: unknown
@@ -1271,7 +1274,7 @@ const executeVerifiedIssueMutation = async (
       ? unchanged(summary, `requested ${operation} verified after an indeterminate response`)
       : changed(summary, result)
   } catch (cause) {
-    throw indeterminateIssueMutation(issue, operation, outcomeUnknown ? unknownCause : cause, outcomeUnknown)
+    throw indeterminateIssueMutation(issue, operation, outcomeUnknown ? unknownCause : cause, outcomeUnknown, inspection)
   }
 }
 
@@ -1279,12 +1282,13 @@ const indeterminateIssueMutation = (
   issue: Issue,
   operation: string,
   cause: unknown,
-  mutationFailed: boolean
+  mutationFailed: boolean,
+  inspection: string
 ): LinearApiError => new LinearApiError({
   message: mutationFailed
     ? `${issue.identifier} ${operation} failed after dispatch (${readableError(cause)}); mutation outcome is unknown`
     : `${issue.identifier} ${operation} could not be verified after dispatch (${readableError(cause)}); current outcome is uncertain`,
-  help: `Run \`linear-axi issues view --id ${issue.identifier} --full\` to inspect the current issue. Do not repeat the mutation until the outcome is known.`
+  help: `Run \`${inspection}\` to inspect the current issue. Do not repeat the mutation until the outcome is known.`
 })
 
 const executeVerifiedRelationRemoval = async (

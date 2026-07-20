@@ -17,11 +17,12 @@ interface PendingResponse {
   readonly complete: () => void
 }
 
-interface OfficialMcpClient {
+export interface OfficialMcpClient {
   readonly request: (
     method: string,
     params: Readonly<Record<string, unknown>>
   ) => Effect.Effect<unknown, GatewayError>
+  readonly close: () => Effect.Effect<void>
 }
 
 type JsonRpcId = string | number
@@ -177,12 +178,12 @@ export const makeOfficialMcpClient = (
         clientInfo: { name: "linear-axi", version: "0.1.0" }
       }
     })
+    sessionId = initializedResponse.response.headers.get("mcp-session-id") ?? undefined
     const message = yield* responseMessage("initialize", initializedResponse, id)
     if (!Predicate.isObject(message.result) || message.result.protocolVersion !== OFFICIAL_MCP_PROTOCOL_VERSION) {
       return yield* Effect.fail(fail("initialize", "server negotiated an unsupported protocol version", "response-received", false))
     }
     protocolVersion = OFFICIAL_MCP_PROTOCOL_VERSION
-    sessionId = initializedResponse.response.headers.get("mcp-session-id") ?? undefined
     const notification = yield* post("notifications/initialized", {
       jsonrpc: "2.0",
       method: "notifications/initialized"
@@ -197,6 +198,42 @@ export const makeOfficialMcpClient = (
 
   const ensureInitialized = Effect.fn("OfficialMcp.ensureInitialized")(function*() {
     if (!initialized) yield* initialize()
+  })
+
+  const close = Effect.fn("OfficialMcp.close")(function*() {
+    const closingSessionId = sessionId
+    const closingProtocolVersion = protocolVersion
+    initialized = false
+    sessionId = undefined
+    protocolVersion = undefined
+    if (closingSessionId === undefined) return
+
+    const controller = new AbortController()
+    const timeout = setTimeout(() => {
+      controller.abort(new Error(`request timed out after ${requestTimeoutMs}ms`))
+    }, requestTimeoutMs)
+    yield* Effect.tryPromise({
+      try: async () => {
+        try {
+          const headers: Record<string, string> = {
+            authorization: `Bearer ${credentials.value}`,
+            accept: "application/json, text/event-stream",
+            "mcp-session-id": closingSessionId
+          }
+          if (closingProtocolVersion !== undefined) headers["mcp-protocol-version"] = closingProtocolVersion
+          const response = await abortable(fetcher(OFFICIAL_MCP_URL, {
+            method: "DELETE",
+            headers,
+            signal: controller.signal
+          }), controller.signal)
+          if (response.body) await abortable(response.body.cancel(), controller.signal)
+        } finally {
+          clearTimeout(timeout)
+          if (!controller.signal.aborted) controller.abort()
+        }
+      },
+      catch: () => undefined
+    }).pipe(Effect.catch(() => Effect.void))
   })
 
   const request = Effect.fn("OfficialMcp.request")(function*(
@@ -218,11 +255,11 @@ export const makeOfficialMcpClient = (
     return message.result
   })
 
-  return { request }
+  return { request, close }
 }
 
 export const collectOfficialMcpTools = Effect.fn("OfficialMcp.collectTools")(function*(
-  client: OfficialMcpClient,
+  client: Pick<OfficialMcpClient, "request">,
   maxPages = 100
 ) {
   const tools: Array<Record<string, unknown>> = []
@@ -254,7 +291,7 @@ export const makeOfficialMcpToolCaller = (
   const client = makeOfficialMcpClient(credentials, options)
   const fail = (tool: string, message: string) => apiError(tool, message.replaceAll(credentials.value, "[REDACTED]"))
 
-  return Effect.fn("OfficialMcp.callTool")(function*(
+  const callTool = Effect.fn("OfficialMcp.callTool")(function*(
     name: string,
     args: Readonly<Record<string, unknown>>
   ): Effect.fn.Return<unknown, GatewayError> {
@@ -300,6 +337,8 @@ export const makeOfficialMcpToolCaller = (
       return { text }
     }
   })
+
+  return Object.assign(callTool, { close: client.close })
 }
 
 export const decodeStreamableHttpMessage = (

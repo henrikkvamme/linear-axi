@@ -51,6 +51,7 @@ const baseRelation = {
 }
 
 const fakeGateway = (overrides: Partial<LinearGateway> = {}): LinearGateway => ({
+  close: () => Effect.void,
   callOfficialTool: () => Effect.succeed({}),
   authStatus: () => Effect.succeed({
     authenticated: true,
@@ -808,6 +809,32 @@ describe("runCommand", () => {
       { name: "get_release_note", args: { id: "note-id", includeReleases: true } }
     ])
     expect(output).toMatchObject({ changed: true, result: "official save_release_note update verified" })
+  })
+
+  test("ambiguous association updates expose affected fields in inspection commands", async () => {
+    const issueError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "update", "--id", "ENG-123", "--set-releases-json", "[]", "--clear-duplicate"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => Effect.succeed(name === "save_issue"
+        ? { id: "issue-id" }
+        : {
+            id: "issue-id",
+            identifier: "ENG-123",
+            teamId: "team-id",
+            releases: [{ id: "release-id" }],
+            relations: { duplicateOf: { id: "duplicate-id" } }
+          })
+    }), "/repo/src/main.ts")))
+    expect(issueError.help).toContain("linear-axi issues inspect --id 'ENG-123' --relations --releases --full")
+
+    const noteError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "release-notes", "update", "--id", "note-id", "--releases-json", "[\"release-1\"]"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => Effect.succeed(name === "save_release_note"
+        ? { id: "note-id" }
+        : { id: "note-id", releases: [] })
+    }), "/repo/src/main.ts")))
+    expect(noteError.help).toContain("linear-axi release-notes view --id 'note-id' --releases --full")
   })
 
   test("verification failures provide exact tool-specific inspection commands", async () => {
@@ -2085,15 +2112,15 @@ describe("runCommand", () => {
     const gateway = fakeGateway({
       listLabels: (input) => {
         expect(input.includeArchived).toBe(true)
-        expect(input.fields).toEqual(["id", "name", "color"])
+        expect(input.fields).toEqual(["id", "name", "color", "parentId"])
         return Effect.succeed(page([{ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, parentId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }]))
       }
     })
     const created = await run(["labels", "create", "--workspace", "--name", "wayfinder:task", "--color", "#123456", "--if-absent"])
-    const listed = await run(["labels", "list", "--workspace", "--include-archived", "--fields", "id,name,color"], gateway)
+    const listed = await run(["labels", "list", "--workspace", "--include-archived", "--fields", "id,name,color,parentId"], gateway)
     const applied = await run(["labels", "apply", "--issue", "ENG-123", "--label", "wayfinder:task"])
     expect(created.changed).toBe(true)
-    expect(listed.labels).toEqual([{ id: "label-id", name: "wayfinder:task", color: "#123456" }])
+    expect(listed.labels).toEqual([{ id: "label-id", name: "wayfinder:task", color: "#123456", parentId: null }])
     expect(applied).toMatchObject({ changed: false, result: "label already applied (no-op)" })
   })
 

@@ -239,6 +239,10 @@ describe("official Linear MCP tool boundary", () => {
       {
         args: { team: "team-id", title: "Launch" },
         inspection: "linear-axi issues search --team 'team-id' --query 'Launch' --full"
+      },
+      {
+        args: { id: "ENG-123", addReleases: ["release-id"], blocks: ["ENG-124"] },
+        inspection: "linear-axi issues inspect --id 'ENG-123' --relations --releases --full"
       }
     ] as const
 
@@ -376,6 +380,96 @@ describe("official Linear MCP tool boundary", () => {
     expect(error.message).toContain("invalid params")
     expect(error.message).not.toContain("outcome is unknown")
   })
+
+  test("finalizes sessions after successful and failed tool calls", async () => {
+    for (const toolFails of [false, true]) {
+      let deletes = 0
+      let deleteHeaders: Headers | undefined
+      const fetcher = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        if (init?.method === "DELETE") {
+          deletes += 1
+          deleteHeaders = new Headers(init.headers)
+          if (toolFails) throw new Error("cleanup failed")
+          return new Response(null, { status: 405 })
+        }
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>
+        if (request.method === "initialize") {
+          return Response.json({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2025-03-26", capabilities: {} } }, {
+            headers: { "mcp-session-id": "session-1" }
+          })
+        }
+        if (request.method === "notifications/initialized") return new Response(null, { status: 202 })
+        return toolFails
+          ? Response.json({ jsonrpc: "2.0", id: request.id, error: { message: "tool failed" } })
+          : Response.json({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: "{}" }] } })
+      }
+      const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher })
+
+      const exit = await Effect.runPromiseExit(call("get_project", { query: "Roadmap" }).pipe(
+        Effect.ensuring(call.close())
+      ))
+
+      expect(deletes).toBe(1)
+      expect(deleteHeaders?.get("mcp-session-id")).toBe("session-1")
+      expect(deleteHeaders?.get("mcp-protocol-version")).toBe("2025-03-26")
+      if (toolFails) {
+        expect(exit._tag).toBe("Failure")
+        expect(String(exit)).toContain("tool failed")
+      } else {
+        expect(exit._tag).toBe("Success")
+      }
+    }
+  })
+
+  test("finalizes a session allocated by a failed initialization", async () => {
+    let deletes = 0
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      if (init?.method === "DELETE") {
+        deletes += 1
+        return new Response(null, { status: 200 })
+      }
+      const request = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return Response.json({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "unsupported" } }, {
+        headers: { "mcp-session-id": "session-1" }
+      })
+    }
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher })
+
+    const exit = await Effect.runPromiseExit(call("get_project", { query: "Roadmap" }).pipe(
+      Effect.ensuring(call.close())
+    ))
+
+    expect(exit._tag).toBe("Failure")
+    expect(deletes).toBe(1)
+  })
+
+  test("session finalization remains bounded when response cancellation stalls", async () => {
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      if (init?.method === "DELETE") {
+        return new Response(new ReadableStream({
+          cancel: () => new Promise<void>(() => undefined)
+        }))
+      }
+      const request = JSON.parse(String(init?.body)) as Record<string, unknown>
+      if (request.method === "initialize") {
+        return Response.json({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2025-03-26", capabilities: {} } }, {
+          headers: { "mcp-session-id": "session-1" }
+        })
+      }
+      if (request.method === "notifications/initialized") return new Response(null, { status: 202 })
+      return Response.json({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: "{}" }] } })
+    }
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, {
+      fetcher,
+      requestTimeoutMs: 25
+    })
+
+    const exit = await Effect.runPromiseExit(call("get_project", { query: "Roadmap" }).pipe(
+      Effect.ensuring(call.close())
+    ))
+
+    expect(exit._tag).toBe("Success")
+  }, 1_000)
 
   test("translates tool and malformed response errors without echoing credentials", async () => {
     const transport = initializedFetcher((request) => new Response(
