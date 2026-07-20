@@ -72,6 +72,7 @@ const issueLabel = (overrides: Record<string, unknown> = {}): IssueLabel => ({
   color: "#123456",
   description: "Task",
   isGroup: false,
+  parentId: undefined,
   archivedAt: undefined,
   ...overrides
 } as unknown as IssueLabel)
@@ -1108,7 +1109,7 @@ describe("SDK LinearGateway conflict contracts", () => {
       teams: async () => page([team]),
       issueLabels: async (variables: { filter: unknown }) => {
         filters.push(variables.filter)
-        return page([])
+        return page(filters.length === 3 ? [created] : [])
       },
       createIssueLabel: async (input: Record<string, unknown>) => {
         sent = input
@@ -1130,23 +1131,55 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(sent).toMatchObject({ id, name: created.name })
     expect(filters).toEqual([
       { id: { eq: id } },
-      { name: { eqIgnoreCase: created.name }, team: { id: { eq: team.id } } }
+      { name: { eqIgnoreCase: created.name }, team: { id: { eq: team.id } } },
+      { id: { eq: id } }
     ])
+  })
+
+  test.each([
+    { property: "scope", drift: { teamId: "99999999-9999-4999-8999-999999999999" } },
+    { property: "group status", drift: { isGroup: true } },
+    { property: "parent", drift: { parentId: "66666666-6666-4666-8666-666666666666" } }
+  ])("label creation refetches and verifies $property", async ({ drift }) => {
+    const created = issueLabel()
+    const drifted = issueLabel(drift)
+    let reads = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async () => page(reads++ === 0 ? [] : [drifted]),
+      createIssueLabel: async () => ({ success: true, issueLabel: Promise.resolve(created) })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createLabel({
+      name: created.name,
+      color: created.color,
+      description: created.description ?? undefined,
+      workspace: false,
+      team: "BEN",
+      id: created.id,
+      ifAbsent: false
+    })))
+
+    expect(reads).toBe(2)
+    expect(error.message).toContain("could not be verified")
   })
 
   test("label creation resolves a same-scope group and sends group metadata", async () => {
     const parent = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Engineering", isGroup: true })
     const child = issueLabel({ name: "Backend", parentId: parent.id })
     let sent: Record<string, unknown> | undefined
+    let created = false
     const client = clientWithIssues([], {
       teams: async () => page([team]),
       issueLabels: async (variables: { filter: unknown }) => {
         const text = JSON.stringify(variables.filter)
         if (text.includes("Engineering")) return page([parent])
+        if (created && text.includes(child.id)) return page([child])
         return page([])
       },
       createIssueLabel: async (input: Record<string, unknown>) => {
         sent = input
+        created = true
         return { success: true, issueLabel: Promise.resolve(child) }
       }
     })
@@ -1154,6 +1187,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     const result = await Effect.runPromise(makeLinearGateway({}, { client }).createLabel({
       name: "Backend",
       color: child.color,
+      description: child.description ?? undefined,
       workspace: false,
       team: "BEN",
       id: child.id,
@@ -1162,6 +1196,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     }))
 
     expect(result.changed).toBe(true)
+    expect(result.value.parentId).toBe(parent.id)
     expect(sent).toMatchObject({ id: child.id, name: "Backend", parentId: parent.id })
   })
 

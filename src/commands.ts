@@ -646,12 +646,16 @@ const resolveOfficialIssueSelectors = (
   if (Array.isArray(input.removeReleases)) {
     input.removeReleases = uniqueStrings(yield* resolveOfficialReleases(gateway, input.removeReleases, true))
   }
-  for (const key of ["blocks", "blockedBy", "relatedTo", "removeBlocks", "removeBlockedBy", "removeRelatedTo"] as const) {
+  for (const [key, includeArchived] of [
+    ["blocks", false], ["blockedBy", false], ["relatedTo", false],
+    ["removeBlocks", true], ["removeBlockedBy", true], ["removeRelatedTo", true]
+  ] as const) {
     if (Array.isArray(input[key])) {
-      input[key] = uniqueStrings(yield* Effect.forEach(input[key], (selector) => resolveOfficialIssueId(gateway, String(selector))))
+      input[key] = uniqueStrings(yield* Effect.forEach(input[key], (selector) =>
+        resolveOfficialIssueId(gateway, String(selector), includeArchived)))
     }
   }
-  if (typeof input.duplicateOf === "string") input.duplicateOf = yield* resolveOfficialIssueId(gateway, input.duplicateOf)
+  if (typeof input.duplicateOf === "string") input.duplicateOf = yield* resolveOfficialIssueId(gateway, input.duplicateOf, false)
 
   for (const [addKey, removeKey, noun] of [
     ["addReleases", "removeReleases", "release"],
@@ -688,11 +692,19 @@ const resolveOfficialIssueSelectors = (
   }
 })
 
-const resolveOfficialIssueId = (gateway: LinearGateway, selector: string): Effect.Effect<string, CliError> =>
-  gateway.callOfficialTool("get_issue", { id: selector }).pipe(Effect.flatMap((issue) =>
-    Predicate.isObject(issue) && nonEmptyString(issue.id) && officialEntityMatchesSelector(issue, selector, ["id", "identifier"])
-      ? Effect.succeed(issue.id)
-      : officialShapeError("get_issue identity")))
+const resolveOfficialIssueId = (
+  gateway: LinearGateway,
+  selector: string,
+  includeArchived: boolean
+): Effect.Effect<string, CliError> => Effect.gen(function*() {
+  const issue = yield* gateway.callOfficialTool("get_issue", { id: selector })
+  if (!Predicate.isObject(issue) || !nonEmptyString(issue.id) ||
+    !officialEntityMatchesSelector(issue, selector, ["id", "identifier"])) {
+    return yield* officialShapeError("get_issue identity")
+  }
+  if (!includeArchived) yield* requireOfficialEntityActive("issue", selector, issue)
+  return issue.id
+})
 
 const resolveOfficialParentId = (
   gateway: LinearGateway,
@@ -703,6 +715,7 @@ const resolveOfficialParentId = (
   if (!Predicate.isObject(issue) || !nonEmptyString(issue.id) || !officialEntityMatchesSelector(issue, selector, ["id", "identifier"])) {
     return yield* officialShapeError("get_issue identity")
   }
+  yield* requireOfficialEntityActive("issue", selector, issue)
   const parentTeam = officialTeamSelector(issue)
   if (!parentTeam) return yield* officialShapeError("get_issue team")
   if (!officialTextEqual(parentTeam, team)) {
@@ -809,7 +822,8 @@ const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<st
     if (key === "id" || key === "team") return key === "id" || officialReferenceMatches(issue.team ?? issue.teamId, desired)
     if (key === "links") return officialLinksContain(issue.attachments ?? issue.links, desired)
     if (key === "state") return officialReferenceMatches(issue.status ?? issue.state, desired)
-    if (key === "parentId") return officialReferenceMatches(issue.parentId ?? issue.parent, desired)
+    if (key === "parentId") return ("parentId" in issue || "parent" in issue) &&
+      officialReferenceMatches(issue.parentId ?? issue.parent, desired)
     if (["blocks", "blockedBy", "relatedTo"].includes(key)) {
       return Predicate.isObject(issue.relations) && officialCollectionContains(issue.relations[key], desired)
     }
@@ -828,6 +842,7 @@ const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<st
     if (key === "description" && typeof issue[key] === "string" && typeof desired === "string") {
       return richTextEqual(issue[key], desired)
     }
+    if (desired === null && !(key in issue)) return false
     return OFFICIAL_ISSUE_REFERENCE_KEYS.has(key)
       ? officialReferenceMatches(issue[key], desired)
       : officialLiteralMatches(issue[key], desired)

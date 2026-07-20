@@ -385,6 +385,7 @@ const mutationSatisfied = (
   tool: string
 ): boolean => Object.entries(args).every(([key, desired]) => {
   if (mutationIdentityKeys(tool).includes(key)) return true
+  if (desired === null && !(key in current)) return false
   if (key.startsWith("add") && key.length > 3) return mutationCollectionContains(current[lowerFirst(key.slice(3))], desired)
   if (key.startsWith("remove") && key.length > 6) return mutationCollectionAbsent(current[lowerFirst(key.slice(6))], desired)
   if (key.startsWith("set") && key.length > 3) return mutationCollectionEqual(current[lowerFirst(key.slice(3))], desired)

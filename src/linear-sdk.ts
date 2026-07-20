@@ -583,16 +583,26 @@ const createLabel = async (
       "Choose a group from the same workspace or team scope."
     )
   }
+  const summarizeRequestedLabel = async (label: IssueLabel): Promise<{
+    readonly summary: LabelSummary
+    readonly matches: boolean
+  }> => {
+    const summary = await labelSummary(label, team?.key)
+    return {
+      summary,
+      matches: labelBelongsToScope(label, teamId) &&
+        summary.name.toLowerCase() === input.name.toLowerCase() &&
+        summary.color.toLowerCase() === input.color.toLowerCase() &&
+        summary.description === (input.description ?? "") &&
+        summary.isGroup === (input.isGroup ?? false) &&
+        summary.parentId === (parent?.id ?? null)
+    }
+  }
+
   const classify = async (label: IssueLabel): Promise<MutationResult<LabelSummary>> => {
     if (!input.isGroup) requireOrdinaryLabel(label)
-    const summary = await labelSummary(label, team?.key)
-    if (
-      summary.name.toLowerCase() !== input.name.toLowerCase() ||
-      summary.color.toLowerCase() !== input.color.toLowerCase() ||
-      summary.description !== (input.description ?? "") ||
-      summary.isGroup !== (input.isGroup ?? false) ||
-      (label.parentId ?? null) !== (parent?.id ?? null)
-    ) {
+    const { summary, matches } = await summarizeRequestedLabel(label)
+    if (!matches) {
       throw conflict(
         `label ${summary.name} already exists with different requested properties`,
         "Choose a different name or make the requested properties match the existing label."
@@ -655,6 +665,7 @@ const createLabel = async (
     return existing
   }
 
+  let created: IssueLabel
   try {
     const payload = await client.createIssueLabel({
       name: input.name,
@@ -665,8 +676,7 @@ const createLabel = async (
       isGroup: input.isGroup,
       parentId: parent?.id
     })
-    const label = await requirePayload(payload.success, payload.issueLabel, "create the label")
-    return changed(await labelSummary(label, team?.key), "label created")
+    created = await requirePayload(payload.success, payload.issueLabel, "create the label")
   } catch (cause) {
     const concurrent = await classifyExisting()
     if (concurrent) {
@@ -674,6 +684,22 @@ const createLabel = async (
     }
     throw cause
   }
+
+  const label = await findLabelByUuid(client, created.id)
+  if (!label) {
+    throw conflict(
+      "created label could not be verified",
+      "Refetch labels in the requested scope before retrying."
+    )
+  }
+  const { summary, matches } = await summarizeRequestedLabel(label)
+  if (!matches) {
+    throw conflict(
+      "created label could not be verified",
+      "Inspect the created label before retrying."
+    )
+  }
+  return changed(summary, "label created and verified")
 }
 
 const applyLabel = async (
@@ -1110,6 +1136,7 @@ const labelSummary = async (
     name: label.name,
     scope: label.teamId === undefined ? "workspace" : (knownTeamKey ?? team?.key ?? label.teamId),
     teamId: label.teamId ?? null,
+    parentId: label.parentId ?? null,
     color: label.color,
     description: label.description ?? "",
     isGroup: label.isGroup,

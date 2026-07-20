@@ -112,6 +112,7 @@ export interface LabelSummary {
   readonly name: string
   readonly scope: string
   readonly teamId: string | null
+  readonly parentId: string | null
   readonly color: string
   readonly description: string
   readonly isGroup: boolean

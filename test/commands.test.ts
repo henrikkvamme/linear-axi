@@ -70,8 +70,8 @@ const fakeGateway = (overrides: Partial<LinearGateway> = {}): LinearGateway => (
   setIssueParent: () => Effect.succeed(mutation(baseIssue, false, "requested parent already set (no-op)")),
   clearIssueFields: () => Effect.succeed(mutation(baseIssue, false, "requested issue fields already clear (no-op)")),
   updateIssueDescription: () => Effect.succeed(mutation(detail("updated"), true, "description updated and verified")),
-  listLabels: () => Effect.succeed(page([{ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }])),
-  createLabel: () => Effect.succeed(mutation({ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }, true, "label created")),
+  listLabels: () => Effect.succeed(page([{ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, parentId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }])),
+  createLabel: () => Effect.succeed(mutation({ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, parentId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }, true, "label created")),
   applyLabel: () => Effect.succeed(mutation(baseIssue, false, "label already applied (no-op)")),
   removeLabel: () => Effect.succeed(mutation(baseIssue, false, "label already absent (no-op)")),
   replaceLabels: () => Effect.succeed(mutation(baseIssue, false, "labels already match requested replacement (no-op)")),
@@ -389,6 +389,22 @@ describe("runCommand", () => {
 
     expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
     expect(saves).toBe(0)
+  })
+
+  test("official scalar clears require an explicit field readback", async () => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "projects", "update", "--id", "project-id", "--clear-lead"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_project") saves += 1
+        return Effect.succeed({ id: "project-id" })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(saves).toBe(1)
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("could not be verified")
   })
 
   test("official exact collection verification requires an explicit array readback", async () => {
@@ -1002,6 +1018,76 @@ describe("runCommand", () => {
     }
   })
 
+  test("advanced issue additions reject archived issue targets", async () => {
+    const cases = [
+      ["--parent", "ENG-2"],
+      ["--duplicate-of", "ENG-2"],
+      ["--related-to-json", '["ENG-2"]']
+    ] as const
+
+    for (const [flag, value] of cases) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "update", "--id", "ENG-1", flag, value
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name, args) => {
+          if (name === "save_issue") saves += 1
+          if (name === "get_issue" && args.id === "ENG-2") {
+            return Effect.succeed({
+              id: "target-id",
+              identifier: "ENG-2",
+              teamId: "team-id",
+              archivedAt: "2026-07-01T00:00:00.000Z"
+            })
+          }
+          return Effect.succeed({
+            id: "issue-id",
+            identifier: "ENG-1",
+            teamId: "team-id",
+            parentId: null,
+            relations: { duplicateOf: null, relatedTo: [] }
+          })
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("archived")
+      expect(saves).toBe(0)
+    }
+  })
+
+  test("advanced issue removals resolve archived issue targets", async () => {
+    let issueReads = 0
+    let saves = 0
+    const output = await run([
+      "issues", "update", "--id", "ENG-1", "--remove-related-to-json", '["ENG-2"]'
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "get_issue" && args.id === "ENG-2") {
+          return Effect.succeed({
+            id: "target-id",
+            identifier: "ENG-2",
+            archivedAt: "2026-07-01T00:00:00.000Z"
+          })
+        }
+        if (name === "save_issue") {
+          saves += 1
+          return Effect.succeed({ id: "issue-id" })
+        }
+        issueReads += 1
+        return Effect.succeed({
+          id: "issue-id",
+          identifier: "ENG-1",
+          teamId: "team-id",
+          relations: { relatedTo: issueReads === 1 ? [{ id: "target-id" }] : [] }
+        })
+      }
+    }))
+
+    expect(saves).toBe(1)
+    expect(output).toMatchObject({ changed: true, result: "requested issue properties saved and verified" })
+  })
+
   test("advanced issue selectors deduplicate aliases by canonical id", async () => {
     const saves: Array<Readonly<Record<string, unknown>>> = []
     const output = await run([
@@ -1501,6 +1587,22 @@ describe("runCommand", () => {
     expect(error.help).toContain("linear-axi issues inspect --id 'ENG-123' --full")
   })
 
+  test("issue scalar clears require explicit field readback", async () => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "update", "--id", "ENG-123", "--clear-assignee", "--clear-parent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_issue") saves += 1
+        return Effect.succeed({ id: "issue-id", identifier: "ENG-123", teamId: "team-id" })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(saves).toBe(1)
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("could not be verified")
+  })
+
   test("issue update sends explicit clears in one official mutation", async () => {
     const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
     let reads = 0
@@ -1687,7 +1789,7 @@ describe("runCommand", () => {
       listLabels: (input) => {
         expect(input.includeArchived).toBe(true)
         expect(input.fields).toEqual(["id", "name", "color"])
-        return Effect.succeed(page([{ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }]))
+        return Effect.succeed(page([{ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, parentId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }]))
       }
     })
     const created = await run(["labels", "create", "--workspace", "--name", "wayfinder:task", "--color", "#123456", "--if-absent"])
