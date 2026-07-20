@@ -61,11 +61,13 @@ import {
   lookupRelationByUuid,
   normalizeUuid,
   resolveAssignableUser,
+  resolveInitiative,
   resolveIssue,
   resolveLabelForRemoval,
   resolveLabelForTeam,
   resolveLabelGlobally,
   resolveTeam,
+  resolveTeamReference,
   resolveUser,
   resolveWorkflowState,
   uuidEqual
@@ -144,6 +146,14 @@ export const makeSdkLinearGateway = (
         const teams = await client.teams({ first: limit })
         return teams.nodes.map(teamSummary)
       }),
+
+    resolveProjectUpdateAssociations: (input) => call("projects update", async (client) => {
+      const [teams, initiatives] = await Promise.all([
+        Promise.all(input.teams.map(async (selector) => (await resolveTeamReference(client, selector)).id)),
+        Promise.all(input.initiatives.map(async (selector) => (await resolveInitiative(client, selector)).id))
+      ])
+      return { teams, initiatives }
+    }),
 
     listWorkflowStates: (input) => call("workflow-states list", (client) => listWorkflowStates(client, input)),
 
@@ -699,7 +709,8 @@ const removeLabel = async (
   input: ApplyLabelInput
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.issue)
-  const label = await resolveLabelForRemoval(client, issue, input.label, requireTeamId(issue))
+  const label = await resolveLabelForRemoval(issue, input.label, requireTeamId(issue))
+  if (!label) return unchanged(await issueSummary(issue), "label already absent (no-op)")
   requireOrdinaryLabel(label)
   if (!issue.labelIds.some((id) => uuidEqual(id, label.id))) {
     return unchanged(await issueSummary(issue), "label already absent (no-op)")

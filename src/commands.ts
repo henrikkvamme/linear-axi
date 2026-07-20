@@ -27,6 +27,12 @@ import { connectOAuth, setupOAuth } from "./oauth"
 import { truncateText, type OutputValue } from "./output"
 import { richTextEqual } from "./rich-text"
 import { isCanonicalDate, isCanonicalTimestamp } from "./validation"
+import {
+  findCanonicalIntersection,
+  officialCollectionAbsent as collectionAbsent,
+  officialCollectionContains as collectionContains,
+  officialCollectionEqual as collectionEqual
+} from "./official-collection"
 import { runOfficialCommand } from "./official-commands"
 import { validateFrontierCursor } from "./wayfinder"
 
@@ -633,6 +639,40 @@ const resolveOfficialIssueSelectors = (
     }
   }
   if (typeof input.duplicateOf === "string") input.duplicateOf = yield* resolveOfficialIssueId(gateway, input.duplicateOf)
+
+  for (const [addKey, removeKey, noun] of [
+    ["addReleases", "removeReleases", "release"],
+    ["blocks", "removeBlocks", "blocks relation"],
+    ["blockedBy", "removeBlockedBy", "blocked-by relation"],
+    ["relatedTo", "removeRelatedTo", "related relation"]
+  ] as const) {
+    const conflict = findCanonicalIntersection(input[addKey], input[removeKey])
+    if (conflict) {
+      return yield* Effect.fail(new LinearDomainError({
+        message: `${noun} ${conflict} cannot be both add and remove in one issue update`,
+        help: "Choose one final state for each association."
+      }))
+    }
+  }
+
+  if (current !== undefined) {
+    if (!nonEmptyString(current.id)) return yield* officialShapeError("get_issue canonical identity")
+    const currentId = current.id
+    if (typeof input.parentId === "string" && officialTextEqual(input.parentId, currentId)) {
+      return yield* Effect.fail(new LinearDomainError({
+        message: "An issue cannot parent itself",
+        help: "Choose a different parent issue."
+      }))
+    }
+    for (const key of ["blocks", "blockedBy"] as const) {
+      if (Array.isArray(input[key]) && input[key].some((target) => typeof target === "string" && officialTextEqual(target, currentId))) {
+        return yield* Effect.fail(new LinearDomainError({
+          message: "An issue cannot block itself",
+          help: "Choose a different issue for the blocking relation."
+        }))
+      }
+    }
+  }
 })
 
 const resolveOfficialIssueId = (gateway: LinearGateway, selector: string): Effect.Effect<string, CliError> =>
@@ -774,38 +814,10 @@ const OFFICIAL_ISSUE_REFERENCE_KEYS = new Set([
   "assignee", "delegate", "state", "project", "cycle", "milestone", "parentId"
 ])
 
-const officialCollectionContains = (current: unknown, desired: unknown): boolean => officialCollectionMatches(current, desired, false)
-const officialCollectionEqual = (current: unknown, desired: unknown): boolean => officialCollectionMatches(current, desired, true)
-const officialCollectionAbsent = (current: unknown, desired: unknown): boolean => {
-  if (!Array.isArray(current) || !Array.isArray(desired)) return false
-  const references = officialCollectionReferences(current)
-  return references.every((values) => values.length > 0) &&
-    desired.every((value) => !references.some((values) => values.some((reference) => officialTextEqual(reference, String(value)))))
-}
-const officialCollectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
-  if (!Array.isArray(current) || !Array.isArray(desired)) return false
-  const entries = officialCollectionReferences(current).map((references) => ({
-    key: references[0]?.toLowerCase(),
-    references
-  }))
-  if (entries.some(({ key }) => key === undefined)) return false
-  const currentKeys = new Set(entries.map(({ key }) => key as string))
-  const desiredKeys = new Set<string>()
-  for (const value of desired) {
-    const matches = new Set(entries
-      .filter(({ references }) => references.some((reference) => officialTextEqual(reference, String(value))))
-      .map(({ key }) => key as string))
-    if (matches.size !== 1) return false
-    desiredKeys.add([...matches][0]!)
-  }
-  return !exact || desiredKeys.size === currentKeys.size
-}
-const officialCollectionReferences = (value: unknown): ReadonlyArray<ReadonlyArray<string>> => Array.isArray(value)
-  ? value.map((item) => Predicate.isObject(item)
-      ? [item.id, item.identifier, item.name, item.version, item.slugId]
-          .filter((reference): reference is string => nonEmptyString(reference))
-      : nonEmptyString(item) || typeof item === "number" ? [String(item)] : [])
-  : []
+const ISSUE_COLLECTION_OPTIONS = { referenceKeys: ["id", "identifier", "name", "version", "slugId"] } as const
+const officialCollectionContains = (current: unknown, desired: unknown): boolean => collectionContains(current, desired, ISSUE_COLLECTION_OPTIONS)
+const officialCollectionEqual = (current: unknown, desired: unknown): boolean => collectionEqual(current, desired, ISSUE_COLLECTION_OPTIONS)
+const officialCollectionAbsent = (current: unknown, desired: unknown): boolean => collectionAbsent(current, desired, ISSUE_COLLECTION_OPTIONS)
 const officialLinksContain = (current: unknown, desired: unknown): boolean => Array.isArray(current) && Array.isArray(desired) &&
   desired.every((link) => Predicate.isObject(link) && typeof link.url === "string" && typeof link.title === "string" &&
     current.some((attachment) => Predicate.isObject(attachment) && attachment.url === link.url && attachment.title === link.title))

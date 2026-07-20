@@ -1,4 +1,5 @@
 import { commandSpecs } from "../src/args"
+import { parityEntryError } from "./parity-contract"
 import { renderSkillCommandReference } from "./render-skill-commands"
 
 interface Inventory { readonly observedAt: string; readonly toolCount: number; readonly tools: ReadonlyArray<{ readonly name: string }> }
@@ -23,8 +24,8 @@ if (missing.length || stale.length) fail(`missing [${missing.join(", ")}], stale
 
 const commandPaths = new Set(commandSpecs.map((spec) => spec.path.join(" ")))
 for (const entry of manifest.tools) {
-  if (entry.status.includes("needs-decision") && !entry.rationale) fail(`${entry.tool} needs a rationale`)
-  if (!entry.status.includes("needs-decision") && entry.commands.length === 0) fail(`${entry.tool} has no command mapping`)
+  const entryError = parityEntryError(entry)
+  if (entryError) fail(entryError)
   for (const command of entry.commands) {
     if (!commandPaths.has(command)) fail(`${entry.tool} maps unknown command ${command}`)
   }

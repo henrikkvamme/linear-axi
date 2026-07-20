@@ -58,6 +58,7 @@ const fakeGateway = (overrides: Partial<LinearGateway> = {}): LinearGateway => (
     viewer: { id: "user-id", name: "Henrik" }
   }),
   listTeams: () => Effect.succeed([{ id: "team-id", key: "ENG", name: "Engineering" }]),
+  resolveProjectUpdateAssociations: (input) => Effect.succeed(input),
   listWorkflowStates: () => Effect.succeed([]),
   listIssues: () => Effect.succeed(page([baseIssue])),
   viewIssue: () => Effect.succeed(detail()),
@@ -281,6 +282,35 @@ describe("runCommand", () => {
       { name: "get_project", args: { query: "project-id" } }
     ])
     expect(output).toMatchObject({ changed: true, result: "official save_project update verified" })
+  })
+
+  test("official project updates reject canonical add and remove intersections", async () => {
+    const cases = [
+      { add: "--add-teams-json", remove: "--remove-teams-json", values: { teams: [{ id: "team-id", key: "ENG" }] } },
+      { add: "--add-initiatives-json", remove: "--remove-initiatives-json", values: { initiatives: [{ id: "initiative-id", name: "Growth" }] } }
+    ] as const
+
+    for (const entry of cases) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "projects", "update", "--id", "project-id",
+        entry.add, JSON.stringify([entry.add.includes("teams") ? "ENG" : "Growth"]),
+        entry.remove, JSON.stringify([entry.add.includes("teams") ? "team-id" : "initiative-id"])
+      ], commandSpecs), fakeGateway({
+        resolveProjectUpdateAssociations: (input) => Effect.succeed({
+          teams: input.teams.map(() => "team-id"),
+          initiatives: input.initiatives.map(() => "initiative-id")
+        }),
+        callOfficialTool: (name) => {
+          if (name === "save_project") saves += 1
+          return Effect.succeed({ id: "project-id", ...entry.values })
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("both add and remove")
+      expect(saves).toBe(0)
+    }
   })
 
   test("official project lead updates canonicalize me before verification", async () => {
@@ -926,6 +956,52 @@ describe("runCommand", () => {
       team: "team-id"
     }])
     expect(output).toMatchObject({ changed: true })
+  })
+
+  test("advanced issue updates reject canonical add and remove intersections", async () => {
+    const cases = [
+      { add: "--add-releases-json", remove: "--remove-releases-json", addSelector: "v1", removeSelector: "release-id", listTool: "list_releases", listResult: { releases: [{ id: "release-id", version: "v1" }], hasNextPage: false } },
+      { add: "--blocks-json", remove: "--remove-blocks-json", addSelector: "ENG-2", removeSelector: "blocked-id", listTool: "get_issue", listResult: { id: "blocked-id", identifier: "ENG-2" } },
+      { add: "--blocked-by-json", remove: "--remove-blocked-by-json", addSelector: "ENG-2", removeSelector: "blocked-id", listTool: "get_issue", listResult: { id: "blocked-id", identifier: "ENG-2" } },
+      { add: "--related-to-json", remove: "--remove-related-to-json", addSelector: "ENG-2", removeSelector: "blocked-id", listTool: "get_issue", listResult: { id: "blocked-id", identifier: "ENG-2" } }
+    ] as const
+
+    for (const entry of cases) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "update", "--id", "ENG-1",
+        entry.add, JSON.stringify([entry.addSelector]), entry.remove, JSON.stringify([entry.removeSelector])
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name, args) => {
+          if (name === "save_issue") saves += 1
+          if (name === entry.listTool && (name !== "get_issue" || args.id !== "ENG-1")) return Effect.succeed(entry.listResult)
+          return Effect.succeed({ id: "issue-id", identifier: "ENG-1", teamId: "team-id", releases: [], relations: { blocks: [], blockedBy: [], relatedTo: [] } })
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("both add and remove")
+      expect(saves).toBe(0)
+    }
+  })
+
+  test("advanced issue updates reject self parent and blockers", async () => {
+    for (const flag of ["--parent", "--blocks-json", "--blocked-by-json"] as const) {
+      let saves = 0
+      const value = flag === "--parent" ? "ENG-1" : '["ENG-1"]'
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "update", "--id", "ENG-1", flag, value
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "save_issue") saves += 1
+          return Effect.succeed({ id: "issue-id", identifier: "ENG-1", teamId: "team-id", relations: { blocks: [], blockedBy: [] } })
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("itself")
+      expect(saves).toBe(0)
+    }
   })
 
   test("advanced issue labels share one guarded collection scan", async () => {

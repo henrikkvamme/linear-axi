@@ -189,6 +189,35 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(creates).toBe(0)
   })
 
+  test("project update association selectors resolve canonical team and initiative ids", async () => {
+    const initiative = {
+      id: "88888888-8888-4888-8888-888888888888",
+      name: "Growth",
+      archivedAt: undefined
+    }
+    const teamFilters: unknown[] = []
+    const initiativeFilters: unknown[] = []
+    const client = clientWithIssues([], {
+      teams: async (variables: { filter?: unknown }) => {
+        teamFilters.push(variables.filter)
+        return page([team])
+      },
+      initiatives: async (variables: { filter?: unknown }) => {
+        initiativeFilters.push(variables.filter)
+        return page([initiative])
+      }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).resolveProjectUpdateAssociations({
+      teams: ["Bender"],
+      initiatives: ["Growth"]
+    }))
+
+    expect(result).toEqual({ teams: [team.id], initiatives: [initiative.id] })
+    expect(teamFilters).toEqual([{ or: [{ key: { eqIgnoreCase: "Bender" } }, { name: { eqIgnoreCase: "Bender" } }] }])
+    expect(initiativeFilters).toEqual([{ name: { eqIgnoreCase: "Growth" } }])
+  })
+
   test("active exact matches win over archived duplicates", async () => {
     const active = issueLabel()
     const archived = issueLabel({
@@ -1429,7 +1458,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(additions).toBe(0)
   })
 
-  test("detached archived label removal fails closed on ambiguous identities", async () => {
+  test("detached label removal retries no-op without global ambiguity", async () => {
     const archivedTeam = issueLabel({
       id: "66666666-6666-4666-8666-666666666666",
       name: "archived",
@@ -1442,10 +1471,14 @@ describe("SDK LinearGateway conflict contracts", () => {
       archivedAt: new Date("2026-07-13T13:00:00.000Z")
     })
     const unlabeled = issue()
+    let globalReads = 0
     let removals = 0
     const gateway = makeLinearGateway({}, {
       client: clientWithIssues([unlabeled], {
-        issueLabels: async () => page([archivedTeam, archivedWorkspace]),
+        issueLabels: async () => {
+          globalReads += 1
+          return page([archivedTeam, archivedWorkspace])
+        },
         issueRemoveLabel: async () => {
           removals += 1
           return { success: true, issue: Promise.resolve(unlabeled) }
@@ -1453,7 +1486,31 @@ describe("SDK LinearGateway conflict contracts", () => {
       })
     })
 
-    const error = await Effect.runPromise(Effect.flip(gateway.removeLabel({ issue: "BEN-1", label: "ARCHIVED" })))
+    const result = await Effect.runPromise(gateway.removeLabel({ issue: "BEN-1", label: "ARCHIVED" }))
+
+    expect(result).toMatchObject({ changed: false, result: "label already absent (no-op)" })
+    expect(globalReads).toBe(0)
+    expect(removals).toBe(0)
+  })
+
+  test("attached ambiguous label removal fails closed", async () => {
+    const first = issueLabel({ name: "duplicate" })
+    const second = issueLabel({ id: "77777777-7777-4777-8777-777777777777", name: "duplicate", teamId: undefined })
+    const labeled = issue({
+      labelIds: [first.id, second.id],
+      labels: async () => page([first, second])
+    })
+    let removals = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([labeled], {
+        issueRemoveLabel: async () => {
+          removals += 1
+          return { success: true, issue: Promise.resolve(labeled) }
+        }
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.removeLabel({ issue: "BEN-1", label: "DUPLICATE" })))
 
     expect(error.message).toContain("Ambiguous")
     expect(removals).toBe(0)

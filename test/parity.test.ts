@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { parityEntryError } from "../scripts/parity-contract"
 import { renderSkillCommandReference } from "../scripts/render-skill-commands"
 import { commandSpecs } from "../src/args"
 
@@ -22,14 +23,23 @@ describe("official Linear MCP parity drift", () => {
 
     const commandPaths = new Set(commandSpecs.map((spec) => spec.path.join(" ")))
     for (const entry of manifest.tools) {
-      if (entry.status.includes("needs-decision")) expect(entry.rationale?.length).toBeGreaterThan(20)
-      else expect(entry.commands.length).toBeGreaterThan(0)
+      expect(parityEntryError(entry), entry.tool).toBeUndefined()
+      if (entry.status === "needs-decision" || entry.status === "partial-needs-decision") {
+        expect(entry.rationale?.length).toBeGreaterThan(20)
+      }
       for (const command of entry.commands) {
         expect(commandPaths.has(command), `${entry.tool}: ${command}`).toBe(true)
         expect(commandReference, `${entry.tool}: ${command}`).toContain(`linear-axi ${command}`)
       }
     }
     expect(commandReference).toBe(renderSkillCommandReference(commandSpecs))
+  })
+
+  test("rejects unknown statuses and unmapped partial entries", () => {
+    expect(parityEntryError({ tool: "save_issue", status: "future-needs-decision", commands: [], rationale: "Pending" }))
+      .toContain("unknown status")
+    expect(parityEntryError({ tool: "save_issue", status: "partial-needs-decision", commands: [], rationale: "Pending" }))
+      .toContain("no command mapping")
   })
 
   test("README and bundled skill cover the mandatory practical intents", async () => {

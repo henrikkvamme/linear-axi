@@ -18,6 +18,7 @@ export interface LinearGateway {
   callOfficialTool(name: string, args: Readonly<Record<string, unknown>>): Effect.Effect<unknown, GatewayError>
   authStatus(): Effect.Effect<AuthStatus, GatewayError>
   listTeams(limit: number): Effect.Effect<ReadonlyArray<TeamSummary>, GatewayError>
+  resolveProjectUpdateAssociations(input: ProjectUpdateAssociationSelectors): Effect.Effect<ProjectUpdateAssociationIds, GatewayError>
   listWorkflowStates(input: ListWorkflowStatesInput): Effect.Effect<ReadonlyArray<WorkflowStateSummary>, GatewayError>
   listIssues(input: ListIssuesInput): Effect.Effect<PageResult<IssueSummary>, GatewayError>
   viewIssue(id: string): Effect.Effect<IssueDetail, GatewayError>
@@ -55,6 +56,16 @@ export interface TeamSummary {
   readonly id: string
   readonly key: string
   readonly name: string
+}
+
+export interface ProjectUpdateAssociationSelectors {
+  readonly teams: ReadonlyArray<string>
+  readonly initiatives: ReadonlyArray<string>
+}
+
+export interface ProjectUpdateAssociationIds {
+  readonly teams: ReadonlyArray<string>
+  readonly initiatives: ReadonlyArray<string>
 }
 
 export interface WorkflowStateSummary {

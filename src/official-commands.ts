@@ -2,6 +2,12 @@ import { Effect, Predicate, Schema } from "effect"
 import type { CommandSpec, ParsedArgs } from "./args"
 import { LinearDomainError, UsageError, type CliError } from "./errors"
 import type { LinearGateway } from "./linear"
+import {
+  findCanonicalIntersection,
+  officialCollectionAbsent as collectionAbsent,
+  officialCollectionContains as collectionContains,
+  officialCollectionEqual as collectionEqual
+} from "./official-collection"
 import { truncateText, type OutputValue } from "./output"
 import { richTextEqual } from "./rich-text"
 import { isCanonicalDate, isCanonicalTimestamp } from "./validation"
@@ -258,12 +264,49 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
   args: Readonly<Record<string, unknown>>,
   gateway: LinearGateway
 ) {
-  if (tool === "save_project" && typeof args.lead === "string") {
-    const user = yield* gateway.callOfficialTool("get_user", { query: args.lead })
-    if (!Predicate.isObject(user) || !nonEmptyString(user.id) || (args.lead !== "me" && !userEntityMatches(user, args.lead))) {
-      return yield* mutationShapeDrift(tool)
+  if (tool === "save_project") {
+    const canonical: Record<string, unknown> = { ...args }
+    if (typeof args.lead === "string") {
+      const user = yield* gateway.callOfficialTool("get_user", { query: args.lead })
+      if (!Predicate.isObject(user) || !nonEmptyString(user.id) || (args.lead !== "me" && !userEntityMatches(user, args.lead))) {
+        return yield* mutationShapeDrift(tool)
+      }
+      canonical.lead = user.id
     }
-    return { ...args, lead: user.id }
+
+    const teamKeys = ["setTeams", "addTeams", "removeTeams"] as const
+    const initiativeKeys = ["setInitiatives", "addInitiatives", "removeInitiatives"] as const
+    const teamSelectors = teamKeys.flatMap((key) => Array.isArray(args[key]) ? args[key].map(String) : [])
+    const initiativeSelectors = initiativeKeys.flatMap((key) => Array.isArray(args[key]) ? args[key].map(String) : [])
+    if (teamSelectors.length > 0 || initiativeSelectors.length > 0) {
+      const resolved = yield* gateway.resolveProjectUpdateAssociations({ teams: teamSelectors, initiatives: initiativeSelectors })
+      let teamOffset = 0
+      for (const key of teamKeys) {
+        if (!Array.isArray(args[key])) continue
+        canonical[key] = uniqueStrings(resolved.teams.slice(teamOffset, teamOffset + args[key].length))
+        teamOffset += args[key].length
+      }
+      let initiativeOffset = 0
+      for (const key of initiativeKeys) {
+        if (!Array.isArray(args[key])) continue
+        canonical[key] = uniqueStrings(resolved.initiatives.slice(initiativeOffset, initiativeOffset + args[key].length))
+        initiativeOffset += args[key].length
+      }
+    }
+
+    for (const [addKey, removeKey, noun] of [
+      ["addTeams", "removeTeams", "team"],
+      ["addInitiatives", "removeInitiatives", "initiative"]
+    ] as const) {
+      const conflict = findCanonicalIntersection(canonical[addKey], canonical[removeKey])
+      if (conflict) {
+        return yield* Effect.fail(new LinearDomainError({
+          message: `${noun} ${conflict} cannot be both add and remove in one project update`,
+          help: "Choose one final state for each association."
+        }))
+      }
+    }
+    return canonical
   }
   if (tool === "save_milestone" && typeof args.project === "string" && typeof args.id === "string") {
     const project = yield* gateway.callOfficialTool("get_project", { query: args.project })
@@ -326,10 +369,10 @@ const mutationSatisfied = (
   tool: string
 ): boolean => Object.entries(args).every(([key, desired]) => {
   if (mutationIdentityKeys(tool).includes(key)) return true
-  if (key.startsWith("add") && key.length > 3) return collectionContains(current[lowerFirst(key.slice(3))], desired)
-  if (key.startsWith("remove") && key.length > 6) return collectionAbsent(current[lowerFirst(key.slice(6))], desired)
-  if (key.startsWith("set") && key.length > 3) return collectionEqual(current[lowerFirst(key.slice(3))], desired)
-  if (Array.isArray(desired)) return collectionEqual(current[key], desired)
+  if (key.startsWith("add") && key.length > 3) return mutationCollectionContains(current[lowerFirst(key.slice(3))], desired)
+  if (key.startsWith("remove") && key.length > 6) return mutationCollectionAbsent(current[lowerFirst(key.slice(6))], desired)
+  if (key.startsWith("set") && key.length > 3) return mutationCollectionEqual(current[lowerFirst(key.slice(3))], desired)
+  if (Array.isArray(desired)) return mutationCollectionEqual(current[key], desired)
   if (["body", "content", "description"].includes(key) && typeof current[key] === "string" && typeof desired === "string") {
     return richTextEqual(current[key], desired)
   }
@@ -347,35 +390,12 @@ const mutationReferenceKeys = (tool: string): ReadonlyArray<string> => ({
   save_status_update: ["project", "initiative"]
 } as Record<string, ReadonlyArray<string>>)[tool] ?? []
 
-const collectionEqual = (current: unknown, desired: unknown): boolean => collectionMatches(current, desired, true)
-const collectionContains = (current: unknown, desired: unknown): boolean => collectionMatches(current, desired, false)
-const collectionAbsent = (current: unknown, desired: unknown): boolean => {
-  if (!Array.isArray(current) || !Array.isArray(desired)) return false
-  const references = collectionReferences(current)
-  return references.every((values) => values.length > 0) &&
-    desired.every((value) => !references.some((values) => values.some((reference) => referenceTextEqual(reference, String(value)))))
-}
-const collectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
-  if (!Array.isArray(current) || !Array.isArray(desired)) return false
-  const entries = collectionReferences(current).map((references) => ({
-    key: references[0]?.toLowerCase(),
-    references
-  }))
-  if (entries.some(({ key }) => key === undefined)) return false
-  const currentKeys = new Set(entries.map(({ key }) => key as string))
-  const desiredKeys = new Set<string>()
-  for (const value of desired) {
-    const matches = new Set(entries
-      .filter(({ references }) => references.some((reference) => referenceTextEqual(reference, String(value))))
-      .map(({ key }) => key as string))
-    if (matches.size !== 1) return false
-    desiredKeys.add([...matches][0]!)
-  }
-  return !exact || desiredKeys.size === currentKeys.size
-}
-const collectionReferences = (value: unknown): ReadonlyArray<ReadonlyArray<string>> => Array.isArray(value)
-  ? value.map(referenceValues)
-  : []
+const MUTATION_COLLECTION_OPTIONS = {
+  referenceKeys: ["id", "identifier", "name", "key", "email", "displayName", "slugId", "version", "number", "type"]
+} as const
+const mutationCollectionEqual = (current: unknown, desired: unknown): boolean => collectionEqual(current, desired, MUTATION_COLLECTION_OPTIONS)
+const mutationCollectionContains = (current: unknown, desired: unknown): boolean => collectionContains(current, desired, MUTATION_COLLECTION_OPTIONS)
+const mutationCollectionAbsent = (current: unknown, desired: unknown): boolean => collectionAbsent(current, desired, MUTATION_COLLECTION_OPTIONS)
 const referenceValues = (value: unknown): ReadonlyArray<string> => Predicate.isObject(value)
   ? [value.id, value.identifier, value.name, value.key, value.email, value.displayName, value.slugId, value.version, value.number, value.type]
       .filter((reference): reference is string | number => nonEmptyString(reference) || typeof reference === "number")
@@ -408,6 +428,7 @@ const userEntityMatches = (entity: Readonly<Record<string, unknown>>, selector: 
     .some((reference) => typeof reference === "string" && referenceTextEqual(reference, selector))
 const referenceTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
 const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0
+const uniqueStrings = (values: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(values)]
 const lowerFirst = (value: string): string => `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`
 
 const mutationInspectionCommand = (tool: string, args: Readonly<Record<string, unknown>>): string => {

@@ -24,6 +24,52 @@ export const resolveTeam = async (client: LinearClient, keyOrId: string): Promis
   )
 }
 
+export const resolveTeamReference = async (client: LinearClient, idKeyOrName: string): Promise<Team> => {
+  const identity = normalizeUuid(idKeyOrName)
+  const normalized = identity.toLowerCase()
+  const teams = await fetchAllPages(
+    await client.teams({
+      first: 50,
+      includeArchived: true,
+      filter: isUuid(identity)
+        ? { id: { eq: identity } }
+        : { or: [{ key: { eqIgnoreCase: identity } }, { name: { eqIgnoreCase: identity } }] }
+    })
+  )
+  const matches = teams.filter((team) => isUuid(identity)
+    ? uuidEqual(team.id, identity)
+    : team.key.toLowerCase() === normalized || team.name.toLowerCase() === normalized)
+  return exactlyOneActive(
+    `team ${idKeyOrName}`,
+    matches,
+    (team) => `${team.id} (${team.key}, ${team.name})`,
+    (team) => team.archivedAt
+  )
+}
+
+export const resolveInitiative = async (client: LinearClient, idOrName: string) => {
+  const identity = normalizeUuid(idOrName)
+  const normalized = identity.toLowerCase()
+  const initiatives = await fetchAllPages(
+    await client.initiatives({
+      first: 50,
+      includeArchived: true,
+      filter: isUuid(identity)
+        ? { id: { eq: identity } }
+        : { name: { eqIgnoreCase: identity } }
+    })
+  )
+  const matches = initiatives.filter((initiative) => isUuid(identity)
+    ? uuidEqual(initiative.id, identity)
+    : initiative.name.toLowerCase() === normalized)
+  return exactlyOneActive(
+    `initiative ${idOrName}`,
+    matches,
+    (initiative) => `${initiative.id} (${initiative.name})`,
+    (initiative) => initiative.archivedAt
+  )
+}
+
 export const resolveIssue = async (client: LinearClient, idOrKey: string): Promise<Issue> => {
   const identity = normalizeUuid(idOrKey)
   const normalized = identity.toLowerCase()
@@ -169,11 +215,10 @@ export const resolveLabelForTeam = async (
 )
 
 export const resolveLabelForRemoval = async (
-  client: LinearClient,
   issue: Issue,
   idOrName: string,
   teamId: string
-): Promise<IssueLabel> => {
+): Promise<IssueLabel | undefined> => {
   const identity = normalizeUuid(idOrName)
   const normalized = identity.toLowerCase()
   const normalizedTeamId = normalizeUuid(teamId)
@@ -182,8 +227,7 @@ export const resolveLabelForRemoval = async (
     (isUuid(identity) ? uuidEqual(label.id, identity) : label.name.toLowerCase() === normalized) &&
     (label.teamId === undefined || uuidEqual(label.teamId, normalizedTeamId)))
   if (matches.length > 1) throw ambiguity(`attached label ${idOrName}`, matches, labelCandidate)
-  if (matches.length === 1) return matches[0]!
-  return exactlyOne(`label ${idOrName}`, await findLabelsForTeam(client, idOrName, teamId), labelCandidate)
+  return matches[0]
 }
 
 export const resolveLabelGlobally = async (client: LinearClient, idOrName: string): Promise<IssueLabel> => {
