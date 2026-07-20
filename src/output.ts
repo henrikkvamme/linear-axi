@@ -1,4 +1,5 @@
 import { encode } from "@toon-format/toon"
+import { Predicate } from "effect"
 
 export type OutputValue = Record<string, unknown>
 
@@ -30,4 +31,20 @@ export const truncateText = (
     truncated: true,
     total: text.length
   }
+}
+
+export const truncateDetail = (
+  value: unknown
+): { readonly value: unknown; readonly fields: ReadonlyArray<{ readonly field: string; readonly total: number }> } => {
+  if (!Predicate.isObject(value)) return { value, fields: [] }
+  const fields: Array<{ readonly field: string; readonly total: number }> = []
+  const rendered = Object.fromEntries(Object.entries(value).map(([key, field]) => {
+    if (typeof field === "string" && ["body", "content", "description", "instructions", "text"].includes(key)) {
+      const truncated = truncateText(field, 1200, false)
+      if (truncated.truncated) fields.push({ field: key, total: truncated.total })
+      return [key, truncated.text]
+    }
+    return [key, field]
+  }))
+  return { value: rendered, fields }
 }

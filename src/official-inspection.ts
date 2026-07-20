@@ -27,9 +27,12 @@ export const officialMutationInspectionCommand = (
     : tool === "save_release_note"
       ? "release-notes"
       : "releases"
-  const inclusions = tool === "save_release_note" && args.releases !== undefined ? " --releases" : ""
+  const inclusions = tool === "save_release_note" && officialReleaseNoteNeedsReleases(args) ? " --releases" : ""
   return `linear-axi ${noun} view --id ${id}${inclusions} --full`
 }
+
+export const officialReleaseNoteNeedsReleases = (args: Readonly<Record<string, unknown>>): boolean =>
+  RELEASE_NOTE_ASSOCIATION_KEYS.some((key) => args[key] !== undefined)
 
 export const indeterminateOfficialMutation = (
   tool: string,
@@ -43,6 +46,7 @@ const ISSUE_RELATION_KEYS = [
   "blocks", "blockedBy", "relatedTo", "removeBlocks", "removeBlockedBy", "removeRelatedTo", "duplicateOf"
 ] as const
 const ISSUE_RELEASE_KEYS = ["setReleases", "addReleases", "removeReleases"] as const
+const RELEASE_NOTE_ASSOCIATION_KEYS = ["releases", "rangeFromRelease", "rangeToRelease"] as const
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
 const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0

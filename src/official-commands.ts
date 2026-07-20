@@ -8,8 +8,8 @@ import {
   officialCollectionContains as collectionContains,
   officialCollectionEqual as collectionEqual
 } from "./official-collection"
-import { indeterminateOfficialMutation, officialMutationInspectionCommand } from "./official-inspection"
-import { truncateText, type OutputValue } from "./output"
+import { indeterminateOfficialMutation, officialMutationInspectionCommand, officialReleaseNoteNeedsReleases } from "./official-inspection"
+import { truncateDetail, truncateText, type OutputValue } from "./output"
 import { richTextEqual } from "./rich-text"
 import { isCanonicalDate, isCanonicalTimestamp } from "./validation"
 
@@ -403,7 +403,7 @@ const mutationReadArgs = (tool: string, args: Readonly<Record<string, unknown>>)
   if (tool === "save_project") return { query: args.id }
   if (tool === "save_milestone") return { project: args.project, query: args.id }
   if (tool === "save_status_update") return { type: args.type, id: args.id }
-  if (tool === "save_release_note") return { id: args.id, ...(args.releases === undefined ? {} : { includeReleases: true }) }
+  if (tool === "save_release_note") return { id: args.id, ...(officialReleaseNoteNeedsReleases(args) ? { includeReleases: true } : {}) }
   return { id: args.id }
 }
 
@@ -578,20 +578,6 @@ const completeBodiesCommand = (
 ): string => {
   const replayed = replayFlags(flags, { full: true })
   return `Run \`linear-axi ${entry.path.join(" ")}${replayed.length > 0 ? ` ${replayed}` : ""}\` for complete bodies.`
-}
-
-const truncateDetail = (value: unknown): { readonly value: unknown; readonly fields: ReadonlyArray<{ readonly field: string; readonly total: number }> } => {
-  if (!Predicate.isObject(value)) return { value, fields: [] }
-  const fields: Array<{ readonly field: string; readonly total: number }> = []
-  const rendered = Object.fromEntries(Object.entries(value).map(([key, field]) => {
-    if (typeof field === "string" && ["body", "content", "description", "instructions", "text"].includes(key)) {
-      const truncated = truncateText(field, 1200, false)
-      if (truncated.truncated) fields.push({ field: key, total: truncated.total })
-      return [key, truncated.text]
-    }
-    return [key, field]
-  }))
-  return { value: rendered, fields }
 }
 
 const continuation = (entry: OfficialCommand, flags: ReadonlyMap<string, string | boolean>, cursor: string): string => {

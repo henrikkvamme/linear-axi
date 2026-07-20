@@ -9,6 +9,7 @@ export const OFFICIAL_MCP_PROTOCOL_VERSION = "2025-03-26"
 interface OfficialMcpOptions {
   readonly fetcher?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
   readonly requestTimeoutMs?: number
+  readonly cleanupTimeoutMs?: number
 }
 
 interface PendingResponse {
@@ -73,6 +74,7 @@ export const makeOfficialMcpClient = (
 ): OfficialMcpClient => {
   const fetcher = options.fetcher ?? fetch
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000
+  const cleanupTimeoutMs = options.cleanupTimeoutMs ?? 250
   let requestId = 0
   let initialized = false
   let sessionId: string | undefined
@@ -210,8 +212,8 @@ export const makeOfficialMcpClient = (
 
     const controller = new AbortController()
     const timeout = setTimeout(() => {
-      controller.abort(new Error(`request timed out after ${requestTimeoutMs}ms`))
-    }, requestTimeoutMs)
+      controller.abort(new Error(`session cleanup timed out after ${cleanupTimeoutMs}ms`))
+    }, cleanupTimeoutMs)
     yield* Effect.tryPromise({
       try: async () => {
         try {

@@ -811,6 +811,25 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: true, result: "official save_release_note update verified" })
   })
 
+  test("release-note range updates include releases in verification and recovery", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "release-notes", "update", "--id", "note-id", "--range-from", "release-1", "--range-to", "release-2"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_release_note") return Effect.succeed({ id: "note-id", rangeFromRelease: "old-from", rangeToRelease: "old-to", releases: [] })
+        return Effect.succeed({ id: "note-id" })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(calls.filter(({ name }) => name === "get_release_note")).toEqual([
+      { name: "get_release_note", args: { id: "note-id", includeReleases: true } },
+      { name: "get_release_note", args: { id: "note-id", includeReleases: true } }
+    ])
+    expect(error.help).toContain("linear-axi release-notes view --id 'note-id' --releases --full")
+  })
+
   test("ambiguous association updates expose affected fields in inspection commands", async () => {
     const issueError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
       "issues", "update", "--id", "ENG-123", "--set-releases-json", "[]", "--clear-duplicate"
@@ -1643,6 +1662,24 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
   })
 
+  test("advanced issue create preserves association-aware recovery after receiving its id", async () => {
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--blocks-json", "[\"ENG-2\"]",
+      "--releases-json", "[\"v1\"]", "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "get_issue" && args.id === "ENG-2") return Effect.succeed({ id: "blocked-id", identifier: "ENG-2", teamId: "team-id" })
+        if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1" }], hasNextPage: false })
+        if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+        if (name === "save_issue") return Effect.succeed({ id: "new-id" })
+        return Effect.succeed({ id: "new-id", title: "Launch", teamId: "team-id", relations: { blocks: [] }, releases: [] })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(error.help).toContain("linear-axi issues inspect --id 'new-id' --relations --releases --full")
+  })
+
   test("advanced issue create includes official relation fields in the single mutation", async () => {
     const saves: Array<Readonly<Record<string, unknown>>> = []
     const output = await run([
@@ -1871,6 +1908,35 @@ describe("runCommand", () => {
     expect(error._tag).toBe("LinearDomainError")
     expect(error.message).toContain("archived")
     expect(saves).toBe(0)
+  })
+
+  test("advanced issue mutations bound detail output and provide a full inspection command", async () => {
+    let reads = 0
+    const output = await run([
+      "issues", "update", "--id", "ENG-123", "--priority", "2"
+    ], fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_issue") {
+          reads += 1
+          return Effect.succeed({
+            id: "issue-id",
+            identifier: "ENG-123",
+            title: "Launch",
+            teamId: "team-id",
+            priority: reads === 1 ? 1 : 2,
+            description: "x".repeat(1300),
+            relations: { blocks: Array.from({ length: 100 }, (_, index) => ({ id: `target-${index}` })) }
+          })
+        }
+        return Effect.succeed({ id: "issue-id" })
+      }
+    }))
+
+    expect(String((output.issue as Record<string, unknown>).description)).toEndWith("...")
+    expect((output.issue as Record<string, unknown>).relations).toBeUndefined()
+    expect(output.omitted).toEqual(["relations"])
+    expect(output.truncated).toEqual([{ field: "description", total: 1300 }])
+    expect(output.help).toEqual(["Run `linear-axi issues inspect --id 'ENG-123' --full` for complete issue details."])
   })
 
   test("issue updates fail closed when readback does not satisfy the request", async () => {

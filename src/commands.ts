@@ -24,7 +24,7 @@ import type {
 import { DESCRIPTION_CONCURRENCY_WARNING } from "./linear"
 import { decodeLocalCursorOffset } from "./linear-pagination"
 import { connectOAuth, setupOAuth } from "./oauth"
-import { truncateText, type OutputValue } from "./output"
+import { truncateDetail, truncateText, type OutputValue } from "./output"
 import { richTextEqual } from "./rich-text"
 import { isCanonicalDate, isCanonicalTimestamp } from "./validation"
 import {
@@ -306,7 +306,12 @@ const createOfficialIssue = (
       return yield* officialShapeError("get_issue identity")
     }
     if (officialIssueSatisfies(detail, input)) {
-      return { issue: detail, changed: false, result: "exact issue already exists (no-op)" }
+      return officialIssueMutationOutput(
+        detail,
+        false,
+        "exact issue already exists (no-op)",
+        officialMutationInspectionCommand("save_issue", { ...input, id: candidateId })
+      )
     }
     return yield* Effect.fail(new LinearDomainError({
       message: `Issue title ${title} already exists in team ${teamInput} with different requested properties`,
@@ -319,7 +324,7 @@ const createOfficialIssue = (
     if (!Predicate.isObject(created)) return yield* officialShapeError("save_issue identity")
     const createdId = officialIssueIdentity(created)
     if (!createdId) return yield* officialShapeError("save_issue identity")
-    inspection = officialMutationInspectionCommand("save_issue", { id: createdId })
+    inspection = officialMutationInspectionCommand("save_issue", { ...input, id: createdId })
     const issue = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(createdId, input))
     if (!Predicate.isObject(issue) || !officialEntityMatchesSelector(issue, createdId, ["id", "identifier"])) {
       return yield* officialShapeError("get_issue identity")
@@ -327,7 +332,7 @@ const createOfficialIssue = (
     if (!officialIssueSatisfies(issue, input)) {
       return yield* Effect.fail(new LinearDomainError({ message: "save_issue create could not be verified" }))
     }
-    return { issue, changed: true, result: "issue created through official save_issue" }
+    return officialIssueMutationOutput(issue, true, "issue created through official save_issue", inspection)
   }).pipe(
     Effect.mapError(() => indeterminateOfficialMutation("save_issue", inspection))
   )
@@ -468,7 +473,12 @@ const updateOfficialIssue = (
   if (!team) return yield* officialShapeError("get_issue team")
   yield* resolveOfficialIssueSelectors(gateway, input, team, before)
   if (officialIssueSatisfies(before, input)) {
-    return { issue: before, changed: false, result: "requested issue properties already match (no-op)" }
+    return officialIssueMutationOutput(
+      before,
+      false,
+      "requested issue properties already match (no-op)",
+      officialMutationInspectionCommand("save_issue", input)
+    )
   }
   yield* gateway.callOfficialTool("save_issue", input)
   const inspection = officialMutationInspectionCommand("save_issue", input)
@@ -478,7 +488,10 @@ const updateOfficialIssue = (
     if (!officialIssueSatisfies(after, input)) {
       return yield* Effect.fail(new LinearDomainError({ message: "save_issue update could not be verified" }))
     }
-    return { issue: after, changed: true, result: "requested issue properties saved and verified", concurrency: DESCRIPTION_CONCURRENCY_WARNING }
+    return {
+      ...officialIssueMutationOutput(after, true, "requested issue properties saved and verified", inspection),
+      concurrency: DESCRIPTION_CONCURRENCY_WARNING
+    }
   }).pipe(
     Effect.mapError(() => indeterminateOfficialMutation("save_issue", inspection))
   )
@@ -1318,6 +1331,29 @@ const issueMutationOutput = (result: { value: IssueSummary; changed: boolean; re
   changed: result.changed,
   result: result.result
 })
+
+const officialIssueMutationOutput = (
+  issue: Readonly<Record<string, unknown>>,
+  changed: boolean,
+  result: string,
+  inspection: string
+): OutputValue => {
+  const truncated = truncateDetail(issue)
+  const rendered = Predicate.isObject(truncated.value) ? truncated.value : issue
+  const omitted = OFFICIAL_ISSUE_EXPANDED_OUTPUT_KEYS.filter((key) => key in rendered)
+  const concise = Object.fromEntries(Object.entries(rendered).filter(([key]) => !omitted.some((field) => field === key)))
+  const shortened = truncated.fields.length > 0 || omitted.length > 0
+  return {
+    issue: concise,
+    changed,
+    result,
+    ...(omitted.length > 0 ? { omitted } : {}),
+    ...(truncated.fields.length > 0 ? { truncated: truncated.fields } : {}),
+    ...(shortened ? { help: [`Run \`${inspection}\` for complete issue details.`] } : {})
+  }
+}
+
+const OFFICIAL_ISSUE_EXPANDED_OUTPUT_KEYS = ["relations", "releases", "attachments", "customerNeeds"] as const
 
 const continuationCommand = (command: string, parsed: ParsedArgs, cursor: string): string =>
   `Run \`${replayCommand(command, parsed, { after: cursor })}\` for the next page.`

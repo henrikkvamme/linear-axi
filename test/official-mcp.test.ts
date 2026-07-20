@@ -461,14 +461,17 @@ describe("official Linear MCP tool boundary", () => {
     }
     const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, {
       fetcher,
-      requestTimeoutMs: 25
+      requestTimeoutMs: 10_000,
+      cleanupTimeoutMs: 25
     })
 
+    const startedAt = performance.now()
     const exit = await Effect.runPromiseExit(call("get_project", { query: "Roadmap" }).pipe(
       Effect.ensuring(call.close())
     ))
 
     expect(exit._tag).toBe("Success")
+    expect(performance.now() - startedAt).toBeLessThan(500)
   }, 1_000)
 
   test("translates tool and malformed response errors without echoing credentials", async () => {
