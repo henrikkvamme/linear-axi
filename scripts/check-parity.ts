@@ -1,4 +1,5 @@
 import { commandSpecs } from "../src/args"
+import { renderSkillCommandReference } from "./render-skill-commands"
 
 interface Inventory { readonly observedAt: string; readonly toolCount: number; readonly tools: ReadonlyArray<{ readonly name: string }> }
 interface Manifest { readonly observedAt: string; readonly inventorySha256: string; readonly tools: ReadonlyArray<{ readonly tool: string; readonly status: string; readonly commands: ReadonlyArray<string>; readonly rationale?: string }> }
@@ -21,14 +22,19 @@ const stale = mappedNames.filter((name) => !officialNames.includes(name))
 if (missing.length || stale.length) fail(`missing [${missing.join(", ")}], stale [${stale.join(", ")}]`)
 
 const commandPaths = new Set(commandSpecs.map((spec) => spec.path.join(" ")))
-const skill = await Bun.file(".agents/skills/linear-axi/SKILL.md").text()
 for (const entry of manifest.tools) {
   if (entry.status.includes("needs-decision") && !entry.rationale) fail(`${entry.tool} needs a rationale`)
   if (!entry.status.includes("needs-decision") && entry.commands.length === 0) fail(`${entry.tool} has no command mapping`)
   for (const command of entry.commands) {
     if (!commandPaths.has(command)) fail(`${entry.tool} maps unknown command ${command}`)
-    if (!skill.includes(`linear-axi ${command}`)) fail(`${entry.tool} command ${command} is missing from the bundled skill`)
   }
+}
+
+const skill = await Bun.file(".agents/skills/linear-axi/SKILL.md").text()
+if (!skill.includes("`COMMANDS.md`")) fail("bundled skill does not link its generated command reference")
+const commandReference = await Bun.file(".agents/skills/linear-axi/COMMANDS.md").text()
+if (commandReference !== renderSkillCommandReference(commandSpecs)) {
+  fail("bundled command reference differs from commandSpecs; run bun run skill:generate")
 }
 
 process.stderr.write(`Parity manifest covers ${officialNames.length} official Linear MCP tools observed ${inventory.observedAt}.\n`)

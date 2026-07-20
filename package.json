@@ -39,6 +39,7 @@
     "check": "bun run parity:check && bun run typecheck && bun run test && bun run build",
     "parity:check": "bun scripts/check-parity.ts",
     "parity:capture": "bun scripts/capture-official-mcp.ts",
+    "skill:generate": "bun scripts/generate-skill-commands.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test ./test/*.test.ts"
   },

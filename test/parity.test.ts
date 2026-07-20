@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { renderSkillCommandReference } from "../scripts/render-skill-commands"
 import { commandSpecs } from "../src/args"
 
 interface Inventory { readonly observedAt: string; readonly toolCount: number; readonly tools: ReadonlyArray<{ readonly name: string }> }
@@ -9,7 +10,7 @@ describe("official Linear MCP parity drift", () => {
     const inventoryText = await Bun.file("docs/official-linear-mcp-tools.json").text()
     const inventory = JSON.parse(inventoryText) as Inventory
     const manifest = await Bun.file("docs/linear-mcp-parity.json").json() as Manifest
-    const skill = await Bun.file(".agents/skills/linear-axi/SKILL.md").text()
+    const commandReference = await Bun.file(".agents/skills/linear-axi/COMMANDS.md").text()
     const official = inventory.tools.map((tool) => tool.name)
     const mapped = manifest.tools.map((tool) => tool.tool)
     expect(inventory.toolCount).toBe(47)
@@ -25,9 +26,10 @@ describe("official Linear MCP parity drift", () => {
       else expect(entry.commands.length).toBeGreaterThan(0)
       for (const command of entry.commands) {
         expect(commandPaths.has(command), `${entry.tool}: ${command}`).toBe(true)
-        expect(skill, `${entry.tool}: ${command}`).toContain(`linear-axi ${command}`)
+        expect(commandReference, `${entry.tool}: ${command}`).toContain(`linear-axi ${command}`)
       }
     }
+    expect(commandReference).toBe(renderSkillCommandReference(commandSpecs))
   })
 
   test("README and bundled skill cover the mandatory practical intents", async () => {

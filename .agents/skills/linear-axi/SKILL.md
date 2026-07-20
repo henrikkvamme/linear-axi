@@ -11,6 +11,8 @@ Invoke it as `linear-axi <command>` when the binary is on PATH. If you are worki
 
 ## Commands
 
+Read `COMMANDS.md` for the exact generated command, flag, usage, example, and command-specific safety reference.
+
 ```sh
 linear-axi
 linear-axi auth status
@@ -157,4 +159,5 @@ The checked `docs/linear-mcp-parity.json` records all 47 observed official tools
 - Use `$axi` for output and process-boundary decisions.
 - Use `$effect-v4` for Effect code changes.
 - Add regression tests for new commands, especially unknown flags, missing required flags, truncation, and live-mutation guards.
+- Run `bun run skill:generate` after changing command specs or help.
 - Verify with `bun run check`.

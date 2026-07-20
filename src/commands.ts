@@ -269,7 +269,7 @@ const createOfficialIssue = (
   const input = issuePropertyInput(parsed, description, labelsJson)
   input.title = title
   input.team = team
-  if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialUserSelector(gateway, input.assignee)
+  if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialAssignableUserSelector(gateway, input.assignee)
   if (typeof input.state === "string") input.state = yield* resolveOfficialStateSelector(gateway, team, input.state)
   yield* resolveOfficialIssueSelectors(gateway, input, team)
   const candidates = yield* fetchOfficialRows(gateway, "list_issues", {
@@ -444,7 +444,7 @@ const updateOfficialIssue = (
       help: `Run \`linear-axi issues inspect --id ${id} --full\`, then retry with its updatedAt.`
     }))
   }
-  if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialUserSelector(gateway, input.assignee)
+  if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialAssignableUserSelector(gateway, input.assignee)
   if (typeof input.state === "string") {
     const team = officialTeamSelector(before)
     if (!team) return yield* officialShapeError("get_issue team")
@@ -530,28 +530,42 @@ const issuePropertyInput = (
   return input
 }
 
-const resolveOfficialUserSelector = (
+const resolveOfficialAssignableUserSelector = (
   gateway: LinearGateway,
   selector: string
 ): Effect.Effect<string, CliError> => Effect.gen(function*() {
-  if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(selector)) return selector
-  if (selector === "me") {
-    const user = yield* gateway.callOfficialTool("get_user", { query: selector })
-    if (!Predicate.isObject(user) || !nonEmptyString(user.id)) return yield* officialShapeError("get_user identity")
-    return user.id
+  let user: Record<string, unknown>
+  if (looksLikeUuid(selector) || selector === "me") {
+    const result = yield* gateway.callOfficialTool("get_user", { query: selector })
+    if (!Predicate.isObject(result) || !nonEmptyString(result.id) ||
+      (selector !== "me" && !officialEntityMatchesSelector(result, selector, ["id", "email", "name", "displayName"]))) {
+      return yield* officialShapeError("get_user identity")
+    }
+    user = result
+  } else {
+    const rows = yield* fetchOfficialRows(gateway, "list_users", { query: selector, limit: 100 }, "users")
+    const normalized = selector.toLowerCase()
+    const matches = rows.filter((candidate) =>
+      [candidate.id, candidate.email, candidate.name, candidate.displayName].some((value) => typeof value === "string" && value.toLowerCase() === normalized))
+    if (matches.length !== 1 || !nonEmptyString(matches[0]!.id)) {
+      const candidates = matches.length > 0 ? matches : rows
+      return yield* Effect.fail(new LinearDomainError({
+        message: matches.length === 0 ? `No Linear user exactly matched ${selector}` : `Ambiguous or invalid Linear user selector ${selector}`,
+        help: `Candidate ids: ${candidates.map((candidate) => String(candidate.id)).join(", ") || "none"}`
+      }))
+    }
+    user = matches[0]!
   }
-  const rows = yield* fetchOfficialRows(gateway, "list_users", { query: selector, limit: 100 }, "users")
-  const normalized = selector.toLowerCase()
-  const matches = rows.filter((user) =>
-    [user.id, user.email, user.name, user.displayName].some((value) => typeof value === "string" && value.toLowerCase() === normalized))
-  if (matches.length !== 1 || !nonEmptyString(matches[0]!.id)) {
-    const candidates = matches.length > 0 ? matches : rows
+  if (!("archivedAt" in user) || typeof user.active !== "boolean" || typeof user.isAssignable !== "boolean") {
+    return yield* officialShapeError("user assignability")
+  }
+  if (user.archivedAt != null || user.active !== true || user.isAssignable !== true) {
     return yield* Effect.fail(new LinearDomainError({
-      message: matches.length === 0 ? `No Linear user exactly matched ${selector}` : `Ambiguous or invalid Linear user selector ${selector}`,
-      help: `Candidate ids: ${candidates.map((user) => String(user.id)).join(", ") || "none"}`
+      message: `Linear user ${user.id} cannot be assigned issues`,
+      help: "Choose an active, unarchived, assignable user."
     }))
   }
-  return matches[0]!.id
+  return user.id as string
 })
 
 const resolveOfficialTeamSelector = (
@@ -609,13 +623,13 @@ const resolveOfficialIssueSelectors = (
     }
     input.milestone = milestone.id
   }
-  if (Array.isArray(input.labels)) input.labels = yield* resolveOfficialLabels(gateway, input.labels, team)
+  if (Array.isArray(input.labels)) input.labels = uniqueStrings(yield* resolveOfficialLabels(gateway, input.labels, team))
   for (const key of ["setReleases", "addReleases", "removeReleases"] as const) {
-    if (Array.isArray(input[key])) input[key] = yield* resolveOfficialReleases(gateway, input[key])
+    if (Array.isArray(input[key])) input[key] = uniqueStrings(yield* resolveOfficialReleases(gateway, input[key]))
   }
   for (const key of ["blocks", "blockedBy", "relatedTo", "removeBlocks", "removeBlockedBy", "removeRelatedTo"] as const) {
     if (Array.isArray(input[key])) {
-      input[key] = yield* Effect.forEach(input[key], (selector) => resolveOfficialIssueId(gateway, String(selector)))
+      input[key] = uniqueStrings(yield* Effect.forEach(input[key], (selector) => resolveOfficialIssueId(gateway, String(selector))))
     }
   }
   if (typeof input.duplicateOf === "string") input.duplicateOf = yield* resolveOfficialIssueId(gateway, input.duplicateOf)
@@ -747,11 +761,7 @@ const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<st
     if (key === "setReleases") return officialCollectionEqual(issue.releases, desired)
     if (key === "addReleases") return officialCollectionContains(issue.releases, desired)
     if (key === "removeReleases") return officialCollectionAbsent(issue.releases, desired)
-    if (key === "labels") {
-      if (!Array.isArray(desired) || !Array.isArray(issue.labels)) return desired === null && issue.labels === undefined
-      const current = issue.labels.map((label) => Predicate.isObject(label) ? label.id ?? label.name : label).map(String).sort()
-      return [...desired].map(String).sort().every((value, index, values) => values.length === current.length && value === current[index])
-    }
+    if (key === "labels") return officialCollectionEqual(issue.labels, desired)
     if (key === "description" && typeof issue[key] === "string" && typeof desired === "string") {
       return richTextEqual(issue[key], desired)
     }
@@ -774,13 +784,21 @@ const officialCollectionAbsent = (current: unknown, desired: unknown): boolean =
 }
 const officialCollectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
   if (!Array.isArray(current) || !Array.isArray(desired)) return false
-  const remaining = officialCollectionReferences(current).map((references) => [...references])
+  const entries = officialCollectionReferences(current).map((references) => ({
+    key: references[0]?.toLowerCase(),
+    references
+  }))
+  if (entries.some(({ key }) => key === undefined)) return false
+  const currentKeys = new Set(entries.map(({ key }) => key as string))
+  const desiredKeys = new Set<string>()
   for (const value of desired) {
-    const index = remaining.findIndex((references) => references.some((reference) => officialTextEqual(reference, String(value))))
-    if (index === -1) return false
-    remaining.splice(index, 1)
+    const matches = new Set(entries
+      .filter(({ references }) => references.some((reference) => officialTextEqual(reference, String(value))))
+      .map(({ key }) => key as string))
+    if (matches.size !== 1) return false
+    desiredKeys.add([...matches][0]!)
   }
-  return !exact || remaining.length === 0
+  return !exact || desiredKeys.size === currentKeys.size
 }
 const officialCollectionReferences = (value: unknown): ReadonlyArray<ReadonlyArray<string>> => Array.isArray(value)
   ? value.map((item) => Predicate.isObject(item)
@@ -815,6 +833,7 @@ const officialIssueIdentity = (issue: Readonly<Record<string, unknown>>): string
 const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0
 
 const officialTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
+const uniqueStrings = (values: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(values)]
 
 const labelsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const workspace = readBooleanFlag(parsed.flags, "workspace")

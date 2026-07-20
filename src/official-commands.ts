@@ -167,6 +167,9 @@ const renderResult = (
     if (!Array.isArray(value)) return shapeDrift(entry, "expected an array result")
     if (value.some((row) => !Predicate.isObject(row))) return shapeDrift(entry, "expected every row to be an object")
     const items = full ? value : value.map((row) => projectRow(row, entry.defaultFields ?? []))
+    if (!full && items.some((row) => Predicate.isObject(row) && Object.keys(row).length === 0)) {
+      return shapeDrift(entry, "expected every row to contain at least one default field")
+    }
     const documentationPage = entry.tool === "search_documentation"
       ? Number(parsed.flags.get("page") ?? 0)
       : undefined
@@ -193,6 +196,9 @@ const renderResult = (
     const rows: ReadonlyArray<unknown> = candidateRows
     if (rows.some((row) => !Predicate.isObject(row))) return shapeDrift(entry, `expected every ${entry.listKey} row to be an object`)
     const items = full ? rows : rows.map((row) => projectRow(row, entry.defaultFields ?? []))
+    if (!full && items.some((row) => Predicate.isObject(row) && Object.keys(row).length === 0)) {
+      return shapeDrift(entry, `expected every ${entry.listKey} row to contain at least one default field`)
+    }
     const cursor = typeof result.cursor === "string" ? result.cursor : null
     const hasNext = result.hasNextPage === true
     return Effect.succeed({
@@ -351,13 +357,21 @@ const collectionAbsent = (current: unknown, desired: unknown): boolean => {
 }
 const collectionMatches = (current: unknown, desired: unknown, exact: boolean): boolean => {
   if (!Array.isArray(current) || !Array.isArray(desired)) return false
-  const remaining = collectionReferences(current).map((references) => [...references])
+  const entries = collectionReferences(current).map((references) => ({
+    key: references[0]?.toLowerCase(),
+    references
+  }))
+  if (entries.some(({ key }) => key === undefined)) return false
+  const currentKeys = new Set(entries.map(({ key }) => key as string))
+  const desiredKeys = new Set<string>()
   for (const value of desired) {
-    const index = remaining.findIndex((references) => references.some((reference) => referenceTextEqual(reference, String(value))))
-    if (index === -1) return false
-    remaining.splice(index, 1)
+    const matches = new Set(entries
+      .filter(({ references }) => references.some((reference) => referenceTextEqual(reference, String(value))))
+      .map(({ key }) => key as string))
+    if (matches.size !== 1) return false
+    desiredKeys.add([...matches][0]!)
   }
-  return !exact || remaining.length === 0
+  return !exact || desiredKeys.size === currentKeys.size
 }
 const collectionReferences = (value: unknown): ReadonlyArray<ReadonlyArray<string>> => Array.isArray(value)
   ? value.map(referenceValues)

@@ -178,6 +178,28 @@ describe("runCommand", () => {
     }
   })
 
+  test("official list projections reject rows without any default fields", async () => {
+    const cases = [
+      ["users", "list"],
+      ["cycles", "list", "--team-id", "team-id"]
+    ] as const
+
+    for (const argv of cases) {
+      const error = await Effect.runPromise(Effect.flip(runCommand(
+        parseArgs(argv, commandSpecs),
+        fakeGateway({
+          callOfficialTool: () => Effect.succeed(argv[0] === "users"
+            ? { users: [{ ignored: true }], hasNextPage: false }
+            : [{ ignored: true }])
+        }),
+        "/repo/src/main.ts"
+      )))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("output shape drifted")
+    }
+  })
+
   test("official mutation preflights reject empty and mismatched entities", async () => {
     for (const value of [{}, { id: "different-project", name: "Other" }]) {
       let saves = 0
@@ -282,6 +304,21 @@ describe("runCommand", () => {
   test("official collection verification accepts documented selectors case-insensitively", async () => {
     let saves = 0
     const output = await run(["projects", "update", "--id", "PROJECT-ID", "--teams-json", '["eng"]'], fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "save_project") saves += 1
+        return Effect.succeed({ id: "project-id", teams: [{ id: "team-id", key: "ENG", name: "Engineering" }] })
+      }
+    }))
+
+    expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
+    expect(saves).toBe(0)
+  })
+
+  test("official collection verification uses set semantics for selector aliases", async () => {
+    let saves = 0
+    const output = await run([
+      "projects", "update", "--id", "project-id", "--teams-json", '["ENG","eng","team-id"]'
+    ], fakeGateway({
       callOfficialTool: (name) => {
         if (name === "save_project") saves += 1
         return Effect.succeed({ id: "project-id", teams: [{ id: "team-id", key: "ENG", name: "Engineering" }] })
@@ -717,6 +754,37 @@ describe("runCommand", () => {
     expect(assigneeSaves).toBe(0)
   })
 
+  test("advanced issue assignees must be active, unarchived, and assignable", async () => {
+    const selectors = ["55555555-5555-4555-8555-555555555555", "alice@example.com"] as const
+    const invalidUsers = [
+      { active: false, isAssignable: true, archivedAt: null },
+      { active: true, isAssignable: false, archivedAt: null },
+      { active: true, isAssignable: true, archivedAt: "2026-07-01T00:00:00.000Z" }
+    ] as const
+
+    for (const selector of selectors) {
+      for (const invalid of invalidUsers) {
+        let saves = 0
+        const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+          "issues", "create", "--team", "ENG", "--title", "Launch", "--assignee", selector, "--if-absent"
+        ], commandSpecs), fakeGateway({
+          callOfficialTool: (name) => {
+            if (name === "save_issue") saves += 1
+            if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+            const user = { id: "55555555-5555-4555-8555-555555555555", name: "Alice", email: "alice@example.com", ...invalid }
+            if (name === "get_user") return Effect.succeed(user)
+            if (name === "list_users") return Effect.succeed({ users: [user], hasNextPage: false })
+            throw new Error(`unexpected ${name}`)
+          }
+        }), "/repo/src/main.ts")))
+
+        expect(error._tag).toBe("LinearDomainError")
+        expect(error.message).toContain("cannot be assigned")
+        expect(saves).toBe(0)
+      }
+    }
+  })
+
   test("advanced issue create validates the preflight detail identity", async () => {
     let saves = 0
     const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
@@ -766,7 +834,7 @@ describe("runCommand", () => {
         if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering" })
         if (name === "list_issue_labels") return Effect.succeed({ labels: [{ id: "label-id", name: "Bug" }], hasNextPage: false })
         if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
-        if (name === "list_users") return Effect.succeed({ users: [{ id: "user-id", email: "alice@example.com", name: "Alice" }], hasNextPage: false })
+        if (name === "list_users") return Effect.succeed({ users: [{ id: "user-id", email: "alice@example.com", name: "Alice", active: true, isAssignable: true, archivedAt: null }], hasNextPage: false })
         if (name === "save_issue") return Effect.succeed({ id: "issue-id" })
         return Effect.succeed({ id: "issue-id", title: "Launch", teamId: "team-id", assignee: { id: "user-id" }, priority: 2, labels: [{ id: "label-id" }] })
       }
@@ -813,6 +881,51 @@ describe("runCommand", () => {
       expect(error.message).toContain("belongs to another team")
       expect(saves).toBe(0)
     }
+  })
+
+  test("advanced issue selectors deduplicate aliases by canonical id", async () => {
+    const saves: Array<Readonly<Record<string, unknown>>> = []
+    const output = await run([
+      "issues", "create", "--team", "ENG", "--title", "Launch",
+      "--labels-json", '["label-id","Bug"]',
+      "--releases-json", '["release-id","v1"]',
+      "--blocks-json", '["blocked-id","ENG-2"]',
+      "--if-absent"
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "list_issue_labels") return Effect.succeed({ labels: [{ id: "label-id", name: "Bug" }], hasNextPage: false })
+        if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1" }], hasNextPage: false })
+        if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+        if (name === "get_issue" && ["blocked-id", "ENG-2"].includes(String(args.id))) {
+          return Effect.succeed({ id: "blocked-id", identifier: "ENG-2" })
+        }
+        if (name === "save_issue") {
+          saves.push(args)
+          return Effect.succeed({ id: "issue-id" })
+        }
+        if (name === "get_issue") {
+          return Effect.succeed({
+            id: "issue-id",
+            title: "Launch",
+            teamId: "team-id",
+            labels: [{ id: "label-id" }, { id: "label-id" }],
+            releases: [{ id: "release-id" }],
+            relations: { blocks: [{ id: "blocked-id" }] }
+          })
+        }
+        throw new Error(`unexpected ${name}`)
+      }
+    }))
+
+    expect(saves).toEqual([{
+      title: "Launch",
+      labels: ["label-id"],
+      setReleases: ["release-id"],
+      blocks: ["blocked-id"],
+      team: "team-id"
+    }])
+    expect(output).toMatchObject({ changed: true })
   })
 
   test("advanced issue labels share one guarded collection scan", async () => {
@@ -1235,7 +1348,7 @@ describe("runCommand", () => {
       callOfficialTool: (name, args) => {
         calls.push({ name, args })
         if (name === "get_issue") return Effect.succeed({ id: "issue-id", identifier: "ENG-123", teamId: "team-id", assignee: { id: "user-id", name: "Henrik" } })
-        if (name === "get_user") return Effect.succeed({ id: "user-id", name: "Henrik" })
+        if (name === "get_user") return Effect.succeed({ id: "user-id", name: "Henrik", active: true, isAssignable: true, archivedAt: null })
         throw new Error("must not repeat an already satisfied assignee mutation")
       }
     }))
