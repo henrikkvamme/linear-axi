@@ -32,6 +32,13 @@ const LinearDownloadUrl = HttpsUrl.check(Schema.makeFilter(
   (value) => new URL(value).origin === "https://uploads.linear.app",
   { expected: "an uploads.linear.app HTTPS URL on the default port" }
 ))
+const LinearUploadUrl = HttpsUrl.check(Schema.makeFilter(
+  (value) => {
+    const url = new URL(value)
+    return url.port === "" && (url.hostname === "storage.googleapis.com" || url.hostname.endsWith(".storage.googleapis.com"))
+  },
+  { expected: "a Google Cloud Storage HTTPS URL on the default port" }
+))
 
 const OptionalString = Schema.optionalKey(Schema.NullOr(Schema.String))
 const OptionalNumber = Schema.optionalKey(Schema.NullOr(NonNegativeSafeInteger))
@@ -70,7 +77,7 @@ const IssueAttachmentsSchema = Schema.Struct({
 })
 const PreparedUploadSchema = Schema.Struct({
   assetUrl: LinearPrivateAssetUrl,
-  uploadRequest: Schema.Struct({ url: HttpsUrl, headers: Schema.optionalKey(HeadersSchema) })
+  uploadRequest: Schema.Struct({ url: LinearUploadUrl, headers: Schema.optionalKey(HeadersSchema) })
 })
 const FinalizedUploadSchema = Schema.Union([
   Schema.Struct({ id: Schema.NonEmptyString }),
@@ -107,3 +114,4 @@ export const decodeUploadRecovery = Schema.decodeUnknownSync(UploadRecoverySchem
 export const decodeAttachmentCursor = Schema.decodeUnknownSync(AttachmentCursorSchema)
 export const decodeHttpsUrl = Schema.decodeUnknownSync(HttpsUrl)
 export const decodeLinearDownloadUrl = Schema.decodeUnknownSync(LinearDownloadUrl)
+export const decodeLinearUploadUrl = Schema.decodeUnknownSync(LinearUploadUrl)

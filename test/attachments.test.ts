@@ -605,6 +605,55 @@ describe("resumable attachment upload", () => {
     expect(calls).toBe(0)
   })
 
+  test("refuses prepared upload URLs outside trusted storage before sending bytes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
+    roots.push(root)
+    const source = join(root, "trace.txt")
+    writeFileSync(source, "hello world\n")
+    let uploadUrl = ""
+    let fetches = 0
+    let finalizes = 0
+    const uploadGateway = {
+      ...gateway({}),
+      callOfficialTool: (name: string) => {
+        if (name === "get_issue") return Effect.succeed({ id: "issue-1", identifier: "ENG-123", attachments: [] })
+        if (name === "prepare_attachment_upload") return Effect.succeed({
+          assetUrl: "https://uploads.linear.app/assets/stable-1",
+          uploadRequest: { url: uploadUrl, headers: { "content-type": "text/plain" } }
+        })
+        if (name === "create_attachment_from_upload") finalizes += 1
+        return Effect.succeed({ id: "attachment-1" })
+      }
+    } as LinearGateway
+
+    for (const unsafeUrl of [
+      "https://127.0.0.1/put",
+      "https://[::1]/put",
+      "https://10.0.0.1/put",
+      "https://localhost/put",
+      "https://metadata.google.internal/put",
+      "https://storage.googleapis.com.evil.test/put",
+      "https://storage.googleapis.com:8443/put"
+    ]) {
+      uploadUrl = unsafeUrl
+      const error = await Effect.runPromise(Effect.flip(runAttachmentCommand(
+        parseArgs(["attachments", "upload", "--issue", "ENG-123", "--file", source], commandSpecs),
+        uploadGateway,
+        {
+          stateRoot: join(root, "state"),
+          fetcher: async () => {
+            fetches += 1
+            return new Response(null, { status: 200 })
+          }
+        }
+      )!))
+      expect(error.message).toContain("unsafe or malformed prepared upload request")
+    }
+
+    expect(fetches).toBe(0)
+    expect(finalizes).toBe(0)
+  })
+
   test("uploads by prepare, streaming PUT, finalize, and verified readback", async () => {
     const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
     roots.push(root)
@@ -620,7 +669,7 @@ describe("resumable attachment upload", () => {
         if (name === "prepare_attachment_upload") return Effect.succeed({
           assetUrl: "https://uploads.linear.app/assets/stable-1",
           uploadRequest: {
-            url: "https://storage.example.test/put?signature=secret",
+            url: "https://linear-assets.storage.googleapis.com/put?signature=secret",
             headers: { "content-type": "text/plain", "content-length": "12", "x-signed-secret": "header-secret" }
           }
         })
@@ -689,7 +738,7 @@ describe("resumable attachment upload", () => {
         })
         if (name === "prepare_attachment_upload") return Effect.succeed({
           assetUrl: "https://uploads.linear.app/assets/stable-1",
-          uploadRequest: { url: "https://storage.example.test/put", headers: { "content-type": "text/plain" } }
+          uploadRequest: { url: "https://storage.googleapis.com/put", headers: { "content-type": "text/plain" } }
         })
         if (name === "create_attachment_from_upload") {
           finalizeCalls += 1
@@ -732,7 +781,7 @@ describe("resumable attachment upload", () => {
         if (name === "get_issue") return Effect.succeed({ id: "issue-1", identifier: "ENG-123", attachments: [] })
         if (name === "prepare_attachment_upload") return Effect.succeed({
           assetUrl: "https://uploads.linear.app/assets/stable-1",
-          uploadRequest: { url: "https://storage.example.test/put", headers: { "content-type": "text/plain" } }
+          uploadRequest: { url: "https://storage.googleapis.com/put", headers: { "content-type": "text/plain" } }
         })
         if (name === "create_attachment_from_upload") return Effect.succeed({ id: "attachment-1" })
         if (name === "get_attachment") return Effect.succeed(detail({
@@ -783,7 +832,7 @@ describe("resumable attachment upload", () => {
           prepares += 1
           return Effect.succeed({
             assetUrl: `https://uploads.linear.app/assets/stable-${prepares}`,
-            uploadRequest: { url: `https://storage.example.test/put/${prepares}`, headers: { "content-type": "text/plain" } }
+            uploadRequest: { url: `https://storage.googleapis.com/put/${prepares}`, headers: { "content-type": "text/plain" } }
           })
         }
         if (name === "create_attachment_from_upload") {
@@ -855,7 +904,7 @@ describe("resumable attachment upload", () => {
           prepares += 1
           return Effect.succeed({
             assetUrl: `https://uploads.linear.app/assets/stable-${prepares}`,
-            uploadRequest: { url: `https://storage.example.test/put?secret=${prepares}`, headers: { "x-private": `header-${prepares}`, "content-type": "text/plain" } }
+            uploadRequest: { url: `https://storage.googleapis.com/put?secret=${prepares}`, headers: { "x-private": `header-${prepares}`, "content-type": "text/plain" } }
           })
         }
         if (name === "create_attachment_from_upload") return Effect.succeed({ id: "attachment-1" })
@@ -877,7 +926,7 @@ describe("resumable attachment upload", () => {
           const first = await reader.read()
           expect(first.done).toBe(false)
           await reader.cancel()
-          throw new Error("contains https://storage.example.test/put?secret=1")
+          throw new Error("contains https://storage.googleapis.com/put?secret=1")
         }
         let streamed = 0
         let largestChunk = 0
@@ -917,7 +966,7 @@ describe("resumable attachment upload", () => {
         if (name === "get_issue") return Effect.succeed({ id: "issue-1", identifier: "ENG-123", attachments: [] })
         if (name === "prepare_attachment_upload") return Effect.succeed({
           assetUrl: "https://uploads.linear.app/assets/stable-1",
-          uploadRequest: { url: "https://storage.example.test/put", headers: { "content-type": "text/plain" } }
+          uploadRequest: { url: "https://storage.googleapis.com/put", headers: { "content-type": "text/plain" } }
         })
         if (name === "create_attachment_from_upload") finalized = true
         return Effect.succeed({ id: "attachment-1" })
@@ -953,7 +1002,7 @@ describe("resumable attachment upload", () => {
         if (name === "get_issue") return Effect.succeed({ id: "issue-1", identifier: "ENG-123", attachments: [] })
         if (name === "prepare_attachment_upload") return Effect.succeed({
           assetUrl: "https://uploads.linear.app/assets/stable-1",
-          uploadRequest: { url: "https://storage.example.test/put", headers: { "content-type": "text/plain" } }
+          uploadRequest: { url: "https://storage.googleapis.com/put", headers: { "content-type": "text/plain" } }
         })
         if (name === "create_attachment_from_upload") finalized = true
         return Effect.succeed({ id: "attachment-1" })
@@ -983,7 +1032,7 @@ describe("resumable attachment upload", () => {
           if (prepares === 1) return Effect.fail(new LinearApiError({ message: "prepare response lost", help: "retry" }))
           return Effect.succeed({
             assetUrl: "https://uploads.linear.app/assets/stable-2",
-            uploadRequest: { url: "https://storage.example.test/put", headers: { "content-type": "text/plain" } }
+            uploadRequest: { url: "https://storage.googleapis.com/put", headers: { "content-type": "text/plain" } }
           })
         }
         return Effect.die(`unexpected ${name}`)

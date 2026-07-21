@@ -27,9 +27,9 @@ import {
   decodeAttachmentWire,
   decodeFinalizedUpload,
   decodeHeadersWire,
-  decodeHttpsUrl,
   decodeIssueAttachments,
   decodeLinearDownloadUrl,
+  decodeLinearUploadUrl,
   decodePreparedUploadWire,
   decodeUploadRecovery,
   type AttachmentWire,
@@ -830,7 +830,7 @@ interface PreparedUpload {
 const decodePreparedUpload = Effect.fn("Attachments.decodePreparedUpload")(function*(value: unknown) {
   let prepared: PreparedUploadWire
   try { prepared = decodePreparedUploadWire(value) } catch {
-    return yield* domain("Official Linear MCP output shape drifted while preparing the upload", "Retry the upload from the same explicit file intent.")
+    return yield* domain("Linear returned an unsafe or malformed prepared upload request", "Retry the upload from the same explicit file intent.")
   }
   const assetUrl = prepared.assetUrl
   const uploadUrl = prepared.uploadRequest.url
@@ -928,7 +928,7 @@ const transferUpload = Effect.fn("Attachments.transferUpload")(function*(prepare
       return yield* domain("Direct attachment upload redirect was invalid or exceeded the safety limit", "Retry the same upload command.")
     }
     let redirected: string
-    try { redirected = decodeHttpsUrl(new URL(location, url).toString()) } catch {
+    try { redirected = decodeLinearUploadUrl(new URL(location, url).toString()) } catch {
       return yield* domain("Direct attachment upload refused an unsafe cross-origin redirect", "Retry the same upload command; never substitute an upload URL.")
     }
     if (new URL(redirected).origin !== new URL(url).origin) {

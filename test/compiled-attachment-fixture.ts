@@ -25,7 +25,7 @@ const gateway = {
       : name === "prepare_attachment_upload"
         ? {
             assetUrl: "https://uploads.linear.app/assets/stable-1",
-            uploadRequest: { url: "https://storage.example.test/put", headers: { "content-type": "text/plain" } }
+            uploadRequest: { url: "https://storage.googleapis.com/put", headers: { "content-type": "text/plain" } }
           }
         : name === "create_attachment_from_upload"
           ? { id: "attachment-1" }
