@@ -498,7 +498,7 @@ const fetchContent = Effect.fn("Attachments.fetchContent")(function*(attachment:
       })
     }).pipe(Effect.ensuring(Effect.sync(() => clearTimeout(timeout))))
     if (![301, 302, 303, 307, 308].includes(response.status)) {
-      if (!response.ok) {
+      if (response.status !== 200) {
         void response.body?.cancel().catch(() => undefined)
         return yield* domain(
           `Attachment ${attachment.id} download returned HTTP ${response.status}`,

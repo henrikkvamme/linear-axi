@@ -135,6 +135,21 @@ describe("attachment content boundary", () => {
     expect(error.message).toContain("length did not match")
   })
 
+  test("content fetch rejects successful responses that are not full-body HTTP 200", async () => {
+    for (const response of [
+      new Response(null, { status: 204 }),
+      new Response("partial", { status: 206 })
+    ]) {
+      const error = await Effect.runPromise(Effect.flip(runEffect(
+        ["attachments", "read", "--id", "attachment-1"],
+        detail({ size: null }),
+        { fetcher: async () => response }
+      )))
+
+      expect(error.message).toContain(`returned HTTP ${response.status}`)
+    }
+  })
+
   test("read fails closed when content exceeds metadata or the full-text ceiling", async () => {
     const metadataError = await Effect.runPromise(Effect.flip(runEffect(
       ["attachments", "read", "--id", "attachment-1"],
