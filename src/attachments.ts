@@ -14,7 +14,6 @@ import {
   createPrivateFileAt,
   statFileAt,
   syncFileDescriptor,
-  tryExchangeFilesAt,
   tryLinkFileAt,
   tryLockFileDescriptor,
   tryUnlinkFileAt,
@@ -962,7 +961,6 @@ interface DownloadTarget {
   readonly path: string
   readonly parent: string
   readonly parentIdentity: { readonly dev: number; readonly ino: number }
-  readonly existing: { readonly dev: number; readonly ino: number } | null
 }
 
 const validateDownloadTarget = Effect.fn("Attachments.validateDownloadTarget")(function*(raw: string, overwrite: boolean) {
@@ -996,11 +994,16 @@ const validateDownloadTarget = Effect.fn("Attachments.validateDownloadTarget")(f
       command: ["attachments", "download"]
     })
   }
+  if (existing) {
+    return yield* domain(
+      "Safe atomic conditional overwrite is unavailable",
+      "Choose a new output path, or remove the existing file after inspecting it and retry without --overwrite."
+    )
+  }
   return {
     path,
     parent,
-    parentIdentity: { dev: Number(parentMetadata.dev), ino: Number(parentMetadata.ino) },
-    existing: existing ? { dev: Number(existing.dev), ino: Number(existing.ino) } : null
+    parentIdentity: { dev: Number(parentMetadata.dev), ino: Number(parentMetadata.ino) }
   } satisfies DownloadTarget
 })
 
@@ -1040,7 +1043,7 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
   parentHandle: Awaited<ReturnType<typeof open>>
 ) {
   const destination = basename(target.path)
-  const temp = `.${destination}.${randomUUID()}.partial`
+  const temp = `.linear-axi-${randomUUID()}.partial`
   const acquire = Effect.try({
     try: () => {
       const opened = createPrivateFileAt(parentHandle.fd, temp)
@@ -1088,7 +1091,7 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
       return yield* domain("Could not fsync the downloaded attachment", "Check the destination filesystem and retry.")
     }
     yield* verifyDownloadParentUnchanged(target)
-    yield* installAtomicDownload(parentHandle.fd, temp, destination, target.existing)
+    yield* installAtomicDownload(parentHandle.fd, temp, destination)
     installed = true
     if (!syncFileDescriptor(parentHandle.fd)) {
       return yield* domain("Could not fsync the destination directory", "Check the destination filesystem and retry.")
@@ -1103,43 +1106,23 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
 const installAtomicDownload = Effect.fn("Attachments.installAtomicDownload")(function*(
   directoryFd: number,
   temp: string,
-  destination: string,
-  expected: DownloadTarget["existing"]
+  destination: string
 ) {
-  if (expected === null) {
-    if (!tryLinkFileAt(directoryFd, temp, destination)) {
-      if (statFileAt(directoryFd, destination) !== null) {
-        return yield* domain("Destination changed during download; refusing to replace it", "Inspect the destination and retry explicitly.")
-      }
-      return yield* domain("Could not atomically install the downloaded attachment without replacement", "Check destination filesystem support and permissions, then retry.")
+  if (!tryLinkFileAt(directoryFd, temp, destination)) {
+    if (statFileAt(directoryFd, destination) !== null) {
+      return yield* domain("Destination changed during download; refusing to replace it", "Inspect the destination and retry explicitly.")
     }
-    if (!tryUnlinkFileAt(directoryFd, temp)) {
-      return yield* domain("Could not remove the private download staging name", "Inspect the destination directory before retrying.")
-    }
-    return
-  }
-  if (!tryExchangeFilesAt(directoryFd, temp, destination)) {
-    const current = statFileAt(directoryFd, destination)
-    if (current === null || current.dev !== expected.dev || current.ino !== expected.ino) {
-      return yield* domain("Destination changed during download; refusing unsafe overwrite", "Inspect the destination and retry explicitly.")
-    }
-    return yield* domain("Destination filesystem does not support atomic verified overwrite", "Choose a local filesystem that supports atomic file exchange.")
-  }
-  const replaced = statFileAt(directoryFd, temp)
-  if (replaced === null || replaced.dev !== expected.dev || replaced.ino !== expected.ino) {
-    if (!tryExchangeFilesAt(directoryFd, temp, destination)) {
-      return yield* domain("Destination changed and atomic overwrite rollback failed", "Stop and inspect both the destination and its directory before retrying.")
-    }
-    return yield* domain("Destination changed during download; refusing unsafe overwrite", "Inspect the destination and retry explicitly.")
+    return yield* domain("Could not atomically install the downloaded attachment without replacement", "Check destination filesystem support and permissions, then retry.")
   }
   if (!tryUnlinkFileAt(directoryFd, temp)) {
-    return yield* domain("Could not remove the replaced destination after atomic overwrite", "Inspect the destination directory before retrying.")
+    return yield* domain("Could not remove the private download staging name", "Inspect the destination directory before retrying.")
   }
 })
 
 const verifyDownloadParentUnchanged = Effect.fn("Attachments.verifyDownloadParentUnchanged")(function*(target: DownloadTarget) {
-  const currentParent = yield* Effect.promise(() => realpath(dirname(target.path)).catch(() => undefined))
-  if (currentParent !== target.parent) {
+  const current = yield* Effect.promise(() => lstat(target.parent).catch(() => undefined))
+  if (!current || !current.isDirectory() || current.isSymbolicLink() ||
+    Number(current.dev) !== target.parentIdentity.dev || Number(current.ino) !== target.parentIdentity.ino) {
     return yield* domain("Destination directory changed during download; refusing unsafe install", "Inspect the destination path and retry explicitly.")
   }
 })

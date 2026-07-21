@@ -1,4 +1,4 @@
-import { constants, fstatSync } from "node:fs"
+import { constants } from "node:fs"
 import { dlopen } from "bun:ffi"
 
 const libraryPath = process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6"
@@ -11,16 +11,13 @@ const base = dlopen(libraryPath, {
   unlinkat: { args: ["i32", "ptr", "i32"], returns: "i32" },
   write: { args: ["i32", "ptr", "usize"], returns: "i64" }
 } as const)
-const renameAtX = process.platform === "darwin"
+const nativeStatFileAt = process.platform === "darwin" && process.arch === "x64"
   ? dlopen(libraryPath, {
-      renameatx_np: { args: ["i32", "ptr", "i32", "ptr", "u32"], returns: "i32" }
-    } as const)
-  : null
-const renameAt2 = process.platform === "darwin"
-  ? null
+      "fstatat$INODE64": { args: ["i32", "ptr", "ptr", "i32"], returns: "i32" }
+    } as const).symbols["fstatat$INODE64"]!
   : dlopen(libraryPath, {
-      renameat2: { args: ["i32", "ptr", "i32", "ptr", "u32"], returns: "i32" }
-    } as const)
+      fstatat: { args: ["i32", "ptr", "ptr", "i32"], returns: "i32" }
+    } as const).symbols.fstatat!
 
 const nameBuffer = (name: string): Buffer => Buffer.from(`${name}\0`, "utf8")
 
@@ -35,18 +32,13 @@ export const openFileAt = (directoryFd: number, name: string, flags: number, mod
 export const createPrivateFileAt = (directoryFd: number, name: string): number =>
   openFileAt(directoryFd, name, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
 
-export const statFileDescriptor = (fd: number): NativeFileIdentity => {
-  const stat = fstatSync(fd)
-  return { dev: Number(stat.dev), ino: Number(stat.ino) }
-}
-
 export const statFileAt = (directoryFd: number, name: string): NativeFileIdentity | null => {
-  const fd = openFileAt(directoryFd, name, constants.O_RDONLY | constants.O_NOFOLLOW)
-  if (fd < 0) return null
-  try {
-    return statFileDescriptor(fd)
-  } finally {
-    closeFileDescriptor(fd)
+  const stat = Buffer.alloc(256)
+  const noFollow = process.platform === "darwin" ? 0x0020 : 0x0100
+  if (nativeStatFileAt(directoryFd, nameBuffer(name), stat, noFollow) !== 0) return null
+  return {
+    dev: process.platform === "darwin" ? stat.readUInt32LE(0) : Number(stat.readBigUInt64LE(0)),
+    ino: Number(stat.readBigUInt64LE(8))
   }
 }
 
@@ -74,14 +66,6 @@ export const tryUnlinkFileAt = (directoryFd: number, name: string): boolean =>
 
 export const tryLinkFileAt = (directoryFd: number, source: string, destination: string): boolean =>
   base.symbols.linkat!(directoryFd, nameBuffer(source), directoryFd, nameBuffer(destination), 0) === 0
-
-export const tryExchangeFilesAt = (directoryFd: number, first: string, second: string): boolean => {
-  const firstName = nameBuffer(first)
-  const secondName = nameBuffer(second)
-  return renameAtX !== null
-    ? renameAtX.symbols.renameatx_np!(directoryFd, firstName, directoryFd, secondName, 0x00000002) === 0
-    : renameAt2!.symbols.renameat2!(directoryFd, firstName, directoryFd, secondName, 0x00000002) === 0
-}
 
 export const tryLockFileDescriptor = (fd: number): boolean => base.symbols.flock!(fd, 0x02 | 0x04) === 0
 

@@ -292,7 +292,7 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
     flags: new Set(["help", "id", "output", "overwrite", "max-bytes"]),
     valueFlags: new Set(["id", "output", "max-bytes"]),
     required: new Set(["id", "output"]),
-    help: "Usage: linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]\nWrites atomically and refuses an existing destination by default."
+    help: "Usage: linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]\nInstalls atomically without replacement. Existing destinations fail closed, including with --overwrite."
   },
   {
     path: ["attachments", "read"],

@@ -93,7 +93,7 @@ Example:
 
 ```text
 Usage: linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]
-Writes atomically and refuses an existing destination by default.
+Installs atomically without replacement. Existing destinations fail closed, including with --overwrite.
 Options:
   --help
   --id <id> (required)

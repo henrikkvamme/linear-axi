@@ -168,7 +168,7 @@ Conditional official command contracts:
    Completion criterion: restart without `--after` when current membership or ordering matters. Frontier pagination does not provide snapshot isolation.
 
 18. Keep attachment content at safe file boundaries.
-   Completion criterion: use `attachments read` only for bounded allowed UTF-8 text. Download images and other binary files for inspection with an appropriate local tool; never print binary bytes or base64. Downloads refuse existing destinations unless `--overwrite` names the exact unchanged regular file. Upload retries must reuse the same explicit issue and file intent so private recovery metadata can reconcile before finalize. The deprecated base64 `create_attachment` path and attachment deletion are not exposed.
+   Completion criterion: use `attachments read` only for bounded allowed UTF-8 text. Download images and other binary files for inspection with an appropriate local tool; never print binary bytes or base64. Downloads always refuse existing destinations because atomic expected-file replacement is unavailable; `--overwrite` fails closed when a destination exists. Upload retries must reuse the same explicit issue and file intent so private recovery metadata can reconcile before finalize. The deprecated base64 `create_attachment` path and attachment deletion are not exposed.
 
 ## Updating The CLI
 

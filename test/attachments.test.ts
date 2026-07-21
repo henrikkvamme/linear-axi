@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs"
+import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHash } from "node:crypto"
 import { Effect } from "effect"
 import { commandSpecs, parseArgs } from "../src/args"
 import { runAttachmentCommand, type AttachmentRuntime } from "../src/attachments"
-import { writeFileDescriptor } from "../src/native-files"
+import { statFileAt, writeFileDescriptor } from "../src/native-files"
 import { LinearApiError } from "../src/errors"
 import type { LinearGateway } from "../src/linear"
 
@@ -193,32 +193,52 @@ describe("attachment content boundary", () => {
     expect(Uint8Array.from(output)).toEqual(bytes)
   })
 
-  test("overwrite preserves a concurrent replacement instead of publishing", async () => {
+  test("overwrite fails closed before fetching without conditional replacement support", async () => {
     const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
     roots.push(root)
     const outputPath = join(root, "trace.txt")
-    const previousPath = join(root, "previous.txt")
     writeFileSync(outputPath, "original")
-    const bytes = new TextEncoder().encode("downloaded")
+    let fetched = false
     const error = await Effect.runPromise(Effect.flip(runEffect(
       ["attachments", "download", "--id", "attachment-1", "--output", outputPath, "--overwrite"],
-      detail({ size: bytes.length }),
-      {
-        fetcher: async () => new Response(new ReadableStream({
-          pull(controller) {
-            renameSync(outputPath, previousPath)
-            writeFileSync(outputPath, "concurrent")
-            controller.enqueue(bytes)
-            controller.close()
-          }
-        }, { highWaterMark: 0 }), { status: 200 })
-      }
+      detail(),
+      { fetcher: async () => { fetched = true; return new Response("downloaded") } }
     )))
 
-    expect(error.message).toContain("Destination changed")
-    expect(readFileSync(outputPath, "utf8")).toBe("concurrent")
-    expect(readFileSync(previousPath, "utf8")).toBe("original")
-    expect(readdirSync(root).every((name) => !name.endsWith(".partial"))).toBe(true)
+    expect(error.message).toContain("atomic conditional overwrite")
+    expect(fetched).toBe(false)
+    expect(readFileSync(outputPath, "utf8")).toBe("original")
+  })
+
+  test("pinned identity checks do not require destination read permission", () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
+    roots.push(root)
+    const outputPath = join(root, "private.txt")
+    writeFileSync(outputPath, "private")
+    chmodSync(outputPath, 0)
+    const directoryFd = openSync(root, constants.O_RDONLY)
+    try {
+      const expected = lstatSync(outputPath)
+      expect(statFileAt(directoryFd, "private.txt")).toEqual({
+        dev: Number(expected.dev),
+        ino: Number(expected.ino)
+      })
+    } finally {
+      closeSync(directoryFd)
+    }
+  })
+
+  test("download supports a destination basename at the filesystem limit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
+    roots.push(root)
+    const outputPath = join(root, "a".repeat(255))
+    const bytes = new TextEncoder().encode("downloaded")
+
+    await run(["attachments", "download", "--id", "attachment-1", "--output", outputPath], detail({ size: bytes.length }), {
+      fetcher: async () => new Response(bytes)
+    })
+
+    expect(readFileSync(outputPath)).toEqual(Buffer.from(bytes))
   })
 
   test("download removes partial data on checksum mismatch and rejects non-HTTPS redirects", async () => {
@@ -281,6 +301,27 @@ describe("attachment content boundary", () => {
     expect(swapError.message).toMatch(/directory changed|pin the destination directory/)
     expect(existsSync(join(moved, "trace.txt"))).toBe(false)
     expect(readdirSync(moved)).toEqual([])
+
+    rmSync(outputDir)
+    renameSync(moved, outputDir)
+    const replaced = join(root, "replaced")
+    const samePathError = await Effect.runPromise(Effect.flip(runEffect(
+      ["attachments", "download", "--id", "attachment-1", "--output", outputPath],
+      detail({ size: 12 }),
+      {
+        fetcher: async () => new Response(new ReadableStream({
+          pull(controller) {
+            renameSync(outputDir, replaced)
+            mkdirSync(outputDir)
+            controller.enqueue(new TextEncoder().encode("hello world\n"))
+            controller.close()
+          }
+        }, { highWaterMark: 0 }), { status: 200 })
+      }
+    )))
+    expect(samePathError.message).toContain("directory changed")
+    expect(existsSync(join(replaced, "trace.txt"))).toBe(false)
+    expect(existsSync(outputPath)).toBe(false)
   })
 })
 
