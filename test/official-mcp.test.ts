@@ -334,6 +334,36 @@ describe("official Linear MCP tool boundary", () => {
     expect(error.help).not.toContain("retry")
   })
 
+  test("attachment finalizers are not replayed after an expired-session response", async () => {
+    let initializations = 0
+    let finalizers = 0
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const request = JSON.parse(String(init?.body)) as Record<string, unknown>
+      if (request.method === "initialize") {
+        initializations += 1
+        return Response.json({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2025-03-26", capabilities: {} } }, {
+          headers: { "mcp-session-id": `session-${initializations}` }
+        })
+      }
+      if (request.method === "notifications/initialized") return new Response(null, { status: 202 })
+      finalizers += 1
+      return new Response(null, { status: 404 })
+    }
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher })
+
+    const error = await Effect.runPromise(Effect.flip(call("create_attachment_from_upload", {
+      issue: "issue-id",
+      assetUrl: "https://uploads.linear.app/assets/private"
+    })))
+
+    expect(initializations).toBe(1)
+    expect(finalizers).toBe(1)
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).toContain("attachments list --issue 'issue-id'")
+    expect(error.help).not.toContain("retry")
+    expect(JSON.stringify(error)).not.toContain("assets/private")
+  })
+
   test("malformed save tool payloads have ambiguous outcomes", async () => {
     const transport = initializedFetcher((request) => Response.json({
       jsonrpc: "2.0",

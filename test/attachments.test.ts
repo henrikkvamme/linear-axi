@@ -251,8 +251,8 @@ describe("attachment content boundary", () => {
     try {
       const expected = lstatSync(outputPath)
       expect(statFileAt(directoryFd, "private.txt")).toEqual({
-        dev: Number(expected.dev),
-        ino: Number(expected.ino)
+        dev: BigInt(expected.dev),
+        ino: BigInt(expected.ino)
       })
     } finally {
       closeSync(directoryFd)
@@ -614,7 +614,13 @@ describe("resumable attachment upload", () => {
         return Effect.die(`unexpected ${name}`)
       }
     } as LinearGateway
-    const runtime = { stateRoot: join(root, "state"), fetcher: async () => new Response(null, { status: 200 }) }
+    const runtime = {
+      stateRoot: join(root, "state"),
+      fetcher: async (_url: string | URL | Request, init?: RequestInit) => {
+        await new Response(init?.body).arrayBuffer()
+        return new Response(null, { status: 200 })
+      }
+    }
 
     await expect(runUpload(source, uploadGateway, runtime)).rejects.toThrow("outcome is unknown")
     const output = await runUpload(source, uploadGateway, runtime)
@@ -653,7 +659,10 @@ describe("resumable attachment upload", () => {
     ], commandSpecs)
     const effect = runAttachmentCommand(parsed, uploadGateway, {
       stateRoot: join(root, "state"),
-      fetcher: async () => new Response(null, { status: 200 })
+      fetcher: async (_url, init) => {
+        await new Response(init?.body).arrayBuffer()
+        return new Response(null, { status: 200 })
+      }
     })!
 
     const error = await Effect.runPromise(Effect.flip(effect))
@@ -708,12 +717,13 @@ describe("resumable attachment upload", () => {
     let puts = 0
     const runtime = {
       stateRoot: join(root, "state"),
-      fetcher: async () => {
+      fetcher: async (_url: string | URL | Request, init?: RequestInit) => {
         puts += 1
         if (puts === 1) {
           notifyFirstPut()
           await firstPutEntered
         }
+        await new Response(init?.body).arrayBuffer()
         return new Response(null, { status: 200 })
       }
     }
@@ -803,6 +813,42 @@ describe("resumable attachment upload", () => {
     await runUpload(source, uploadGateway, runtime)
     expect(prepares).toBe(2)
     expect(puts).toBe(2)
+  })
+
+  test("upload rejects bytes changed after source hashing before finalize", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
+    roots.push(root)
+    const source = join(root, "trace.txt")
+    writeFileSync(source, "hello world\n")
+    let finalized = false
+    const uploadGateway = {
+      ...gateway({}),
+      callOfficialTool: (name: string) => {
+        if (name === "get_issue") return Effect.succeed({ id: "issue-1", identifier: "ENG-123", attachments: [] })
+        if (name === "prepare_attachment_upload") return Effect.succeed({
+          assetUrl: "https://uploads.linear.app/assets/stable-1",
+          uploadRequest: { url: "https://storage.example.test/put", headers: { "content-type": "text/plain" } }
+        })
+        if (name === "create_attachment_from_upload") finalized = true
+        return Effect.succeed({ id: "attachment-1" })
+      }
+    } as LinearGateway
+
+    const error = await Effect.runPromise(Effect.flip(runAttachmentCommand(
+      parseArgs(["attachments", "upload", "--issue", "ENG-123", "--file", source], commandSpecs),
+      uploadGateway,
+      {
+        stateRoot: join(root, "state"),
+        fetcher: async (_url, init) => {
+          writeFileSync(source, "HELLO WORLD\n")
+          await new Response(init?.body).arrayBuffer()
+          return new Response(null, { status: 200 })
+        }
+      }
+    )!))
+
+    expect(error.message).toContain("bytes changed during transfer")
+    expect(finalized).toBe(false)
   })
 
   test("upload refuses cross-origin redirects before finalize", async () => {

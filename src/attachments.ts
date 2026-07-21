@@ -94,10 +94,10 @@ interface UploadSource {
   readonly size: number
   readonly mediaType: string
   readonly sha256: string
-  readonly dev: number
-  readonly ino: number
-  readonly mtimeMs: number
-  readonly ctimeMs: number
+  readonly dev: bigint
+  readonly ino: bigint
+  readonly mtimeNs: bigint
+  readonly ctimeNs: bigint
   readonly handle: Awaited<ReturnType<typeof open>>
 }
 
@@ -626,7 +626,7 @@ const openUploadSource = Effect.fn("Attachments.openUploadSource")(function*(par
   if (raw.includes("\0")) return yield* usage("--file contains a NUL byte", parsed)
   const path = resolve(raw)
   const link = yield* Effect.tryPromise({
-    try: () => lstat(path),
+    try: () => lstat(path, { bigint: true }),
     catch: () => new UsageError({ message: "--file does not exist or is a broken link", help: "Pass an explicit existing local regular file." })
   })
   if (!link.isFile() || link.isSymbolicLink()) return yield* usage("--file must be an explicit local regular file, not a directory, link, device, FIFO, or socket", parsed)
@@ -635,10 +635,10 @@ const openUploadSource = Effect.fn("Attachments.openUploadSource")(function*(par
     catch: () => new UsageError({ message: "--file could not be opened safely as a regular file", help: "Pass an explicit non-symlink local file." })
   })
   const metadata = yield* Effect.tryPromise({
-    try: () => handle.stat(),
+    try: () => handle.stat({ bigint: true }),
     catch: () => new UsageError({ message: "--file metadata could not be read", help: "Check the file and retry." })
   })
-  if (!metadata.isFile() || Number(metadata.dev) !== Number(link.dev) || Number(metadata.ino) !== Number(link.ino)) {
+  if (!metadata.isFile() || metadata.dev !== link.dev || metadata.ino !== link.ino) {
     yield* Effect.promise(() => handle.close().catch(() => undefined))
     return yield* usage("--file changed while it was being opened safely", parsed)
   }
@@ -681,7 +681,7 @@ const openUploadSource = Effect.fn("Attachments.openUploadSource")(function*(par
   }
   const source: UploadSource = {
     path, filename, size, mediaType: mediaType.toLowerCase(), sha256: hasher.digest("hex"),
-    dev: Number(metadata.dev), ino: Number(metadata.ino), mtimeMs: metadata.mtimeMs, ctimeMs: metadata.ctimeMs, handle
+    dev: metadata.dev, ino: metadata.ino, mtimeNs: metadata.mtimeNs, ctimeNs: metadata.ctimeNs, handle
   }
   yield* assertSourceUnchanged(source)
   return source
@@ -689,11 +689,11 @@ const openUploadSource = Effect.fn("Attachments.openUploadSource")(function*(par
 
 const assertSourceUnchanged = Effect.fn("Attachments.assertSourceUnchanged")(function*(source: UploadSource) {
   const current = yield* Effect.tryPromise({
-    try: () => source.handle.stat(),
+    try: () => source.handle.stat({ bigint: true }),
     catch: () => new UsageError({ message: "--file became unavailable during upload", help: "Retry with a stable regular file." })
   })
-  if (!current.isFile() || Number(current.size) !== source.size || Number(current.dev) !== source.dev ||
-    Number(current.ino) !== source.ino || current.mtimeMs !== source.mtimeMs || current.ctimeMs !== source.ctimeMs) {
+  if (!current.isFile() || Number(current.size) !== source.size || current.dev !== source.dev ||
+    current.ino !== source.ino || current.mtimeNs !== source.mtimeNs || current.ctimeNs !== source.ctimeNs) {
     return yield* Effect.fail(new UsageError({ message: "--file changed during upload", help: "Retry only after the source file is stable." }))
   }
 })
@@ -771,8 +771,8 @@ const acquireUploadIntentLock = Effect.fn("Attachments.acquireUploadIntentLock")
   })
   const safe = yield* Effect.promise(async () => {
     try {
-      const [opened, current] = await Promise.all([handle.stat(), lstat(path)])
-      return opened.isFile() && !current.isSymbolicLink() && Number(opened.dev) === Number(current.dev) && Number(opened.ino) === Number(current.ino)
+      const [opened, current] = await Promise.all([handle.stat({ bigint: true }), lstat(path, { bigint: true })])
+      return opened.isFile() && !current.isSymbolicLink() && opened.dev === current.dev && opened.ino === current.ino
     } catch {
       return false
     }
@@ -842,38 +842,86 @@ const decodePreparedUpload = Effect.fn("Attachments.decodePreparedUpload")(funct
   return { assetUrl, uploadUrl, headers: safeHeaders }
 })
 
+interface HashedUploadBody {
+  readonly body: ReadableStream<Uint8Array>
+  readonly sha256: Promise<string>
+  readonly destroy: () => void
+}
+
+const hashedUploadBody = (source: UploadSource): HashedUploadBody => {
+  const stream = createReadStream("", { fd: source.handle.fd, start: 0, end: source.size - 1, autoClose: false })
+  const hasher = new Bun.CryptoHasher("sha256")
+  let settled = false
+  let resolveSha256!: (value: string) => void
+  let rejectSha256!: (cause: unknown) => void
+  const sha256 = new Promise<string>((resolvePromise, rejectPromise) => {
+    resolveSha256 = resolvePromise
+    rejectSha256 = rejectPromise
+  })
+  const settle = (continuation: () => void) => {
+    if (settled) return
+    settled = true
+    continuation()
+  }
+  const body = (Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>).pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      hasher.update(chunk)
+      controller.enqueue(chunk)
+    },
+    flush() {
+      settle(() => resolveSha256(hasher.digest("hex")))
+    }
+  }))
+  stream.once("error", (cause) => settle(() => rejectSha256(cause)))
+  stream.once("close", () => {
+    if (!stream.readableEnded) settle(() => rejectSha256(new Error("upload source stream closed before completion")))
+  })
+  void sha256.catch(() => undefined)
+  return { body, sha256, destroy: () => stream.destroy() }
+}
+
 const transferUpload = Effect.fn("Attachments.transferUpload")(function*(prepared: PreparedUpload, source: UploadSource, runtime: AttachmentRuntime) {
   const headers = yield* uploadRequestHeaders(prepared.headers, source.size)
   let url = prepared.uploadUrl
   for (let redirects = 0; redirects <= 2; redirects += 1) {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), runtime.requestTimeoutMs)
-    const stream = createReadStream("", { fd: source.handle.fd, start: 0, end: source.size - 1, autoClose: false })
-    const body = Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>
-    const response = yield* Effect.tryPromise({
-      try: () => abortablePromise(runtime.fetcher(url, {
-        method: "PUT",
-        headers,
-        body,
-        redirect: "manual",
-        signal: controller.signal,
-        duplex: "half"
-      } as RequestInit), controller.signal),
+    const upload = hashedUploadBody(source)
+    const transferred = yield* Effect.tryPromise({
+      try: async () => {
+        const response = await abortablePromise(runtime.fetcher(url, {
+          method: "PUT",
+          headers,
+          body: upload.body,
+          redirect: "manual",
+          signal: controller.signal,
+          duplex: "half"
+        } as RequestInit), controller.signal)
+        if (!response.ok || [307, 308].includes(response.status)) return { response, sha256: null }
+        return { response, sha256: await abortablePromise(upload.sha256, controller.signal) }
+      },
       catch: () => new LinearDomainError({
         message: "Direct attachment byte transfer failed",
         help: "Retry the same upload command; it will safely prepare a fresh signed request."
       })
     }).pipe(
-      Effect.onError(() => Effect.sync(() => stream.destroy())),
+      Effect.onError(() => Effect.sync(upload.destroy)),
       Effect.ensuring(Effect.sync(() => clearTimeout(timeout)))
     )
+    const response = transferred.response
     if (![307, 308].includes(response.status)) {
       void response.body?.cancel().catch(() => undefined)
       if (!response.ok) {
+        upload.destroy()
         return yield* domain(`Direct attachment byte transfer returned HTTP ${response.status}`, "Retry the same upload command; it will safely prepare a fresh signed request.")
+      }
+      if (transferred.sha256 !== source.sha256) {
+        upload.destroy()
+        return yield* domain("Upload source bytes changed during transfer", "Retry only after the source file is stable.")
       }
       return
     }
+    upload.destroy()
     void response.body?.cancel().catch(() => undefined)
     const location = response.headers.get("location")
     if (!location || redirects === 2) {
@@ -1027,7 +1075,7 @@ const decodeCursor = Effect.fn("Attachments.decodeCursor")(function*(
 interface DownloadTarget {
   readonly path: string
   readonly parent: string
-  readonly parentIdentity: { readonly dev: number; readonly ino: number }
+  readonly parentIdentity: NativeFileIdentity
 }
 
 const validateDownloadTarget = Effect.fn("Attachments.validateDownloadTarget")(function*(raw: string, overwrite: boolean) {
@@ -1044,7 +1092,7 @@ const validateDownloadTarget = Effect.fn("Attachments.validateDownloadTarget")(f
     })
   }
   const parentMetadata = yield* Effect.tryPromise({
-    try: () => lstat(parent),
+    try: () => lstat(parent, { bigint: true }),
     catch: () => new UsageError({ message: "--output parent directory became unavailable", help: "Choose a stable destination directory." })
   })
   if (!parentMetadata.isDirectory() || parentMetadata.isSymbolicLink()) {
@@ -1070,7 +1118,7 @@ const validateDownloadTarget = Effect.fn("Attachments.validateDownloadTarget")(f
   return {
     path,
     parent,
-    parentIdentity: { dev: Number(parentMetadata.dev), ino: Number(parentMetadata.ino) }
+    parentIdentity: { dev: parentMetadata.dev, ino: parentMetadata.ino }
   } satisfies DownloadTarget
 })
 
@@ -1089,10 +1137,10 @@ const writeAtomicDownload = Effect.fn("Attachments.writeAtomicDownload")(functio
     acquireParent,
     (parentHandle) => Effect.gen(function*() {
       const opened = yield* Effect.tryPromise({
-        try: () => parentHandle.stat(),
+        try: () => parentHandle.stat({ bigint: true }),
         catch: () => new LinearDomainError({ message: "Could not inspect the pinned destination directory", help: "Inspect the destination path and retry." })
       })
-      if (!opened.isDirectory() || Number(opened.dev) !== target.parentIdentity.dev || Number(opened.ino) !== target.parentIdentity.ino) {
+      if (!opened.isDirectory() || opened.dev !== target.parentIdentity.dev || opened.ino !== target.parentIdentity.ino) {
         return yield* domain("Destination directory changed before download; refusing unsafe install", "Inspect the destination path and retry explicitly.")
       }
       return yield* writeAtomicDownloadPinned(response, target, attachment, maxBytes, timeoutMs, parentHandle)
@@ -1159,8 +1207,8 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
     }
     const stagedIdentity = yield* Effect.try({
       try: () => {
-        const metadata = fstatSync(fd)
-        return { dev: Number(metadata.dev), ino: Number(metadata.ino) } satisfies NativeFileIdentity
+        const metadata = fstatSync(fd, { bigint: true })
+        return { dev: metadata.dev, ino: metadata.ino } satisfies NativeFileIdentity
       },
       catch: () => new LinearDomainError({
         message: "Could not verify the private downloaded attachment",
@@ -1200,9 +1248,9 @@ const installAtomicDownload = Effect.fn("Attachments.installAtomicDownload")(fun
 })
 
 const verifyDownloadParentUnchanged = Effect.fn("Attachments.verifyDownloadParentUnchanged")(function*(target: DownloadTarget) {
-  const current = yield* Effect.promise(() => lstat(target.parent).catch(() => undefined))
+  const current = yield* Effect.promise(() => lstat(target.parent, { bigint: true }).catch(() => undefined))
   if (!current || !current.isDirectory() || current.isSymbolicLink() ||
-    Number(current.dev) !== target.parentIdentity.dev || Number(current.ino) !== target.parentIdentity.ino) {
+    current.dev !== target.parentIdentity.dev || current.ino !== target.parentIdentity.ino) {
     return yield* domain("Destination directory changed during download; refusing unsafe install", "Inspect the destination path and retry explicitly.")
   }
 })
@@ -1222,9 +1270,9 @@ const verifyCompletedDownloadDestination = Effect.fn("Attachments.verifyComplete
 })
 
 const verifyCompletedDownloadParent = Effect.fn("Attachments.verifyCompletedDownloadParent")(function*(target: DownloadTarget) {
-  const current = yield* Effect.promise(() => lstat(target.parent).catch(() => undefined))
+  const current = yield* Effect.promise(() => lstat(target.parent, { bigint: true }).catch(() => undefined))
   if (!current || !current.isDirectory() || current.isSymbolicLink() ||
-    Number(current.dev) !== target.parentIdentity.dev || Number(current.ino) !== target.parentIdentity.ino) {
+    current.dev !== target.parentIdentity.dev || current.ino !== target.parentIdentity.ino) {
     return yield* domain(
       "Destination directory changed as download installation completed; output path was not confirmed",
       "A verified file may remain in the original moved directory; inspect the destination paths before retrying."

@@ -56,8 +56,8 @@ export const ensureNativeFileSupport = (): void => {
 const nameBuffer = (name: string): Buffer => Buffer.from(`${name}\0`, "utf8")
 
 export interface NativeFileIdentity {
-  readonly dev: number
-  readonly ino: number
+  readonly dev: bigint
+  readonly ino: bigint
 }
 
 export const openFileAt = (directoryFd: number, name: string, flags: number, mode = 0): number =>
@@ -71,8 +71,8 @@ export const statFileAt = (directoryFd: number, name: string): NativeFileIdentit
   const noFollow = process.platform === "darwin" ? 0x0020 : 0x0100
   if (nativeFiles().nativeStatFileAt(directoryFd, nameBuffer(name), stat, noFollow) !== 0) return null
   return {
-    dev: process.platform === "darwin" ? stat.readUInt32LE(0) : Number(stat.readBigUInt64LE(0)),
-    ino: Number(stat.readBigUInt64LE(8))
+    dev: process.platform === "darwin" ? BigInt(stat.readUInt32LE(0)) : stat.readBigUInt64LE(0),
+    ino: stat.readBigUInt64LE(8)
   }
 }
 

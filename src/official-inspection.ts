@@ -5,6 +5,9 @@ export const officialMutationInspectionCommand = (
   args: Readonly<Record<string, unknown>>
 ): string => {
   const id = shellQuote(String(args.id))
+  if (tool === "create_attachment_from_upload") {
+    return `linear-axi attachments list --issue ${shellQuote(String(args.issue))} --limit 100`
+  }
   if (tool === "save_issue") {
     if (nonEmptyString(args.id)) {
       const inclusions = issueInspectionInclusions(args)
