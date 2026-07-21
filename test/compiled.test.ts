@@ -84,6 +84,10 @@ test("standalone binary runs without a source checkout", () => {
         expect(helpStdout).toContain("conflicts: --add-teams-json, --remove-teams-json")
         expect(helpStdout).toContain("--full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.")
       }
+      if (command.join(" ") === "labels create") {
+        expect(helpStdout).toContain("--parent <group-id-or-name>")
+        expect(helpStdout).not.toContain("--parent <issue>")
+      }
     }
 
     const rejected = Bun.spawnSync({
@@ -107,6 +111,17 @@ test("standalone binary runs without a source checkout", () => {
     expect(repeated.exitCode).toBe(2)
     expect(new TextDecoder().decode(repeated.stderr)).toBe("")
     expect(new TextDecoder().decode(repeated.stdout)).toContain("--state may only be specified once")
+
+    const conflicting = Bun.spawnSync({
+      cmd: [binary, "projects", "update", "--id", "project-id", "--summary", "text", "--clear-summary"],
+      cwd: root,
+      env: { HOME: home, PATH: process.env.PATH ?? "" },
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    expect(conflicting.exitCode).toBe(2)
+    expect(new TextDecoder().decode(conflicting.stderr)).toBe("")
+    expect(new TextDecoder().decode(conflicting.stdout)).toContain("--summary and --clear-summary are mutually exclusive")
 
     const homeResult = Bun.spawnSync({
       cmd: [binary],

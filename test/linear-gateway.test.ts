@@ -2037,6 +2037,33 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(result).toMatchObject({ changed: false, result: "directed relation already exists (no-op)" })
   })
 
+  test("tuple relation removal caps ambiguous candidate ids", async () => {
+    const source = issue()
+    const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
+    const relations = Array.from({ length: 15 }, (_, index) => ({
+      id: `relation-${String(index + 1).padStart(2, "0")}`,
+      type: "blocks",
+      issueId: source.id,
+      relatedIssueId: target.id,
+      archivedAt: undefined
+    }))
+    source.relations = async () => page(relations) as never
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source])
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).removeRelation({
+      issue: "BEN-1",
+      relatedIssue: "BEN-2",
+      type: "blocks"
+    })))
+
+    expect(error.message).toContain("Ambiguous directed relation")
+    expect(error.help).toContain("showing 10 of 15")
+    expect(error.help).not.toContain("relation-11")
+  })
+
   test("tuple relation removal resolves an archived target", async () => {
     const source = issue()
     const target = issue({

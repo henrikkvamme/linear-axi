@@ -51,6 +51,7 @@ import type {
 } from "./linear"
 import { decodeLocalCursorOffset, fetchAllPages, type ConnectionLike, type LocalCursorKind } from "./linear-pagination"
 import { makeOfficialMcpToolCaller } from "./official-mcp"
+import { renderCandidateIds } from "./official-selector"
 import { normalizeRichText, richTextEqual } from "./rich-text"
 import {
   completedStates,
@@ -913,8 +914,8 @@ const removeRelation = async (
     const matches = relations.filter((candidate) => !candidate.archivedAt && relationMatches(candidate, source.id, target.id, type))
     if (matches.length > 1) {
       throw conflict(
-        `Ambiguous directed relation; matched ${matches.map((candidate) => candidate.id).join(", ")}`,
-        "Retry with `relations remove --id <relation-id>`."
+        "Ambiguous directed relation",
+        `${renderCandidateIds(matches.map((candidate) => ({ id: candidate.id })))} Retry with \`relations remove --id <relation-id>\`.`
       )
     }
     relation = matches[0]

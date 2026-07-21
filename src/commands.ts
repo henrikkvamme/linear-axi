@@ -481,12 +481,16 @@ const updateOfficialIssue = (
   const input = issuePropertyInput(parsed, description, readStringFlag(parsed.flags, "labels-json"))
   input.id = id
   const before = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(id, input))
-  if (!Predicate.isObject(before) || !officialEntityMatchesSelector(before, id)) return yield* officialShapeError("get_issue identity")
+  if (!Predicate.isObject(before) || !nonEmptyString(before.id) || !officialEntityMatchesSelector(before, id)) {
+    return yield* officialShapeError("get_issue identity")
+  }
+  const canonicalId = before.id
   yield* requireOfficialEntityActive("issue", id, before)
+  input.id = canonicalId
   if (timestamp !== undefined && before.updatedAt !== timestamp) {
     return yield* Effect.fail(new LinearDomainError({
       message: `Issue changed since ${timestamp}; refusing a known-stale description update`,
-      help: `Run \`linear-axi issues inspect --id ${id} --full\`, then retry with its updatedAt.`
+      help: `Run \`linear-axi issues inspect --id ${canonicalId} --full\`, then retry with its updatedAt.`
     }))
   }
   if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialAssignableUserSelector(gateway, input.assignee)
@@ -510,8 +514,8 @@ const updateOfficialIssue = (
   yield* gateway.callOfficialTool("save_issue", input)
   const inspection = officialMutationInspectionCommand("save_issue", input)
   return yield* Effect.gen(function*() {
-    const after = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(id, input))
-    if (!Predicate.isObject(after) || !officialEntityMatchesSelector(after, id)) return yield* officialShapeError("get_issue identity")
+    const after = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(canonicalId, input))
+    if (!Predicate.isObject(after) || !officialEntityMatchesSelector(after, canonicalId)) return yield* officialShapeError("get_issue identity")
     if (!officialIssueSatisfies(after, input)) {
       return yield* Effect.fail(new LinearDomainError({ message: "save_issue update could not be verified" }))
     }

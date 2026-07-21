@@ -509,7 +509,9 @@ const completeHelp = (spec: CommandSpec): CommandSpec => {
   const options = [...spec.flags].map((flag) => {
     const optionValue = flag === "fields" && spec.fields
       ? `<${spec.fields.join(",")}>`
-      : (optionValues[flag] ?? "<value>")
+      : spec.path.join(" ") === "labels create" && flag === "parent"
+        ? "<group-id-or-name>"
+        : (optionValues[flag] ?? "<value>")
     const value = spec.valueFlags?.has(flag) ? ` ${optionValue}` : ""
     const required = spec.required?.has(flag) ? " (required)" : ""
     return `  --${flag}${value}${required}`

@@ -307,7 +307,7 @@ Options:
   --id <id>
   --if-absent
   --group
-  --parent <issue>
+  --parent <group-id-or-name>
 Example:
   linear-axi labels create --team ENG --name wayfinder:task --color '#123456'
 ```

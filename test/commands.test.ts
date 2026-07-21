@@ -227,6 +227,72 @@ describe("runCommand", () => {
     }
   })
 
+  test("official detail commands require exact documented identities", async () => {
+    const cases = [
+      { argv: ["agent-skills", "view", "--id", "skill-id"], result: { id: "other-skill" } },
+      { argv: ["documents", "view", "--id", "document-slug"], result: { id: "document-id", slugId: "other-slug" } },
+      { argv: ["issues", "inspect", "--id", "ENG-123"], result: { id: "issue-id", identifier: "OPS-123" } },
+      { argv: ["projects", "view", "--query", "Roadmap"], result: { id: "project-id", name: "Other", slugId: "other" } },
+      { argv: ["releases", "view", "--id", "release-slug"], result: { id: "release-id", slugId: "other-release" } },
+      { argv: ["release-notes", "view", "--id", "note-slug"], result: { id: "note-id", slugId: "other-note" } },
+      { argv: ["diffs", "view", "--id", "ENG-42"], result: { id: "diff-id", identifier: "ENG-43" } },
+      { argv: ["teams", "view", "--query", "ENG"], result: { id: "team-id", key: "OPS", name: "Operations" } },
+      { argv: ["users", "view", "--query", "alice@example.com"], result: { id: "user-id", email: "bob@example.com", name: "Bob" } }
+    ] as const
+
+    for (const entry of cases) {
+      const error = await Effect.runPromise(Effect.flip(runCommand(
+        parseArgs(entry.argv, commandSpecs),
+        fakeGateway({ callOfficialTool: () => Effect.succeed(entry.result) }, false),
+        "/repo/src/main.ts"
+      )))
+
+      expect(error._tag, entry.argv.join(" ")).toBe("LinearDomainError")
+      expect(error.message, entry.argv.join(" ")).toContain("output shape drifted")
+    }
+  })
+
+  test("milestone detail canonicalizes and validates project ownership", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const output = await run(["milestones", "view", "--project", "Roadmap", "--query", "Launch"], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_project") return Effect.succeed({ id: "project-id", name: "Roadmap", slugId: "roadmap" })
+        return Effect.succeed({ id: "milestone-id", name: "Launch", project: { id: "project-id" } })
+      }
+    }, false))
+
+    expect(output.milestone).toMatchObject({ id: "milestone-id", name: "Launch" })
+    expect(calls).toEqual([
+      { name: "get_project", args: { query: "Roadmap" } },
+      { name: "get_milestone", args: { project: "project-id", query: "Launch" } }
+    ])
+
+    const ownershipError = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["milestones", "view", "--project", "Roadmap", "--query", "Launch"], commandSpecs),
+      fakeGateway({
+        callOfficialTool: (name) => Effect.succeed(name === "get_project"
+          ? { id: "project-id", name: "Roadmap" }
+          : { id: "milestone-id", name: "Launch", project: { id: "other-project" } })
+      }, false),
+      "/repo/src/main.ts"
+    )))
+
+    expect(ownershipError._tag).toBe("LinearDomainError")
+    expect(ownershipError.message).toContain("output shape drifted")
+  })
+
+  test("users view proves the me selector against the authenticated viewer", async () => {
+    const error = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["users", "view", "--query", "me"], commandSpecs),
+      fakeGateway({ callOfficialTool: () => Effect.succeed({ id: "other-user", name: "Someone" }) }, false),
+      "/repo/src/main.ts"
+    )))
+
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("output shape drifted")
+  })
+
   test("official direct-array tools render definitive non-paginated lists", async () => {
     const output = await run(["cycles", "list", "--team-id", "team-id", "--type", "current"], fakeGateway({
       callOfficialTool: (name, args) => {
@@ -292,6 +358,31 @@ describe("runCommand", () => {
     )))
     expect(repeatedCursorError._tag).toBe("LinearDomainError")
     expect(repeatedCursorError.message).toContain("next cursor to advance beyond --after")
+  })
+
+  test("official conflicts metadata rejects contradictory flags before gateway access", async () => {
+    const cases = [
+      ["documents", "update", "--id", "document-id", "--content", "text", "--clear-content", "--if-updated-at", baseIssue.updatedAt],
+      ["projects", "update", "--id", "project-id", "--summary", "text", "--clear-summary"],
+      ["projects", "update", "--id", "project-id", "--add-teams-json", "[\"ENG\"]", "--teams-json", "[\"ENG\"]"],
+      ["releases", "update", "--id", "release-id", "--start-date", "2026-07-21", "--clear-start-date"],
+      ["release-notes", "update", "--id", "note-id", "--releases-json", "[\"release-id\"]", "--range-from", "release-a", "--range-to", "release-b"],
+      ["milestones", "update", "--project", "Roadmap", "--id", "Launch", "--target-date", "2026-07-21", "--clear-target-date"],
+      ["status-updates", "update", "--type", "project", "--id", "update-id", "--body", "text", "--clear-body", "--if-updated-at", baseIssue.updatedAt]
+    ] as const
+
+    for (const argv of cases) {
+      let calls = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(
+        parseArgs(argv, commandSpecs),
+        fakeGateway({ callOfficialTool: () => { calls += 1; return Effect.succeed({}) } }),
+        "/repo/src/main.ts"
+      )))
+
+      expect(error._tag, argv.join(" ")).toBe("UsageError")
+      expect(error.message, argv.join(" ")).toContain("mutually exclusive")
+      expect(calls, argv.join(" ")).toBe(0)
+    }
   })
 
   test("official list projections reject rows without any default fields", async () => {
@@ -1528,7 +1619,7 @@ describe("runCommand", () => {
             relations: { duplicateOf: { id: "duplicate-id" } }
           })
     }), "/repo/src/main.ts")))
-    expect(issueError.help).toContain("linear-axi issues inspect --id 'ENG-123' --relations --releases --full")
+    expect(issueError.help).toContain("linear-axi issues inspect --id 'issue-id' --relations --releases --full")
 
     const noteError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
       "release-notes", "update", "--id", "note-id", "--releases-json", "[\"release-1\"]"
@@ -2807,9 +2898,11 @@ describe("runCommand", () => {
         calls.push({ name, args })
         if (name === "get_issue" && args.id === "eng-123") {
           reads += 1
-          return Effect.succeed(reads === 1
-            ? { id: "issue-id", identifier: "ENG-123", teamId: "team-id", releases: [], relations: { blocks: [] } }
-            : { id: "issue-id", identifier: "ENG-123", teamId: "team-id", releases: [{ id: "release-id" }], relations: { blocks: [{ id: "blocked-id", identifier: "ENG-2" }] } })
+          return Effect.succeed({ id: "issue-id", identifier: "ENG-123", teamId: "team-id", releases: [], relations: { blocks: [] } })
+        }
+        if (name === "get_issue" && args.id === "issue-id") {
+          reads += 1
+          return Effect.succeed({ id: "issue-id", identifier: "RENAMED-123", teamId: "team-id", releases: [{ id: "release-id" }], relations: { blocks: [{ id: "blocked-id", identifier: "ENG-2" }] } })
         }
         if (name === "get_issue") return Effect.succeed({ id: "blocked-id", identifier: "ENG-2", teamId: "team-id" })
         if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1" }], hasNextPage: false })
@@ -2817,9 +2910,37 @@ describe("runCommand", () => {
       }
     }))
 
-    expect(calls.filter(({ name, args }) => name === "get_issue" && args.id === "eng-123")).toEqual([
+    expect(calls.filter(({ name }) => name === "get_issue")).toEqual([
       { name: "get_issue", args: { id: "eng-123", includeReleases: true, includeRelations: true } },
-      { name: "get_issue", args: { id: "eng-123", includeReleases: true, includeRelations: true } }
+      { name: "get_issue", args: { id: "eng-2" } },
+      { name: "get_issue", args: { id: "issue-id", includeReleases: true, includeRelations: true } }
+    ])
+    expect(output).toMatchObject({ changed: true, result: "requested issue properties saved and verified" })
+  })
+
+  test("advanced issue updates pin mutation, readback, and recovery to the preflight id", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    let reads = 0
+    const output = await run(["issues", "update", "--id", "eng-123", "--title", "Renamed"], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        if (name === "get_issue") {
+          reads += 1
+          return Effect.succeed({
+            id: "issue-id",
+            identifier: reads === 1 ? "ENG-123" : "RENAMED-123",
+            teamId: "team-id",
+            title: reads === 1 ? "Old" : "Renamed"
+          })
+        }
+        return Effect.succeed({ id: "issue-id" })
+      }
+    }))
+
+    expect(calls).toEqual([
+      { name: "get_issue", args: { id: "eng-123" } },
+      { name: "save_issue", args: { id: "issue-id", title: "Renamed" } },
+      { name: "get_issue", args: { id: "issue-id" } }
     ])
     expect(output).toMatchObject({ changed: true, result: "requested issue properties saved and verified" })
   })
@@ -2955,7 +3076,7 @@ describe("runCommand", () => {
     }))
 
     expect(releaseQueries).toEqual([{ query: "v1", limit: 250, includeArchived: true }])
-    expect(saves).toEqual([{ id: "ENG-123", removeReleases: ["release-id"] }])
+    expect(saves).toEqual([{ id: "issue-id", removeReleases: ["release-id"] }])
     expect(output).toMatchObject({ changed: true })
 
     let addSaves = 0
@@ -3025,7 +3146,7 @@ describe("runCommand", () => {
     expect((output.issue as Record<string, unknown>).relations).toBeUndefined()
     expect(output.omitted).toEqual(["relations"])
     expect(output.truncated).toEqual([{ field: "description", total: 1300 }])
-    expect(output.help).toEqual(["Run `linear-axi issues inspect --id 'ENG-123' --full` for complete issue details."])
+    expect(output.help).toEqual(["Run `linear-axi issues inspect --id 'issue-id' --full` for complete issue details."])
   })
 
   test("issue updates fail closed when readback does not satisfy the request", async () => {
@@ -3044,7 +3165,7 @@ describe("runCommand", () => {
 
     expect(reads).toBe(2)
     expect(error._tag).toBe("LinearApiError")
-    expect(error.help).toContain("linear-axi issues inspect --id 'ENG-123' --full")
+    expect(error.help).toContain("linear-axi issues inspect --id 'issue-id' --full")
     expect(error.help).not.toContain("retry")
   })
 
@@ -3090,8 +3211,8 @@ describe("runCommand", () => {
     ], gateway)
     expect(calls).toEqual([
       { name: "get_issue", args: { id: "ENG-123" } },
-      { name: "save_issue", args: { id: "ENG-123", title: "Renamed", assignee: null, estimate: null, project: null, cycle: null, parentId: null, labels: [] } },
-      { name: "get_issue", args: { id: "ENG-123" } }
+      { name: "save_issue", args: { id: "issue-id", title: "Renamed", assignee: null, estimate: null, project: null, cycle: null, parentId: null, labels: [] } },
+      { name: "get_issue", args: { id: "issue-id" } }
     ])
     expect(output).toMatchObject({ changed: true, result: "requested issue properties saved and verified" })
   })

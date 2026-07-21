@@ -54,6 +54,13 @@ describe("parseArgs", () => {
     expect(blockedBy.flags.get("blocked-by")).toBe("ENG-1")
   })
 
+  test("renders labels create parent as a label-group selector", () => {
+    const help = commandSpecs.find((spec) => spec.path.join(" ") === "labels create")!.help
+
+    expect(help).toContain("--parent <group-id-or-name>")
+    expect(help).not.toContain("--parent <issue>")
+  })
+
   test("parses additive, subtractive, and explicit replacement label commands", () => {
     expect(parseArgs(["labels", "add", "--issue", "ENG-1", "--label", "Bug"], commandSpecs).flags.get("label")).toBe("Bug")
     expect(parseArgs(["labels", "remove", "--issue", "ENG-1", "--label", "Bug"], commandSpecs).flags.get("label")).toBe("Bug")
