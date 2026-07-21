@@ -695,6 +695,27 @@ describe("runCommand", () => {
     }
   })
 
+  test.each([
+    { selector: "user-id", user: { id: "user-id", name: "Alex", email: "alex@example.com", active: false, archivedAt: null } },
+    { selector: "Alex", user: { id: "user-id", name: "Alex", email: "alex@example.com", archivedAt: null } },
+    { selector: "alex@example.com", user: { id: "user-id", name: "Alex", email: "alex@example.com", active: false, archivedAt: null } }
+  ])("project lead selector $selector requires an explicitly active user before mutation", async ({ selector, user }) => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "projects", "update", "--id", "project-id", "--lead", selector
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_project") return Effect.succeed({ id: "project-id", lead: null })
+        if (name === "get_user") return Effect.succeed(user)
+        if (name === "save_project") saves += 1
+        return Effect.succeed({})
+      }
+    }, false), "/repo/src/main.ts")))
+
+    expect(error._tag).toBe("LinearDomainError")
+    expect(saves).toBe(0)
+  })
+
   test("official collection verification accepts documented selectors case-insensitively", async () => {
     let saves = 0
     const output = await run(["projects", "update", "--id", "PROJECT-ID", "--teams-json", '["eng"]'], fakeGateway({
@@ -2028,6 +2049,30 @@ describe("runCommand", () => {
     }))
 
     expect(output).toMatchObject({ changed: false, result: "exact issue already exists (no-op)" })
+    expect(saves).toBe(0)
+  })
+
+  test.each([
+    { name: "archived", detail: { id: "candidate-id", title: "Launch", teamId: "team-id", priority: 2, archivedAt: "2026-07-21T00:00:00.000Z" } },
+    { name: "missing archived state", detail: { id: "candidate-id", title: "Launch", teamId: "team-id", priority: 2 } }
+  ])("advanced issue exact-create revalidates $name detail before no-op", async ({ detail }) => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
+        if (name === "list_issues") return Effect.succeed({
+          issues: [{ id: "candidate-id", title: "Launch", teamId: "team-id", archivedAt: null }],
+          hasNextPage: false
+        })
+        if (name === "get_issue") return Effect.succeed(detail)
+        if (name === "save_issue") saves += 1
+        return Effect.succeed({})
+      }
+    }, false), "/repo/src/main.ts")))
+
+    expect(error._tag).toBe("LinearDomainError")
     expect(saves).toBe(0)
   })
 

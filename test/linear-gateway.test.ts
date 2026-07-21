@@ -1320,6 +1320,36 @@ describe("SDK LinearGateway conflict contracts", () => {
     ])
   })
 
+  test("label creation rejects a rewritten caller-retained UUID after dispatch", async () => {
+    const callerId = "55555555-5555-4555-8555-555555555555"
+    const rewritten = issueLabel({ id: "66666666-6666-4666-8666-666666666666" })
+    let reads = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async () => {
+        reads += 1
+        return page(reads === 1 ? [] : [rewritten])
+      },
+      createIssueLabel: async () => ({ success: true, issueLabel: Promise.resolve(rewritten) })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createLabel({
+      name: rewritten.name,
+      color: rewritten.color,
+      description: rewritten.description ?? undefined,
+      workspace: false,
+      team: "BEN",
+      id: callerId,
+      ifAbsent: false
+    })))
+
+    expect(error._tag).toBe("LinearApiError")
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).toContain(`linear-axi labels list --team 'BEN' --name '${rewritten.name}'`)
+    expect(error.help).not.toContain("retry")
+    expect(reads).toBe(1)
+  })
+
   test.each([
     { property: "scope", drift: { teamId: "99999999-9999-4999-8999-999999999999" } },
     { property: "group status", drift: { isGroup: true } },

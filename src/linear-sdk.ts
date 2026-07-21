@@ -707,6 +707,10 @@ const createLabel = async (
     throw indeterminateLabelCreation(input, team?.key)
   }
 
+  if (callerId && !uuidEqual(created.id, callerId)) {
+    throw indeterminateLabelCreation(input, team?.key)
+  }
+
   try {
     const label = await findLabelByUuid(client, created.id)
     if (!label) throw new Error("created label was not found")

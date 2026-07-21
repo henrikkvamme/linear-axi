@@ -18,6 +18,7 @@ import {
 } from "./official-identity"
 import {
   requireOfficialEntityActive,
+  requireOfficialUserActive,
   resolveOfficialViewerUser
 } from "./official-active"
 import { indeterminateOfficialMutation, officialMutationInspectionCommand, officialReleaseNoteNeedsReleases } from "./official-inspection"
@@ -551,7 +552,7 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
       if (!Predicate.isObject(user) || !nonEmptyString(user.id) || (args.lead !== "me" && !userEntityMatches(user, args.lead))) {
         return yield* mutationShapeDrift(tool)
       }
-      if (args.lead !== "me") yield* requireOfficialEntityActive("user", args.lead, user, "get_user")
+      yield* requireOfficialUserActive(args.lead, user, "get_user")
       canonical.lead = user.id
     }
     if (Array.isArray(args.labels)) {

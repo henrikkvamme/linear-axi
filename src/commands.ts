@@ -330,6 +330,7 @@ const createOfficialIssue = (
     if (!Predicate.isObject(detail) || !officialEntityMatchesSelector(detail, candidateId, ["id", "identifier"])) {
       return yield* officialShapeError("get_issue identity")
     }
+    yield* requireOfficialEntityActive("issue", candidateId, detail)
     if (officialIssueSatisfies(detail, input)) {
       return officialIssueMutationOutput(
         detail,
