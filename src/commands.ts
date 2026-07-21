@@ -43,13 +43,14 @@ import {
   type OfficialEntityIdentity
 } from "./official-identity"
 import { indeterminateOfficialMutation, officialMutationInspectionCommand } from "./official-inspection"
+import { fetchOfficialRows } from "./official-pagination"
+import { resolveExactOfficialId as uniqueOfficialId } from "./official-selector"
 import { validateFrontierCursor } from "./wayfinder"
 
 const ISSUE_FIELD_SET: ReadonlySet<string> = new Set(ISSUE_FIELDS)
 const LABEL_FIELD_SET: ReadonlySet<string> = new Set(LABEL_FIELDS)
 const RELATION_TYPES = new Set<RelationType>(["blocks", "related", "duplicate", "similar"])
 const RELATION_DIRECTIONS = new Set(["outgoing", "incoming", "both"])
-const MAX_OFFICIAL_PAGES = 1_000
 const decodeStringArray = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)))
 const decodeLinkArray = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.Struct({
   url: Schema.String.check(Schema.isPattern(/^https?:\/\//)),
@@ -819,22 +820,6 @@ const resolveOfficialReleases = (
   return result
 })
 
-const uniqueOfficialId = (
-  noun: string,
-  selector: string,
-  rows: ReadonlyArray<Record<string, unknown>>,
-  keys: ReadonlyArray<string>
-): Effect.Effect<string, LinearDomainError> => {
-  const normalized = selector.toLowerCase()
-  const matches = rows.filter((row) => keys.some((key) => String(row[key] ?? "").toLowerCase() === normalized))
-  return matches.length === 1 && nonEmptyString(matches[0]!.id)
-    ? Effect.succeed(matches[0]!.id)
-    : Effect.fail(new LinearDomainError({
-        message: matches.length === 0 ? `No ${noun} exactly matched ${selector}` : `Ambiguous ${noun} selector ${selector}`,
-        help: `Candidate ids: ${(matches.length > 0 ? matches : rows).map((row) => String(row.id)).join(", ") || "none"}`
-      }))
-}
-
 const requireOfficialEntityActive = (
   noun: string,
   selector: string,
@@ -1426,59 +1411,6 @@ const replayCommand = (
 }
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
-
-const fetchOfficialRows = Effect.fn("fetchOfficialRows")(function*(
-  gateway: LinearGateway,
-  tool: string,
-  args: Readonly<Record<string, unknown>>,
-  key: string
-): Effect.fn.Return<ReadonlyArray<Record<string, unknown>>, CliError> {
-  const rows: Array<Record<string, unknown>> = []
-  const seenCursors = new Set<string>()
-  let cursor: string | undefined
-  let pages = 0
-  do {
-    const page = yield* gateway.callOfficialTool(tool, { ...args, ...(cursor === undefined ? {} : { cursor }) })
-    rows.push(...officialRows(page, key))
-    pages += 1
-    if (!Predicate.isObject(page) || typeof page.hasNextPage !== "boolean") {
-      return yield* officialShapeError(`${tool} pagination`)
-    }
-    if (page.hasNextPage !== true) return rows
-    if (pages >= MAX_OFFICIAL_PAGES) {
-      return yield* Effect.fail(new LinearDomainError({
-        message: `Official Linear MCP ${tool} pagination exceeded the ${MAX_OFFICIAL_PAGES}-page safety limit`,
-        help: "Narrow the selector and retry."
-      }))
-    }
-    if (typeof page.cursor !== "string" || page.cursor.trim().length === 0) return yield* officialShapeError(`${tool} cursor`)
-    if (seenCursors.has(page.cursor)) {
-      return yield* Effect.fail(new LinearDomainError({
-        message: `Official Linear MCP ${tool} pagination cursor did not advance`,
-        help: "Retry after Linear pagination recovers."
-      }))
-    }
-    seenCursors.add(page.cursor)
-    cursor = page.cursor
-  } while (cursor !== undefined)
-  return rows
-})
-
-const officialRows = (value: unknown, key: string): ReadonlyArray<Record<string, unknown>> => {
-  if (!Predicate.isObject(value) || !Array.isArray(value[key])) {
-    throw new LinearDomainError({
-      message: `Official Linear MCP output shape drifted: expected ${key} to be an array`,
-      help: "Refresh the frozen parity inventory and update linear-axi before retrying."
-    })
-  }
-  if (value[key].some((row) => !Predicate.isObject(row))) {
-    throw new LinearDomainError({
-      message: `Official Linear MCP output shape drifted: expected every ${key} row to be an object`,
-      help: "Refresh the frozen parity inventory and update linear-axi before retrying."
-    })
-  }
-  return value[key] as ReadonlyArray<Record<string, unknown>>
-}
 
 const officialShapeError = (tool: string): Effect.Effect<never, LinearDomainError> =>
   Effect.fail(new LinearDomainError({

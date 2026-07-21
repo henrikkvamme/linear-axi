@@ -706,6 +706,225 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: true })
   })
 
+  test("document updates canonicalize every parent selector before mutation", async () => {
+    const cases = [
+      {
+        argv: ["documents", "update", "--id", "document-id", "--project", "Roadmap"],
+        resolvedArgs: { id: "document-id", project: "project-id" },
+        before: { id: "document-id", project: null },
+        after: { id: "document-id", project: { id: "project-id", name: "Renamed roadmap" } }
+      },
+      {
+        argv: ["documents", "update", "--id", "document-id", "--issue", "ENG-123"],
+        resolvedArgs: { id: "document-id", issue: "issue-id" },
+        before: { id: "document-id", issue: null },
+        after: { id: "document-id", issue: { id: "issue-id", identifier: "ENG-999" } }
+      },
+      {
+        argv: ["documents", "update", "--id", "document-id", "--initiative", "Growth"],
+        resolvedArgs: { id: "document-id", initiative: "initiative-id" },
+        before: { id: "document-id", initiative: null },
+        after: { id: "document-id", initiative: { id: "initiative-id", name: "Renamed growth" } }
+      },
+      {
+        argv: ["documents", "update", "--id", "document-id", "--cycle", "Cycle 7", "--team", "Engineering"],
+        resolvedArgs: { id: "document-id", cycle: "cycle-id", team: "team-id" },
+        before: { id: "document-id", cycle: null, team: null },
+        after: { id: "document-id", cycle: { id: "cycle-id", name: "Renamed cycle" }, team: { id: "team-id", name: "Renamed team" } }
+      }
+    ] as const
+
+    for (const entry of cases) {
+      let reads = 0
+      let saved: Readonly<Record<string, unknown>> | undefined
+      const output = await run(entry.argv, fakeGateway({
+        resolveProjectUpdateAssociations: (input) => Effect.succeed({
+          teams: input.teams,
+          initiatives: input.initiatives.map(() => "initiative-id")
+        }),
+        callOfficialTool: (name, args) => {
+          if (name === "get_project") return Effect.succeed({ id: "project-id", name: "Roadmap", slugId: "roadmap" })
+          if (name === "get_issue") return Effect.succeed({ id: "issue-id", identifier: "ENG-123" })
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering" })
+          if (name === "list_cycles") return Effect.succeed([{ id: "cycle-id", name: "Cycle 7", number: 7, team: { id: "team-id" } }])
+          if (name === "get_document") return Effect.succeed(reads++ === 0 ? entry.before : entry.after)
+          if (name === "save_document") {
+            saved = args
+            return Effect.succeed({ id: "document-id" })
+          }
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }))
+
+      expect(saved).toEqual(entry.resolvedArgs)
+      expect(output).toMatchObject({ changed: true })
+    }
+  })
+
+  test("release updates canonicalize pipeline and scoped stage selectors", async () => {
+    let reads = 0
+    let saved: Readonly<Record<string, unknown>> | undefined
+    const output = await run([
+      "releases", "update", "--id", "release-id", "--pipeline", "Delivery", "--stage", "started"
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "list_release_pipelines") {
+          return Effect.succeed({
+            releasePipelines: [{
+              id: "pipeline-id",
+              name: "Delivery",
+              slugId: "delivery",
+              stages: [{ id: "stage-id", name: "In progress", type: "started" }]
+            }],
+            hasNextPage: false
+          })
+        }
+        if (name === "get_release") return Effect.succeed(reads++ === 0
+          ? { id: "release-id", pipeline: null, stage: null }
+          : { id: "release-id", pipeline: { id: "pipeline-id", name: "Renamed delivery" }, stage: { id: "stage-id", name: "Renamed stage" } })
+        if (name === "save_release") {
+          saved = args
+          return Effect.succeed({ id: "release-id" })
+        }
+        throw new Error(`unexpected tool ${name}`)
+      }
+    }))
+
+    expect(saved).toEqual({ id: "release-id", pipeline: "pipeline-id", stage: "stage-id" })
+    expect(output).toMatchObject({ changed: true })
+  })
+
+  test("release-note updates canonicalize pipeline and release selectors", async () => {
+    let reads = 0
+    let saved: Readonly<Record<string, unknown>> | undefined
+    const output = await run([
+      "release-notes", "update", "--id", "note-id", "--pipeline", "Delivery", "--releases-json", "[\"v2\"]"
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "list_release_pipelines") {
+          return Effect.succeed({ releasePipelines: [{ id: "pipeline-id", name: "Delivery", slugId: "delivery" }], hasNextPage: false })
+        }
+        if (name === "list_releases") {
+          return Effect.succeed({ releases: [{ id: "release-id", slugId: "v2", pipeline: { id: "pipeline-id" } }], hasNextPage: false })
+        }
+        if (name === "get_release_note") return Effect.succeed(reads++ === 0
+          ? { id: "note-id", pipeline: null, releases: [] }
+          : { id: "note-id", pipeline: { id: "pipeline-id", name: "Renamed delivery" }, releases: [{ id: "release-id", slugId: "renamed-v2" }] })
+        if (name === "save_release_note") {
+          saved = args
+          return Effect.succeed({ id: "note-id" })
+        }
+        throw new Error(`unexpected tool ${name}`)
+      }
+    }))
+
+    expect(saved).toEqual({ id: "note-id", pipeline: "pipeline-id", releases: ["release-id"] })
+    expect(output).toMatchObject({ changed: true })
+  })
+
+  test("project labels and status-update parents canonicalize to immutable ids", async () => {
+    let projectReads = 0
+    let statusReads = 0
+    const saves: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const gateway = fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "list_project_labels") {
+          return Effect.succeed({ labels: [{ id: "label-id", name: "Platform" }], hasNextPage: false })
+        }
+        if (name === "get_project") return Effect.succeed(projectReads++ < 2
+          ? { id: "project-id", name: "Roadmap", labels: [] }
+          : { id: "project-id", name: "Roadmap", labels: [{ id: "label-id", name: "Renamed platform" }] })
+        if (name === "get_status_updates") return Effect.succeed({ statusUpdates: [statusReads++ === 0
+          ? { id: "update-id", type: "project", project: null }
+          : { id: "update-id", type: "project", project: { id: "project-id", name: "Renamed roadmap" } }] })
+        if (name.startsWith("save_")) {
+          saves.push({ name, args })
+          return Effect.succeed({ id: String(args.id) })
+        }
+        throw new Error(`unexpected tool ${name}`)
+      }
+    })
+
+    await run(["projects", "update", "--id", "project-id", "--labels-json", "[\"Platform\"]"], gateway)
+    await run(["status-updates", "update", "--type", "project", "--id", "update-id", "--project", "Roadmap"], gateway)
+
+    expect(saves).toEqual([
+      { name: "save_project", args: { id: "project-id", labels: ["label-id"] } },
+      { name: "save_status_update", args: { type: "project", id: "update-id", project: "project-id" } }
+    ])
+  })
+
+  test("association canonicalization fails closed for empty, malformed, and ambiguous matches", async () => {
+    const cases = [
+      { rows: [], message: "No project label exactly matched Platform", candidates: "none" },
+      { rows: [{ name: "Platform" }], message: "project label selector Platform matched an entity without an immutable id", candidates: "missing-id" },
+      { rows: [{ id: "label-a", name: "Platform" }, { id: "label-b", name: "Platform" }], message: "Ambiguous project label selector Platform", candidates: "label-a, label-b" }
+    ] as const
+
+    for (const entry of cases) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "projects", "update", "--id", "project-id", "--labels-json", "[\"Platform\"]"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_project") return Effect.succeed({ id: "project-id", name: "Roadmap" })
+          if (name === "list_project_labels") return Effect.succeed({ labels: entry.rows, hasNextPage: false })
+          if (name === "save_project") saves += 1
+          return Effect.succeed({})
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error.message).toContain(entry.message)
+      expect(error.help).toContain(entry.candidates)
+      expect(saves).toBe(0)
+    }
+  })
+
+  test("association canonicalization requires explicit scoped ownership", async () => {
+    for (const owner of [undefined, { id: "other-team" }]) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "documents", "update", "--id", "document-id", "--cycle", "Cycle 7", "--team", "Engineering"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering" })
+          if (name === "list_cycles") return Effect.succeed([{
+            id: "cycle-id",
+            name: "Cycle 7",
+            ...(owner === undefined ? {} : { team: owner })
+          }])
+          if (name === "save_document") saves += 1
+          return Effect.succeed({})
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error.message).toContain(owner === undefined ? "output shape drifted" : "belongs to another team")
+      expect(saves).toBe(0)
+    }
+
+    for (const owner of [undefined, { id: "other-pipeline" }]) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "release-notes", "update", "--id", "note-id", "--pipeline", "Delivery", "--releases-json", "[\"v2\"]"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "list_release_pipelines") {
+            return Effect.succeed({ releasePipelines: [{ id: "pipeline-id", name: "Delivery" }], hasNextPage: false })
+          }
+          if (name === "list_releases") return Effect.succeed({
+            releases: [{ id: "release-id", slugId: "v2", ...(owner === undefined ? {} : { pipeline: owner }) }],
+            hasNextPage: false
+          })
+          if (name === "save_release_note") saves += 1
+          return Effect.succeed({})
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error.message).toContain(owner === undefined ? "output shape drifted" : "belongs to another pipeline")
+      expect(saves).toBe(0)
+    }
+  })
+
   test("official rich-text updates accept Linear-normalized readback", async () => {
     const cases = [
       { argv: ["documents", "update", "--id", "document-id", "--content", "[doc](https://example.com)\r\n", "--if-updated-at", baseIssue.updatedAt], read: "get_document", value: { id: "document-id", content: "[doc](<https://example.com>)", updatedAt: baseIssue.updatedAt } },
@@ -733,11 +952,33 @@ describe("runCommand", () => {
     }
   })
 
-  test("official update verification accepts every documented reference selector", async () => {
+  test("official update verification accepts canonicalized documented reference selectors", async () => {
     const cases = [
-      { argv: ["documents", "update", "--id", "document-id", "--issue", "ENG-123"], read: "get_document", value: { id: "document-id", issue: { id: "issue-id", identifier: "ENG-123" } } },
-      { argv: ["documents", "update", "--id", "document-id", "--cycle", "7"], read: "get_document", value: { id: "document-id", cycle: { id: "cycle-id", number: 7 } } },
-      { argv: ["releases", "update", "--id", "release-id", "--stage", "started"], read: "get_release", value: { id: "release-id", stage: { id: "stage-id", name: "In progress", type: "started" } } }
+      {
+        argv: ["documents", "update", "--id", "document-id", "--issue", "ENG-123"],
+        responses: {
+          get_issue: { id: "issue-id", identifier: "ENG-123" },
+          get_document: { id: "document-id", issue: { id: "issue-id", identifier: "RENAMED-123" } }
+        }
+      },
+      {
+        argv: ["documents", "update", "--id", "document-id", "--cycle", "7", "--team", "Engineering"],
+        responses: {
+          get_team: { id: "team-id", key: "ENG", name: "Engineering" },
+          list_cycles: [{ id: "cycle-id", number: 7, teamId: "team-id" }],
+          get_document: { id: "document-id", cycle: { id: "cycle-id", number: 8 }, team: { id: "team-id", name: "Renamed" } }
+        }
+      },
+      {
+        argv: ["releases", "update", "--id", "release-id", "--pipeline", "Delivery", "--stage", "started"],
+        responses: {
+          list_release_pipelines: {
+            releasePipelines: [{ id: "pipeline-id", name: "Delivery", stages: [{ id: "stage-id", name: "In progress", type: "started" }] }],
+            hasNextPage: false
+          },
+          get_release: { id: "release-id", pipeline: { id: "pipeline-id", name: "Renamed" }, stage: { id: "stage-id", name: "Renamed" } }
+        }
+      }
     ] as const
 
     for (const entry of cases) {
@@ -745,7 +986,9 @@ describe("runCommand", () => {
       const output = await run(entry.argv, fakeGateway({
         callOfficialTool: (name) => {
           if (name.startsWith("save_")) saves += 1
-          return Effect.succeed(entry.value)
+          const response = entry.responses[name as keyof typeof entry.responses]
+          if (response === undefined) throw new Error(`unexpected tool ${name}`)
+          return Effect.succeed(response)
         }
       }))
       expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
@@ -804,6 +1047,8 @@ describe("runCommand", () => {
     const gateway = fakeGateway({
       callOfficialTool: (name, args) => {
         calls.push({ name, args })
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering" })
+        if (name === "list_cycles") return Effect.succeed([{ id: "cycle-id", name: "Cycle 7", number: 7, team: { key: "ENG" } }])
         if (name === "get_document") return Effect.succeed(documentReads++ === 0
           ? { id: "document-id", cycle: null, team: null }
           : { id: "document-id", cycle: { id: "cycle-id", name: "Cycle 7" }, team: { id: "team-id", name: "Engineering" } })
@@ -812,7 +1057,7 @@ describe("runCommand", () => {
       }
     })
     await run(["documents", "update", "--id", "document-id", "--cycle", "Cycle 7", "--team", "Engineering"], gateway)
-    expect(calls[1]).toEqual({ name: "save_document", args: { id: "document-id", cycle: "Cycle 7", team: "Engineering" } })
+    expect(calls[3]).toEqual({ name: "save_document", args: { id: "document-id", cycle: "cycle-id", team: "team-id" } })
 
     for (const argv of [
       ["comments", "search", "--limit", "10"],
@@ -853,6 +1098,15 @@ describe("runCommand", () => {
     const output = await run(["release-notes", "update", "--id", "note-id", "--releases-json", "[\"release-1\"]"], fakeGateway({
       callOfficialTool: (name, args) => {
         calls.push({ name, args })
+        if (name === "get_release_note" && args.includeReleases !== true) {
+          return Effect.succeed({ id: "note-id", pipeline: { id: "pipeline-id" } })
+        }
+        if (name === "list_release_pipelines") {
+          return Effect.succeed({ releasePipelines: [{ id: "pipeline-id", name: "Delivery" }], hasNextPage: false })
+        }
+        if (name === "list_releases") {
+          return Effect.succeed({ releases: [{ id: "release-1", slugId: "v1", pipeline: { id: "pipeline-id" } }], hasNextPage: false })
+        }
         if (name === "get_release_note") {
           return Effect.succeed({ id: "note-id", releases: reads++ === 0 ? [] : [{ id: "release-1" }] })
         }
@@ -860,6 +1114,9 @@ describe("runCommand", () => {
       }
     }))
     expect(calls).toEqual([
+      { name: "get_release_note", args: { id: "note-id" } },
+      { name: "list_release_pipelines", args: { limit: 250, includeArchived: false } },
+      { name: "list_releases", args: { limit: 250, pipeline: "pipeline-id", includeArchived: true } },
       { name: "get_release_note", args: { id: "note-id", includeReleases: true } },
       { name: "save_release_note", args: { id: "note-id", releases: ["release-1"] } },
       { name: "get_release_note", args: { id: "note-id", includeReleases: true } }
@@ -874,12 +1131,28 @@ describe("runCommand", () => {
     ], commandSpecs), fakeGateway({
       callOfficialTool: (name, args) => {
         calls.push({ name, args })
+        if (name === "get_release_note" && args.includeReleases !== true) {
+          return Effect.succeed({ id: "note-id", pipeline: { id: "pipeline-id" } })
+        }
+        if (name === "list_release_pipelines") {
+          return Effect.succeed({ releasePipelines: [{ id: "pipeline-id", name: "Delivery" }], hasNextPage: false })
+        }
+        if (name === "list_releases") {
+          return Effect.succeed({
+            releases: [
+              { id: "release-1", slugId: "v1", pipeline: { id: "pipeline-id" } },
+              { id: "release-2", slugId: "v2", pipeline: { id: "pipeline-id" } }
+            ],
+            hasNextPage: false
+          })
+        }
         if (name === "get_release_note") return Effect.succeed({ id: "note-id", rangeFromRelease: "old-from", rangeToRelease: "old-to", releases: [] })
         return Effect.succeed({ id: "note-id" })
       }
     }), "/repo/src/main.ts")))
 
     expect(calls.filter(({ name }) => name === "get_release_note")).toEqual([
+      { name: "get_release_note", args: { id: "note-id" } },
       { name: "get_release_note", args: { id: "note-id", includeReleases: true } },
       { name: "get_release_note", args: { id: "note-id", includeReleases: true } }
     ])
@@ -905,9 +1178,20 @@ describe("runCommand", () => {
     const noteError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
       "release-notes", "update", "--id", "note-id", "--releases-json", "[\"release-1\"]"
     ], commandSpecs), fakeGateway({
-      callOfficialTool: (name) => Effect.succeed(name === "save_release_note"
-        ? { id: "note-id" }
-        : { id: "note-id", releases: [] })
+      callOfficialTool: (name, args) => {
+        if (name === "get_release_note" && args.includeReleases !== true) {
+          return Effect.succeed({ id: "note-id", pipeline: { id: "pipeline-id" } })
+        }
+        if (name === "list_release_pipelines") {
+          return Effect.succeed({ releasePipelines: [{ id: "pipeline-id", name: "Delivery" }], hasNextPage: false })
+        }
+        if (name === "list_releases") {
+          return Effect.succeed({ releases: [{ id: "release-1", slugId: "v1", pipeline: { id: "pipeline-id" } }], hasNextPage: false })
+        }
+        return Effect.succeed(name === "save_release_note"
+          ? { id: "note-id" }
+          : { id: "note-id", releases: [] })
+      }
     }), "/repo/src/main.ts")))
     expect(noteError.help).toContain("linear-axi release-notes view --id 'note-id' --releases --full")
   })

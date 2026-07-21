@@ -12,9 +12,13 @@ import {
   officialEntityIdentity,
   officialOwnerReference,
   officialReferenceMatchesIdentity,
-  officialReferenceValues
+  officialReferenceSelector,
+  officialReferenceValues,
+  type OfficialEntityIdentity
 } from "./official-identity"
 import { indeterminateOfficialMutation, officialMutationInspectionCommand, officialReleaseNoteNeedsReleases } from "./official-inspection"
+import { fetchOfficialRows } from "./official-pagination"
+import { resolveExactOfficialEntity, resolveExactOfficialId } from "./official-selector"
 import { truncateDetail, truncateText, type OutputValue } from "./output"
 import { richTextEqual } from "./rich-text"
 import { isCanonicalDate, isCanonicalTimestamp } from "./validation"
@@ -378,8 +382,48 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
   args: Readonly<Record<string, unknown>>,
   gateway: LinearGateway
 ) {
+  const canonical: Record<string, unknown> = { ...args }
+  if (tool === "save_document") {
+    if (typeof args.project === "string") {
+      canonical.project = (yield* resolveGetAssociation(gateway, "project", args.project, "get_project", { query: args.project }, ["id", "name", "slugId"])).id
+    }
+    if (typeof args.issue === "string") {
+      canonical.issue = (yield* resolveGetAssociation(gateway, "issue", args.issue, "get_issue", { id: args.issue }, ["id", "identifier"])).id
+    }
+    if (typeof args.initiative === "string") canonical.initiative = yield* resolveInitiativeAssociation(gateway, args.initiative)
+
+    let team: Record<string, unknown> | undefined
+    if (typeof args.team === "string") {
+      team = yield* resolveGetAssociation(gateway, "team", args.team, "get_team", { query: args.team }, ["id", "key", "name"])
+      canonical.team = team.id
+    }
+    if (typeof args.cycle === "string") {
+      if (!team) {
+        const document = yield* gateway.callOfficialTool("get_document", { id: args.id })
+        if (!Predicate.isObject(document) || !mutationEntityMatches(document, args.id, tool)) return yield* mutationShapeDrift(tool)
+        const cycleOwner = Predicate.isObject(document.cycle) ? officialOwnerReference(document.cycle, "team") : undefined
+        const currentTeam = officialReferenceSelector(document.team) ?? officialReferenceSelector(cycleOwner)
+        if (!currentTeam) {
+          return yield* Effect.fail(new LinearDomainError({
+            message: `cycle selector ${args.cycle} requires a team whose identity can be verified`,
+            help: "Pass --team with the cycle's team name, key, or ID."
+          }))
+        }
+        team = yield* resolveGetAssociation(gateway, "team", currentTeam, "get_team", { query: currentTeam }, ["id", "key", "name"])
+        canonical.team = team.id
+      }
+      const cycles = yield* gateway.callOfficialTool("list_cycles", { teamId: team.id })
+      if (!Array.isArray(cycles) || cycles.some((cycle) => !Predicate.isObject(cycle))) return yield* mutationShapeDrift(tool)
+      const teamIdentity = officialEntityIdentity(team, ["key", "name"])
+      if (!teamIdentity) return yield* mutationShapeDrift(tool)
+      const cycle = yield* resolveExactOfficialEntity("cycle", args.cycle, cycles as ReadonlyArray<Record<string, unknown>>, ["id", "name", "number"])
+      yield* requireAssociationOwnership("cycle", args.cycle, cycle, "team", teamIdentity, tool)
+      canonical.cycle = cycle.id
+    }
+    return canonical
+  }
+
   if (tool === "save_project") {
-    const canonical: Record<string, unknown> = { ...args }
     const project = yield* gateway.callOfficialTool("get_project", { query: args.id })
     if (!Predicate.isObject(project) || !nonEmptyString(project.id) || !mutationEntityMatches(project, args.id, tool)) {
       return yield* mutationShapeDrift(tool)
@@ -391,6 +435,15 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
         return yield* mutationShapeDrift(tool)
       }
       canonical.lead = user.id
+    }
+    if (Array.isArray(args.labels)) {
+      if (args.labels.length === 0) {
+        canonical.labels = []
+      } else {
+        const labels = yield* fetchOfficialRows(gateway, "list_project_labels", { limit: 250 }, "labels")
+        canonical.labels = uniqueStrings(yield* Effect.forEach(args.labels, (selector) =>
+          resolveExactOfficialId("project label", String(selector), labels, ["id", "name"])))
+      }
     }
 
     const activeTeamKeys = ["setTeams", "addTeams"] as const
@@ -443,6 +496,70 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
     }
     return canonical
   }
+
+  if (tool === "save_release") {
+    if (typeof args.pipeline === "string" || typeof args.stage === "string") {
+      let pipelineSelector = typeof args.pipeline === "string" ? args.pipeline : undefined
+      if (!pipelineSelector) {
+        const release = yield* gateway.callOfficialTool("get_release", { id: args.id })
+        if (!Predicate.isObject(release) || !mutationEntityMatches(release, args.id, tool)) return yield* mutationShapeDrift(tool)
+        pipelineSelector = officialReferenceSelector(release.pipeline)
+        if (!pipelineSelector) return yield* mutationShapeDrift(tool)
+      }
+      const pipeline = yield* resolveReleasePipeline(gateway, pipelineSelector, typeof args.stage === "string")
+      if (typeof args.pipeline === "string") canonical.pipeline = pipeline.id
+      if (typeof args.stage === "string") {
+        if (!Array.isArray(pipeline.stages) || pipeline.stages.some((stage) => !Predicate.isObject(stage))) return yield* mutationShapeDrift(tool)
+        canonical.stage = yield* resolveExactOfficialId("release stage", args.stage, pipeline.stages as ReadonlyArray<Record<string, unknown>>, ["id", "name", "type"])
+      }
+    }
+    return canonical
+  }
+
+  if (tool === "save_release_note") {
+    const releaseSelectors = Array.isArray(args.releases) ? args.releases.map(String) : []
+    const rangeSelectors = [args.rangeFromRelease, args.rangeToRelease].filter((value): value is string => typeof value === "string")
+    if (typeof args.pipeline === "string" || releaseSelectors.length > 0 || rangeSelectors.length > 0) {
+      let pipelineSelector = typeof args.pipeline === "string" ? args.pipeline : undefined
+      if (!pipelineSelector) {
+        const releaseNote = yield* gateway.callOfficialTool("get_release_note", { id: args.id })
+        if (!Predicate.isObject(releaseNote) || !mutationEntityMatches(releaseNote, args.id, tool)) return yield* mutationShapeDrift(tool)
+        pipelineSelector = officialReferenceSelector(releaseNote.pipeline)
+        if (!pipelineSelector) return yield* mutationShapeDrift(tool)
+      }
+      const pipeline = yield* resolveReleasePipeline(gateway, pipelineSelector, false)
+      if (typeof args.pipeline === "string") canonical.pipeline = pipeline.id
+      if (releaseSelectors.length > 0 || rangeSelectors.length > 0) {
+        const releases = yield* fetchOfficialRows(gateway, "list_releases", {
+          limit: 250,
+          pipeline: pipeline.id,
+          includeArchived: true
+        }, "releases")
+        const pipelineIdentity = officialEntityIdentity(pipeline, ["name", "slugId"])
+        if (!pipelineIdentity) return yield* mutationShapeDrift(tool)
+        const resolveRelease = Effect.fn("resolveReleaseNoteRelease")(function*(selector: string) {
+          const release = yield* resolveExactOfficialEntity("release", selector, releases, ["id", "slugId"])
+          yield* requireAssociationOwnership("release", selector, release, "pipeline", pipelineIdentity, tool)
+          return release.id as string
+        })
+        if (Array.isArray(args.releases)) {
+          canonical.releases = uniqueStrings(yield* Effect.forEach(releaseSelectors, resolveRelease))
+        }
+        if (typeof args.rangeFromRelease === "string") canonical.rangeFromRelease = yield* resolveRelease(args.rangeFromRelease)
+        if (typeof args.rangeToRelease === "string") canonical.rangeToRelease = yield* resolveRelease(args.rangeToRelease)
+      }
+    }
+    return canonical
+  }
+
+  if (tool === "save_status_update") {
+    if (typeof args.project === "string") {
+      canonical.project = (yield* resolveGetAssociation(gateway, "project", args.project, "get_project", { query: args.project }, ["id", "name", "slugId"])).id
+    }
+    if (typeof args.initiative === "string") canonical.initiative = yield* resolveInitiativeAssociation(gateway, args.initiative)
+    return canonical
+  }
+
   if (tool === "save_milestone" && typeof args.project === "string" && typeof args.id === "string") {
     const project = yield* gateway.callOfficialTool("get_project", { query: args.project })
     if (!Predicate.isObject(project) || !nonEmptyString(project.id) || !mutationEntityMatches(project, args.project, "save_project")) {
@@ -464,7 +581,78 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
     }
     return { ...args, project: project.id, id: milestone.id }
   }
-  return args
+  return canonical
+})
+
+const resolveGetAssociation = Effect.fn("resolveGetAssociation")(function*(
+  gateway: LinearGateway,
+  noun: string,
+  selector: string,
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+  keys: ReadonlyArray<string>
+) {
+  const result = yield* gateway.callOfficialTool(tool, args)
+  if (!Predicate.isObject(result)) return yield* mutationShapeDrift(tool)
+  const entity = yield* resolveExactOfficialEntity(noun, selector, [result], keys)
+  if (entity.archivedAt != null) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: `${noun} ${selector} is archived`,
+      help: `Choose an active ${noun}.`
+    }))
+  }
+  return entity
+})
+
+const resolveInitiativeAssociation = Effect.fn("resolveInitiativeAssociation")(function*(
+  gateway: LinearGateway,
+  selector: string
+) {
+  const resolved = yield* gateway.resolveProjectUpdateAssociations({
+    teams: [],
+    initiatives: [selector],
+    includeArchived: false
+  })
+  if (resolved.initiatives.length !== 1 || !nonEmptyString(resolved.initiatives[0])) return yield* mutationShapeDrift("initiative")
+  return resolved.initiatives[0]
+})
+
+const requireAssociationOwnership = (
+  noun: string,
+  selector: string,
+  entity: Readonly<Record<string, unknown>>,
+  owner: "project" | "team" | "pipeline",
+  ownerIdentity: OfficialEntityIdentity,
+  tool: string
+): Effect.Effect<void, LinearDomainError> => {
+  const reference = owner === "pipeline"
+    ? ("pipelineId" in entity ? entity.pipelineId : entity.pipeline)
+    : officialOwnerReference(entity, owner)
+  if (officialReferenceValues(reference).length === 0) return mutationShapeDrift(tool)
+  return officialReferenceMatchesIdentity(reference, ownerIdentity)
+    ? Effect.void
+    : Effect.fail(new LinearDomainError({
+        message: `${noun} ${selector} belongs to another ${owner}`,
+        help: `Choose a ${noun} from the resolved ${owner}.`
+      }))
+}
+
+const resolveReleasePipeline = Effect.fn("resolveReleasePipeline")(function*(
+  gateway: LinearGateway,
+  selector: string,
+  includeStages: boolean
+) {
+  const rows = yield* fetchOfficialRows(gateway, "list_release_pipelines", {
+    limit: 250,
+    includeArchived: false,
+    ...(includeStages ? { includeStages: true } : {})
+  }, "releasePipelines")
+  return yield* resolveExactOfficialEntity(
+    "release pipeline",
+    selector,
+    rows.filter((row) => row.archivedAt == null),
+    ["id", "name", "slugId"]
+  )
 })
 
 const mutationReadTool = (tool: string): string => ({
