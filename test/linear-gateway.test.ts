@@ -72,6 +72,7 @@ const issueLabel = (overrides: Record<string, unknown> = {}): IssueLabel => ({
   color: "#123456",
   description: "Task",
   isGroup: false,
+  parentId: undefined,
   archivedAt: undefined,
   ...overrides
 } as unknown as IssueLabel)
@@ -187,6 +188,70 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(error.message).toContain("archived")
     expect(teamQueries.map((query) => query.includeArchived)).toEqual([true])
     expect(creates).toBe(0)
+  })
+
+  test("project update association selectors resolve canonical team and initiative ids", async () => {
+    const initiative = {
+      id: "88888888-8888-4888-8888-888888888888",
+      name: "Growth",
+      archivedAt: undefined
+    }
+    const teamFilters: unknown[] = []
+    const initiativeFilters: unknown[] = []
+    const client = clientWithIssues([], {
+      teams: async (variables: { filter?: unknown }) => {
+        teamFilters.push(variables.filter)
+        return page([team])
+      },
+      initiatives: async (variables: { filter?: unknown }) => {
+        initiativeFilters.push(variables.filter)
+        return page([initiative])
+      }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).resolveProjectUpdateAssociations({
+      teams: ["Bender"],
+      initiatives: ["Growth"],
+      includeArchived: false
+    }))
+
+    expect(result).toEqual({ teams: [team.id], initiatives: [initiative.id] })
+    expect(teamFilters).toEqual([{ or: [{ key: { eqIgnoreCase: "Bender" } }, { name: { eqIgnoreCase: "Bender" } }] }])
+    expect(initiativeFilters).toEqual([{ name: { eqIgnoreCase: "Growth" } }])
+  })
+
+  test("project association removal resolves archived exact identities without enabling active paths", async () => {
+    const archivedTeam = {
+      ...team,
+      id: "99999999-9999-4999-8999-999999999999",
+      key: "OLD",
+      name: "Archived team",
+      archivedAt: new Date("2026-07-01T00:00:00.000Z")
+    }
+    const archivedInitiative = {
+      id: "88888888-8888-4888-8888-888888888888",
+      name: "Legacy",
+      archivedAt: new Date("2026-07-01T00:00:00.000Z")
+    }
+    const client = clientWithIssues([], {
+      teams: async () => page([archivedTeam]),
+      initiatives: async () => page([archivedInitiative])
+    })
+    const gateway = makeLinearGateway({}, { client })
+
+    const removal = await Effect.runPromise(gateway.resolveProjectUpdateAssociations({
+      teams: [archivedTeam.id],
+      initiatives: [archivedInitiative.id],
+      includeArchived: true
+    }))
+    const activeError = await Effect.runPromise(Effect.flip(gateway.resolveProjectUpdateAssociations({
+      teams: [archivedTeam.id],
+      initiatives: [],
+      includeArchived: false
+    })))
+
+    expect(removal).toEqual({ teams: [archivedTeam.id], initiatives: [archivedInitiative.id] })
+    expect(activeError.message).toContain("archived")
   })
 
   test("active exact matches win over archived duplicates", async () => {
@@ -339,6 +404,263 @@ describe("SDK LinearGateway conflict contracts", () => {
     }))
     expect(result.changed).toBe(false)
     expect(updates).toBe(0)
+  })
+
+  test("due date and milestone clears use one mutation and verify both fields", async () => {
+    const before = issue({ dueDate: "2026-08-01", projectMilestoneId: "milestone-id" })
+    const after = issue({ dueDate: undefined, projectMilestoneId: undefined })
+    let reads = 0
+    let sent: Record<string, unknown> | undefined
+    const client = clientWithIssues([], {
+      issues: async () => page([reads++ === 0 ? before : after]),
+      updateIssue: async (_id: string, input: Record<string, unknown>) => {
+        sent = input
+        return { success: true, issue: Promise.resolve(after) }
+      }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).clearIssueFields({
+      id: "BEN-1",
+      dueDate: true,
+      milestone: true
+    }))
+
+    expect(sent).toEqual({ dueDate: null, projectMilestoneId: null })
+    expect(result.changed).toBe(true)
+  })
+
+  test("indeterminate due date and milestone clears require full issue inspection", async () => {
+    const before = issue({ dueDate: "2026-08-01", projectMilestoneId: "milestone-id" })
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([before], {
+        updateIssue: async () => { throw new Error("connection reset") }
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.clearIssueFields({
+      id: "BEN-1",
+      dueDate: true,
+      milestone: true
+    })))
+
+    expect(error.message).toContain("outcome is unknown")
+    expect(error.help).toContain("linear-axi issues inspect --id BEN-1 --full")
+    expect(error.help).not.toContain("issues view")
+  })
+
+  test("new issue mutations reconcile desired state after indeterminate SDK failures", async () => {
+    const targetState = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "In Progress", type: "started", position: 1 }
+    const beforeState = issue()
+    const afterState = issue({ state: Promise.resolve(targetState) })
+    let stateReads = 0
+    const stateResult = await Effect.runPromise(makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        issues: async () => page([stateReads++ === 0 ? beforeState : afterState]),
+        workflowStates: async () => page([targetState]),
+        updateIssue: async () => { throw new Error("connection reset") }
+      })
+    }).changeIssueState({ id: "BEN-1", state: targetState.id }))
+
+    const parent = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
+    const beforeParent = issue()
+    const afterParent = issue({ parentId: parent.id, parent: Promise.resolve(parent) })
+    let parentReads = 0
+    const parentResult = await Effect.runPromise(makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        issues: async (variables: { filter: unknown }) => {
+          const filter = JSON.stringify(variables.filter)
+          if (filter.includes('"number":{"eq":2}')) return page([parent])
+          return page([parentReads++ === 0 ? beforeParent : afterParent])
+        },
+        updateIssue: async () => { throw new Error("connection reset") }
+      })
+    }).setIssueParent({ id: "BEN-1", parent: "BEN-2" }))
+
+    const beforeClear = issue({ dueDate: "2026-08-01", projectMilestoneId: "milestone-id" })
+    const afterClear = issue({ dueDate: undefined, projectMilestoneId: undefined })
+    let clearReads = 0
+    const clearResult = await Effect.runPromise(makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        issues: async () => page([clearReads++ === 0 ? beforeClear : afterClear]),
+        updateIssue: async () => { throw new Error("connection reset") }
+      })
+    }).clearIssueFields({ id: "BEN-1", dueDate: true, milestone: true }))
+
+    const addedLabel = issueLabel({ name: "Bug" })
+    const beforeAdd = issue()
+    const afterAdd = issue({ labelIds: [addedLabel.id], labels: async () => page([addedLabel]) })
+    let addReads = 0
+    const addResult = await Effect.runPromise(makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        issues: async () => page([addReads++ === 0 ? beforeAdd : afterAdd]),
+        issueLabels: async () => page([addedLabel]),
+        issueAddLabel: async () => { throw new Error("connection reset") }
+      })
+    }).applyLabel({ issue: "BEN-1", label: "Bug" }))
+
+    const beforeRemove = issue({ labelIds: [addedLabel.id], labels: async () => page([addedLabel]) })
+    const afterRemove = issue()
+    let removeReads = 0
+    const removeResult = await Effect.runPromise(makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        issues: async () => page([removeReads++ === 0 ? beforeRemove : afterRemove]),
+        issueRemoveLabel: async () => { throw new Error("connection reset") }
+      })
+    }).removeLabel({ issue: "BEN-1", label: "Bug" }))
+
+    const replacement = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Urgent" })
+    const beforeReplace = issue({ labelIds: [addedLabel.id] })
+    const afterReplace = issue({ labelIds: [replacement.id], labels: async () => page([replacement]) })
+    let replaceReads = 0
+    const replaceResult = await Effect.runPromise(makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        issues: async () => page([replaceReads++ === 0 ? beforeReplace : afterReplace]),
+        issueLabels: async () => page([replacement]),
+        updateIssue: async () => { throw new Error("connection reset") }
+      })
+    }).replaceLabels({ issue: "BEN-1", labels: ["Urgent"] }))
+
+    expect([stateResult, parentResult, clearResult, addResult, removeResult, replaceResult]
+      .map((result) => [result.changed, result.result])).toEqual([
+        [false, "requested workflow state update verified after an indeterminate response"],
+        [false, "requested parent update verified after an indeterminate response"],
+        [false, "requested field clear verified after an indeterminate response"],
+        [false, "requested label add verified after an indeterminate response"],
+        [false, "requested label removal verified after an indeterminate response"],
+        [false, "requested label replacement verified after an indeterminate response"]
+      ])
+  })
+
+  test("indeterminate label replacement fails closed without replay guidance", async () => {
+    const current = issueLabel({ name: "Current" })
+    const desired = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Desired" })
+    const unchangedIssue = issue({ labelIds: [current.id], labels: async () => page([current]) })
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([unchangedIssue], {
+        issueLabels: async () => page([desired]),
+        updateIssue: async () => { throw new Error("connection reset") }
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.replaceLabels({ issue: "BEN-1", labels: ["Desired"] })))
+
+    expect(error.message).toContain("outcome is unknown")
+    expect(error.help).toContain("linear-axi issues view --id BEN-1 --full")
+    expect(error.help).not.toContain("Retry")
+  })
+
+  test("definitive rejection and successful mismatches keep distinct mutation guidance", async () => {
+    const current = issueLabel({ name: "Current" })
+    const desired = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Desired" })
+    const unchangedIssue = issue({ labelIds: [current.id], labels: async () => page([current]) })
+    const run = (updateIssue: () => Promise<Record<string, unknown>>) => makeLinearGateway({}, {
+      client: clientWithIssues([unchangedIssue], {
+        issueLabels: async () => page([desired]),
+        updateIssue
+      })
+    }).replaceLabels({ issue: "BEN-1", labels: ["Desired"] })
+
+    const rejected = await Effect.runPromise(Effect.flip(run(async () => ({ success: false }))))
+    const uncertain = await Effect.runPromise(Effect.flip(run(async () => ({
+      success: true,
+      issue: Promise.resolve(unchangedIssue)
+    }))))
+
+    expect(rejected.message).toContain("Linear did not accept the label replacement")
+    expect(rejected.message).not.toContain("outcome is unknown")
+    expect(uncertain.message).toContain("could not be verified after dispatch")
+    expect(uncertain.help).toContain("linear-axi issues view --id BEN-1 --full")
+    expect(uncertain.help).not.toContain("Retry")
+  })
+
+  test("missing successful mutation payload reconciles instead of suggesting replay", async () => {
+    const current = issueLabel({ name: "Current" })
+    const desired = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Desired" })
+    const before = issue({ labelIds: [current.id], labels: async () => page([current]) })
+    const after = issue({ labelIds: [desired.id], labels: async () => page([desired]) })
+    let reads = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        issues: async () => page([reads++ === 0 ? before : after]),
+        issueLabels: async () => page([desired]),
+        updateIssue: async () => ({ success: true, issue: undefined })
+      })
+    })
+
+    const result = await Effect.runPromise(gateway.replaceLabels({ issue: "BEN-1", labels: ["Desired"] }))
+
+    expect(result).toMatchObject({
+      changed: false,
+      result: "requested label replacement verified after an indeterminate response"
+    })
+  })
+
+  test("missing successful mutation payload fails closed when state cannot be reconciled", async () => {
+    const current = issueLabel({ name: "Current" })
+    const desired = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Desired" })
+    const unchangedIssue = issue({ labelIds: [current.id], labels: async () => page([current]) })
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([unchangedIssue], {
+        issueLabels: async () => page([desired]),
+        updateIssue: async () => ({ success: true, issue: undefined })
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.replaceLabels({ issue: "BEN-1", labels: ["Desired"] })))
+
+    expect(error.message).toContain("outcome is unknown")
+    expect(error.help).toContain("linear-axi issues view --id BEN-1 --full")
+    expect(error.help).not.toContain("Retry")
+  })
+
+  test("label replacement rejects two labels from the same group before mutation", async () => {
+    const parentId = "77777777-7777-4777-8777-777777777777"
+    const first = issueLabel({ id: "55555555-5555-4555-8555-555555555555", name: "Backend", parentId })
+    const second = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Frontend", parentId })
+    let updates = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([issue()], {
+        issueLabels: async () => page([first, second]),
+        updateIssue: async () => { updates += 1; return { success: true } }
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.replaceLabels({
+      issue: "BEN-1",
+      labels: ["Backend", "Frontend"]
+    })))
+
+    expect(error.message).toContain("same label group")
+    expect(error.help).toContain("at most one label")
+    expect(updates).toBe(0)
+  })
+
+  test("label add rejects a different child from an occupied parent group", async () => {
+    const parentId = "77777777-7777-4777-8777-777777777777"
+    const current = issueLabel({ id: "55555555-5555-4555-8555-555555555555", name: "Backend", parentId })
+    const desired = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Frontend", parentId })
+    let applies = 0
+    const currentIssue = issue({
+      labelIds: [current.id],
+      labels: async () => page([current])
+    })
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([currentIssue], {
+        issueLabels: async () => page([desired]),
+        issueAddLabel: async () => { applies += 1; return { success: true } }
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.applyLabel({
+      issue: "BEN-1",
+      label: "Frontend"
+    })))
+
+    expect(error.message).toContain(current.id)
+    expect(error.message).toContain(desired.id)
+    expect(error.message).toContain(parentId)
+    expect(error.help).toContain("at most one label")
+    expect(applies).toBe(0)
   })
 
   test("successful description update refetches and verifies content and timestamp", async () => {
@@ -599,6 +921,82 @@ describe("SDK LinearGateway conflict contracts", () => {
     const gateway = makeLinearGateway({}, { client })
     expect((await Effect.runPromise(gateway.closeIssue({ id: "BEN-1" }))).changed).toBe(false)
     expect((await Effect.runPromise(gateway.assignIssue({ id: "BEN-1", assignee: "me", replace: false }))).changed).toBe(false)
+    expect(updates).toBe(0)
+  })
+
+  test("assignment resolves exact user email, name, and display name selectors", async () => {
+    const selected = user({
+      name: "Alice Example",
+      displayName: "alice",
+      email: "alice@example.com"
+    })
+    const client = clientWithIssues([issue({
+      assigneeId: selected.id,
+      assignee: Promise.resolve(selected)
+    })], {
+      users: async () => page([selected])
+    })
+    const gateway = makeLinearGateway({}, { client })
+
+    for (const selector of [selected.id, "Alice Example", "alice", "ALICE@EXAMPLE.COM"]) {
+      const result = await Effect.runPromise(gateway.assignIssue({ id: "BEN-1", assignee: selector, replace: false }))
+      expect(result).toMatchObject({ changed: false })
+    }
+  })
+
+  test("non-ID user resolution applies exact case-insensitive server filters", async () => {
+    const selected = user({
+      name: "Alice Example",
+      displayName: "alice",
+      email: "alice@example.com"
+    })
+    const filters: Array<unknown> = []
+    const client = clientWithIssues([issue({
+      assigneeId: selected.id,
+      assignee: Promise.resolve(selected)
+    })], {
+      users: async (variables: { filter?: unknown }) => {
+        filters.push(variables.filter)
+        return page([selected])
+      }
+    })
+
+    const result = await Effect.runPromise(
+      makeLinearGateway({}, { client }).assignIssue({ id: "BEN-1", assignee: "ALICE", replace: false })
+    )
+
+    expect(result.changed).toBe(false)
+    expect(filters).toEqual([{
+      or: [
+        { name: { eqIgnoreCase: "ALICE" } },
+        { displayName: { eqIgnoreCase: "ALICE" } },
+        { email: { eqIgnoreCase: "ALICE" } }
+      ]
+    }])
+  })
+
+  test("ambiguous user names return bounded candidate ids without private data", async () => {
+    const users = Array.from({ length: 15 }, (_, index) => user({
+      id: `77777777-7777-4777-8777-${String(index + 1).padStart(12, "0")}`,
+      name: "Alex",
+      email: `alex-${index + 1}@example.com`
+    }))
+    let updates = 0
+    const client = clientWithIssues([issue()], {
+      users: async () => page(users),
+      updateIssue: async () => { updates += 1; return { success: true } }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(
+      makeLinearGateway({}, { client }).assignIssue({ id: "BEN-1", assignee: "Alex", replace: false })
+    ))
+    const diagnostic = `${error.message}\n${error.help}`
+
+    expect(error.message).toContain("Ambiguous Linear user Alex")
+    expect(error.help).toContain("showing 10 of 15")
+    expect(error.help).toContain(users[9]!.id)
+    expect(error.help).not.toContain(users[10]!.id)
+    expect(diagnostic).not.toContain("@example.com")
     expect(updates).toBe(0)
   })
 
@@ -948,7 +1346,7 @@ describe("SDK LinearGateway conflict contracts", () => {
       teams: async () => page([team]),
       issueLabels: async (variables: { filter: unknown }) => {
         filters.push(variables.filter)
-        return page([])
+        return page(filters.length === 3 ? [created] : [])
       },
       createIssueLabel: async (input: Record<string, unknown>) => {
         sent = input
@@ -970,8 +1368,182 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(sent).toMatchObject({ id, name: created.name })
     expect(filters).toEqual([
       { id: { eq: id } },
-      { name: { eqIgnoreCase: created.name }, team: { id: { eq: team.id } } }
+      { name: { eqIgnoreCase: created.name }, team: { id: { eq: team.id } } },
+      { id: { eq: id } }
     ])
+  })
+
+  test("label creation rejects a rewritten caller-retained UUID after dispatch", async () => {
+    const callerId = "55555555-5555-4555-8555-555555555555"
+    const rewritten = issueLabel({ id: "66666666-6666-4666-8666-666666666666" })
+    let reads = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async () => {
+        reads += 1
+        return page(reads === 1 ? [] : [rewritten])
+      },
+      createIssueLabel: async () => ({ success: true, issueLabel: Promise.resolve(rewritten) })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createLabel({
+      name: rewritten.name,
+      color: rewritten.color,
+      description: rewritten.description ?? undefined,
+      workspace: false,
+      team: "BEN",
+      id: callerId,
+      ifAbsent: false
+    })))
+
+    expect(error._tag).toBe("LinearApiError")
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).toContain(`linear-axi labels list --team 'BEN' --name '${rewritten.name}'`)
+    expect(error.help).not.toContain("retry")
+    expect(reads).toBe(1)
+  })
+
+  test.each([
+    { property: "scope", drift: { teamId: "99999999-9999-4999-8999-999999999999" } },
+    { property: "group status", drift: { isGroup: true } },
+    { property: "parent", drift: { parentId: "66666666-6666-4666-8666-666666666666" } }
+  ])("label creation refetches and verifies $property", async ({ drift }) => {
+    const created = issueLabel()
+    const drifted = issueLabel(drift)
+    let reads = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async () => page(reads++ === 0 ? [] : [drifted]),
+      createIssueLabel: async () => ({ success: true, issueLabel: Promise.resolve(created) })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createLabel({
+      name: created.name,
+      color: created.color,
+      description: created.description ?? undefined,
+      workspace: false,
+      team: "BEN",
+      id: created.id,
+      ifAbsent: false
+    })))
+
+    expect(reads).toBe(2)
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).toContain(`linear-axi labels list --team 'BEN' --name '${created.name}'`)
+    expect(error.help).toContain("--fields id,name,scope,color,description,isGroup,parentId,archivedAt")
+    expect(error.help).not.toContain("retry")
+  })
+
+  test("label creation readback failures require scoped inspection without replay", async () => {
+    const created = issueLabel()
+    let reads = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async () => {
+        reads += 1
+        if (reads === 1) return page([])
+        throw new Error("temporary read failure")
+      },
+      createIssueLabel: async () => ({ success: true, issueLabel: Promise.resolve(created) })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createLabel({
+      name: created.name,
+      color: created.color,
+      description: created.description ?? undefined,
+      workspace: false,
+      team: "BEN",
+      ifAbsent: false
+    })))
+
+    expect(error.message).toContain("mutation outcome is unknown")
+    expect(error.help).toContain(`linear-axi labels list --team 'BEN' --name '${created.name}'`)
+    expect(error.help).not.toContain("retry")
+  })
+
+  test("label creation rejects nested parent groups before mutation", async () => {
+    const parent = issueLabel({
+      id: "66666666-6666-4666-8666-666666666666",
+      name: "Engineering",
+      isGroup: true,
+      parentId: "77777777-7777-4777-8777-777777777777"
+    })
+    let creates = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async () => page([parent]),
+      createIssueLabel: async () => { creates += 1; return { success: true } }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createLabel({
+      name: "Backend",
+      color: "#123456",
+      workspace: false,
+      team: "BEN",
+      ifAbsent: false,
+      parent: "Engineering"
+    })))
+
+    expect(error.message).toContain("nested under another group")
+    expect(creates).toBe(0)
+  })
+
+  test("label creation rejects group children defensively", async () => {
+    let reads = 0
+    const client = clientWithIssues([], {
+      teams: async () => { reads += 1; return page([team]) },
+      issueLabels: async () => { reads += 1; return page([]) },
+      createIssueLabel: async () => { reads += 1; return { success: true } }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createLabel({
+      name: "Nested group",
+      color: "#123456",
+      workspace: false,
+      team: "BEN",
+      ifAbsent: false,
+      isGroup: true,
+      parent: "Engineering"
+    })))
+
+    expect(error.message).toContain("label group cannot have a parent")
+    expect(reads).toBe(0)
+  })
+
+  test("label creation resolves a same-scope group and sends group metadata", async () => {
+    const parent = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Engineering", isGroup: true })
+    const child = issueLabel({ name: "Backend", parentId: parent.id })
+    let sent: Record<string, unknown> | undefined
+    let created = false
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async (variables: { filter: unknown }) => {
+        const text = JSON.stringify(variables.filter)
+        if (text.includes("Engineering")) return page([parent])
+        if (created && text.includes(child.id)) return page([child])
+        return page([])
+      },
+      createIssueLabel: async (input: Record<string, unknown>) => {
+        sent = input
+        created = true
+        return { success: true, issueLabel: Promise.resolve(child) }
+      }
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).createLabel({
+      name: "Backend",
+      color: child.color,
+      description: child.description ?? undefined,
+      workspace: false,
+      team: "BEN",
+      id: child.id,
+      ifAbsent: false,
+      parent: "Engineering"
+    }))
+
+    expect(result.changed).toBe(true)
+    expect(result.value.parentId).toBe(parent.id)
+    expect(sent).toMatchObject({ id: child.id, name: "Backend", parentId: parent.id })
   })
 
   test("label create with caller UUID and if-absent is a no-op when both identities match", async () => {
@@ -1263,6 +1835,103 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(labelPages).toBe(1)
   })
 
+  test("archived label removal is retry-idempotent without enabling add", async () => {
+    const archived = issueLabel({
+      id: "66666666-6666-4666-8666-666666666666",
+      name: "archived",
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    let attached = true
+    const labeled = issue({
+      labels: async () => page(attached ? [archived] : [])
+    })
+    Object.defineProperty(labeled, "labelIds", { get: () => attached ? [archived.id] : [] })
+    const removals: Array<readonly [string, string]> = []
+    let additions = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([labeled], {
+        issueLabels: async () => page([archived]),
+        issueAddLabel: async () => {
+          additions += 1
+          return { success: true, issue: Promise.resolve(labeled) }
+        },
+        issueRemoveLabel: async (issueId: string, labelId: string) => {
+          removals.push([issueId, labelId])
+          attached = false
+          return { success: true, issue: Promise.resolve(labeled) }
+        }
+      })
+    })
+
+    const result = await Effect.runPromise(gateway.removeLabel({ issue: "BEN-1", label: "ARCHIVED" }))
+    const retry = await Effect.runPromise(gateway.removeLabel({ issue: "BEN-1", label: "ARCHIVED" }))
+    const addError = await Effect.runPromise(Effect.flip(gateway.applyLabel({ issue: "BEN-1", label: "ARCHIVED" })))
+
+    expect(removals).toEqual([[labeled.id, archived.id]])
+    expect(result).toMatchObject({ changed: true, result: "label removed" })
+    expect(retry).toMatchObject({ changed: false, result: "label already absent (no-op)" })
+    expect(addError.message.toLowerCase()).toContain("archived")
+    expect(additions).toBe(0)
+  })
+
+  test("detached label removal retries no-op without global ambiguity", async () => {
+    const archivedTeam = issueLabel({
+      id: "66666666-6666-4666-8666-666666666666",
+      name: "archived",
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    const archivedWorkspace = issueLabel({
+      id: "77777777-7777-4777-8777-777777777777",
+      name: "archived",
+      teamId: undefined,
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    const unlabeled = issue()
+    let globalReads = 0
+    let removals = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([unlabeled], {
+        issueLabels: async () => {
+          globalReads += 1
+          return page([archivedTeam, archivedWorkspace])
+        },
+        issueRemoveLabel: async () => {
+          removals += 1
+          return { success: true, issue: Promise.resolve(unlabeled) }
+        }
+      })
+    })
+
+    const result = await Effect.runPromise(gateway.removeLabel({ issue: "BEN-1", label: "ARCHIVED" }))
+
+    expect(result).toMatchObject({ changed: false, result: "label already absent (no-op)" })
+    expect(globalReads).toBe(0)
+    expect(removals).toBe(0)
+  })
+
+  test("attached ambiguous label removal fails closed", async () => {
+    const first = issueLabel({ name: "duplicate" })
+    const second = issueLabel({ id: "77777777-7777-4777-8777-777777777777", name: "duplicate", teamId: undefined })
+    const labeled = issue({
+      labelIds: [first.id, second.id],
+      labels: async () => page([first, second])
+    })
+    let removals = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([labeled], {
+        issueRemoveLabel: async () => {
+          removals += 1
+          return { success: true, issue: Promise.resolve(labeled) }
+        }
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.removeLabel({ issue: "BEN-1", label: "DUPLICATE" })))
+
+    expect(error.message).toContain("Ambiguous")
+    expect(removals).toBe(0)
+  })
+
   test("issue details and mutation results retain attached archived labels", async () => {
     const viewer = user()
     const active = issueLabel({ name: "active" })
@@ -1498,6 +2167,166 @@ describe("SDK LinearGateway conflict contracts", () => {
     }))
 
     expect(result).toMatchObject({ changed: false, result: "directed relation already exists (no-op)" })
+  })
+
+  test("tuple relation removal caps ambiguous candidate ids", async () => {
+    const source = issue()
+    const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
+    const relations = Array.from({ length: 15 }, (_, index) => ({
+      id: `relation-${String(index + 1).padStart(2, "0")}`,
+      type: "blocks",
+      issueId: source.id,
+      relatedIssueId: target.id,
+      archivedAt: undefined
+    }))
+    source.relations = async () => page(relations) as never
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source])
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).removeRelation({
+      issue: "BEN-1",
+      relatedIssue: "BEN-2",
+      type: "blocks"
+    })))
+
+    expect(error.message).toContain("Ambiguous directed relation")
+    expect(error.help).toContain("showing 10 of 15")
+    expect(error.help).not.toContain("relation-11")
+  })
+
+  test("tuple relation removal resolves an archived target", async () => {
+    const source = issue()
+    const target = issue({
+      id: "99999999-9999-4999-8999-999999999999",
+      identifier: "BEN-2",
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    })
+    const active = {
+      id: "77777777-7777-4777-8777-777777777777",
+      type: "blocks",
+      issueId: source.id,
+      relatedIssueId: target.id,
+      archivedAt: undefined
+    }
+    source.relations = async () => page([active]) as never
+    const deleted: string[] = []
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source]),
+      deleteIssueRelation: async (id: string) => {
+        deleted.push(id)
+        return { success: true }
+      },
+      issueRelation: async () => ({ ...active, archivedAt: new Date("2026-07-13T14:00:00.000Z") })
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).removeRelation({
+      issue: "BEN-1",
+      relatedIssue: "BEN-2",
+      type: "blocks"
+    }))
+
+    expect(deleted).toEqual([active.id])
+    expect(result).toMatchObject({ changed: true, value: { id: active.id } })
+  })
+
+  test("relation removal reconciles an indeterminate SDK failure", async () => {
+    const source = issue()
+    const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
+    const relation = {
+      id: "77777777-7777-4777-8777-777777777777",
+      type: "blocks",
+      issueId: source.id,
+      relatedIssueId: target.id,
+      archivedAt: undefined
+    }
+    source.relations = async () => page([relation]) as never
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source]),
+      deleteIssueRelation: async () => { throw new Error("connection reset") },
+      issueRelation: async () => ({ ...relation, archivedAt: new Date("2026-07-13T14:00:00.000Z") })
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).removeRelation({
+      issue: "BEN-1",
+      relatedIssue: "BEN-2",
+      type: "blocks"
+    }))
+
+    expect(result).toMatchObject({
+      changed: false,
+      result: "directed relation absence verified after an indeterminate response",
+      value: { id: relation.id }
+    })
+  })
+
+  test("indeterminate relation removal fails closed with inspection guidance", async () => {
+    const source = issue()
+    const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
+    const relation = {
+      id: "77777777-7777-4777-8777-777777777777",
+      type: "blocks",
+      issueId: source.id,
+      relatedIssueId: target.id,
+      archivedAt: undefined
+    }
+    source.relations = async () => page([relation]) as never
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source]),
+      deleteIssueRelation: async () => { throw new Error("connection reset") },
+      issueRelation: async () => relation
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).removeRelation({
+      issue: "BEN-1",
+      relatedIssue: "BEN-2",
+      type: "blocks"
+    })))
+
+    expect(error.message).toContain("outcome is unknown")
+    expect(error.help).toContain(`linear-axi relations list --issue ${source.id} --type blocks --direction outgoing`)
+    expect(error.help).not.toContain("Retry")
+  })
+
+  test("relation removal ignores archived tuple history when one active match exists", async () => {
+    const source = issue()
+    const target = issue({ id: "99999999-9999-4999-8999-999999999999", identifier: "BEN-2" })
+    const active = {
+      id: "77777777-7777-4777-8777-777777777777",
+      type: "blocks",
+      issueId: source.id,
+      relatedIssueId: target.id,
+      archivedAt: undefined
+    }
+    const archived = {
+      ...active,
+      id: "88888888-8888-4888-8888-888888888888",
+      archivedAt: new Date("2026-07-13T13:00:00.000Z")
+    }
+    source.relations = async () => page([archived, active]) as never
+    const deleted: string[] = []
+    const client = clientWithIssues([], {
+      issues: async (variables: { filter: unknown }) =>
+        page(JSON.stringify(variables.filter).includes('"number":{"eq":2}') ? [target] : [source]),
+      deleteIssueRelation: async (id: string) => {
+        deleted.push(id)
+        return { success: true }
+      },
+      issueRelation: async () => ({ ...active, archivedAt: new Date("2026-07-13T14:00:00.000Z") })
+    })
+
+    const result = await Effect.runPromise(makeLinearGateway({}, { client }).removeRelation({
+      issue: "BEN-1",
+      relatedIssue: "BEN-2",
+      type: "blocks"
+    }))
+
+    expect(deleted).toEqual([active.id])
+    expect(result).toMatchObject({ changed: true, value: { id: active.id } })
   })
 
   test("starts outgoing and incoming relation pagination concurrently", async () => {

@@ -71,42 +71,74 @@ linear-axi issues create --team <key-or-id> --title "..." --description-file <pa
 linear-axi issues assign --id <issue> --assignee me
 linear-axi issues unassign --id <issue> --if-assignee me
 linear-axi issues close --id <issue>
+linear-axi workflow-states list --team <team>
+linear-axi issues state --id <issue> --state "In Progress"
+linear-axi issues parent set --id <child> --parent <parent>
+linear-axi issues parent clear --id <child>
 linear-axi issues update --id <issue> --description-file <path> --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ>
+linear-axi issues update --id <issue> --priority 2 --due-date 2026-08-01 --project <project> --cycle <cycle>
+linear-axi issues update --id <issue> --clear-assignee --clear-estimate --clear-project --clear-cycle
+linear-axi issues update --id <issue> --clear-due-date --clear-milestone
 linear-axi labels list --workspace --name <exact-name>
 linear-axi labels list --workspace --include-archived --fields id,name,archivedAt
 linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
-linear-axi labels apply --issue <issue> --label <label>
+linear-axi labels add --issue <issue> --label <label>
+linear-axi labels remove --issue <issue> --label <label>
+linear-axi labels replace --issue <issue> --labels-json '["Bug","Urgent"]'
 linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue>
 linear-axi relations list --issue <blocked-issue> --blocked-by
 linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks
 linear-axi relations list --issue <issue> --type blocks --direction both
+linear-axi relations remove --issue <blocked> --blocked-by <blocker>
 linear-axi comments list --issue <issue> --limit 50
 linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
 linear-axi wayfinder frontier --map <map-issue> --first 20
 linear-axi <command> --help
 ```
 
-`--description-file -` and `--body-file -` read from stdin. `issues view` truncates descriptions to 1,200 characters by default and reports the original length; pass `--full` before merging or replacing a description. Data, help, errors, no-ops, and definitive empty states are TOON on stdout. Successful mutations include `changed` and `result`; an already-satisfied mutation is a no-op with exit code `0`.
+See the bundled [command reference](.agents/skills/linear-axi/COMMANDS.md) for the complete generated reference for flags, usage, examples, and command-specific safety guidance.
+
+### Official MCP parity
+
+The frozen authenticated inventory contains 47 official tools observed on 2026-07-20. The checked [parity manifest](docs/linear-mcp-parity.json) maps every tool exactly once, and [the captured schemas](docs/official-linear-mcp-tools.json) preserve the names, descriptions, and input schemas used for this release. `official` mappings call the hosted tool, `native` mappings use the SDK equivalent, `native+official` combines both routes, and the two decision statuses record intentionally unavailable operations or safe partial coverage with a rationale. `bun run parity:check` fails when the inventory, manifest, implemented command surface, or generated skill reference drifts.
+
+Official-backed commands initialize `https://mcp.linear.app/mcp` with the one credential selected by the Login precedence rules above and close the session when the command finishes. They need no separate MCP server configuration or second credential. The MCP transport sends the credential in the Bearer authorization header and redacts its exact value from translated transport and tool errors.
+
+The practical object surface includes projects, documents, cycles, milestones, project labels, releases, release notes, release pipelines, users, agent skills, diffs, status updates, and documentation search. Read commands use `list`, `view`, `search`, or `inspect`; safe updates use `update`. Default list output is minimal and paginated. `--full` disables local projection and text truncation, but associations still require their explicit inclusion flags.
+
+Official create operations without a caller-supplied id, destructive deletes, and binary attachment/image flows are recorded as `needs-decision` or `partial-needs-decision` with a recommended scoped design. They are not silently omitted or exposed as retry-unsafe mutations. Advanced issue creation is the exception: it requires `--if-absent`, performs a team/title exact-match preflight, and uses one `save_issue` mutation. A concurrent creator can still race that preflight, so inspect an ambiguous retry instead of creating again. Product-object updates resolve mutable selectors to immutable IDs before mutation. If an official save fails after dispatch without a definitive response, inspect with the exact read-only command in the error before deciding whether another mutation is safe.
+
+`--description-file -` and `--body-file -` read from stdin. `issues view` truncates descriptions to 1,200 characters by default and reports the original length. Official detail commands apply the same limit to body, content, description, instructions, and text fields, report every truncated field and original length, and provide an exact `--full` command. Pass `--full` before merging or replacing rich text. Data, help, errors, no-ops, and definitive empty states are TOON on stdout. Successful mutations include `changed` and `result`; an already-satisfied mutation is a no-op with exit code `0`.
+
+Conditional official command contracts are validated before network access:
+
+- `comments search` requires exactly one parent flag. `--status-update-type` is valid only with `--status-update-id`.
+- `documents update` accepts at most one new parent among project, issue, initiative, and cycle. `--team` identifies a cycle's team and may accompany `--cycle`; without a cycle it participates in the one-parent constraint.
+- `release-notes update` requires `--range-from` and `--range-to` together, and the range form cannot be combined with `--releases-json`.
+- `status-updates update` accepts at most one of `--project` and `--initiative`, and that parent must match `--type`.
+- Every official `update` requires at least one property. Set and clear forms are mutually exclusive, and every date, timestamp, numeric range, and JSON-array flag is validated before dispatch.
 
 ### Resolution, filters, and pagination
 
-Team keys, issue identifiers, and label names are matched exactly without case sensitivity. UUIDs identify one exact object. Identity resolvers scan every matching page and never select the first match: active teams, issues, labels, and workflow states must be unique, while missing, archived, and ambiguous matches fail. Retry an ambiguity with the intended UUID. Archived or disabled users remain valid for issue filters and unassign preconditions, but assignment requires an active, unarchived, assignable user. When `--team` and `--parent` are combined for listing or creation, the parent must belong to that team. Label names used with an issue resolve uniquely among active workspace labels and labels for the issue's team.
+Team keys, issue identifiers, and label names are matched exactly without case sensitivity. UUIDs identify one exact object. Identity resolvers scan every matching page and never select the first match: active teams, issues, labels, and workflow states must be unique, while missing, archived, and ambiguous matches fail. Retry an ambiguity with the intended UUID. Official detail commands likewise verify that the returned immutable ID or documented stable alias exactly matches the requested selector. Product updates canonicalize mutable selectors before dispatch, reject archived targets and additions, and verify project, team, or pipeline ownership where the association is scoped; collection removals may resolve archived associations so cleanup remains possible. Archived or disabled users remain valid for issue filters and unassign preconditions, but assignment requires an active, unarchived, assignable user. When `--team` and `--parent` are combined for listing or creation, the parent must belong to that team. Label names used with an issue resolve uniquely among active workspace labels and labels for the issue's team.
 
 `issues list` supports team, exact label, direct parent, assignee (`me`, `none`, or a user UUID), and open or closed state filters. Open excludes the three terminal workflow types: completed, canceled, and duplicate. Closed includes all three. Its default fields are `id,identifier,title,state`; `--fields` accepts `id,identifier,title,state,assignee,parent,labels,updatedAt,url,subIssueSortOrder`.
 
-`labels list` can search all labels or select workspace, team, or issue scope. Label lists return active labels by default. Pass `--include-archived` to include archived labels. The default fields are `id,name,scope`; `--fields` also accepts `color,description,isGroup,archivedAt`. In contrast, issue details, mutation results, and `issues list --fields labels` retain the names of all attached labels, including archived labels; use `labels list --issue <issue> --include-archived --fields id,name,archivedAt` to inspect their status.
+`labels list` can search all labels or select workspace, team, or issue scope. Label lists return active labels by default. Pass `--include-archived` to include archived labels. The default fields are `id,name,scope`; `--fields` also accepts `color,description,isGroup,parentId,archivedAt`. In contrast, issue details, mutation results, and `issues list --fields labels` retain the names of all attached labels, including archived labels; use `labels list --issue <issue> --include-archived --fields id,name,parentId,archivedAt` to inspect their status and group.
 
 `issues list`, `labels list`, `relations list`, and `comments list` return `page.endCursor` when another page exists. Pass that exact value to the same command with `--after`. Wayfinder frontier instead returns `pageInfo.endCursor` and uses `--first`; `--limit` remains an alias for `--first`, but the two flags cannot be combined. Relation pages and issue-scoped exact-name label pages are recomputed from current data and are not snapshot-isolated, so restart without `--after` when current membership matters.
 
 ### Mutation safety
 
-Issue, label, relation, and comment creation accept a caller-retained UUID v4 with `--id`. Repeating the same request with the same UUID is a no-op, while reuse for different content or scope is a conflict. Rich-text retry comparisons tolerate normalized line endings, trailing newlines, and Linear's angle-bracket form for HTTP(S) Markdown links. `labels create --if-absent` also treats a case-insensitive same-name label with matching color and description in the requested scope as a no-op. A directed relation is a no-op when its source, target, and type already exist, even without `--id`. Label creation and application accept ordinary labels only, not label groups.
+Issue, label, relation, and comment creation accept a caller-retained UUID v4 with `--id`. Repeating the same request with the same UUID is a no-op, while reuse for different content or scope is a conflict. Rich-text retry comparisons tolerate normalized line endings, trailing newlines, and Linear's angle-bracket form for HTTP(S) Markdown links. `labels create --if-absent` also treats a case-insensitive same-name label with matching properties in the requested scope as a no-op. `labels create --group` creates a top-level group; `--parent` creates an ordinary child under a top-level group in the same scope, and the two flags cannot be combined. Attaching or replacing issue labels accepts ordinary labels only and at most one child from each label group. `labels replace --labels-json '[]'` clears all labels. A directed relation is a no-op when its source, target, and type already exist, even without `--id`.
+
+Issue state, parent, label add/remove/replace, and relation removal mutations read back the requested state. If a dispatched mutation cannot be reconciled, follow its exact read-only inspection command and do not repeat the mutation while the outcome is unknown. Within one update, the same canonical team, initiative, release, or issue relation cannot appear in both add and remove sets.
 
 Assignment is a verified claim convention, not an atomic claim. By default, assigning an already-assigned issue conflicts; `--replace` permits a deliberate overwrite. Wayfinder agents must not use `--replace` to claim work and should release only their own assignment with `--if-assignee`. Another writer can still race between the read and update.
 
 Without `--state`, `issues close` is a no-op for an already terminal issue and otherwise selects the team's only completed workflow state. If the team has multiple completed states, pass the intended active completed-state UUID with `--state`; an explicit state transitions unless the issue is already in that exact state.
 
-Full-description replacement requires `--if-updated-at` with the exact canonical `updatedAt` timestamp emitted by the CLI. The CLI rejects timestamps that are malformed or already stale, normalizes line endings and trailing newlines, refetches after a write, and verifies the desired description and a changed timestamp. Linear does not expose an atomic compare-and-swap precondition, so an edit can still land in the final read/write window. Keep resolution comments as the canonical decision records, refetch and merge after any conflict, and never retry an old full description.
+Issue descriptions and official product-object rich text must be replaced only with `--if-updated-at` set to the exact canonical `updatedAt` emitted by the latest full view. This covers document and release-note content, project, release, and milestone descriptions, and status-update bodies, including their explicit `--clear-content`, `--clear-description`, and `--clear-body` forms. Optional project summaries use `--clear-summary`. The CLI rejects malformed or stale timestamps, refetches after a write, and verifies the requested text. Linear does not expose an atomic compare-and-swap precondition, so an edit can still land in the final read/write window. Refetch and merge after any conflict, and never retry stale full text.
 
 Use `relations create --issue <blocked-issue> --blocked-by <blocker-issue>` when one issue blocks another. The shorthand deliberately reads from the blocked issue's perspective: it maps the blocker to Linear's source, the blocked issue to Linear's target, and the type to `blocks`. Create output names both `blockedIssue` and `blockerIssue`. `relations list --issue <blocked-issue> --blocked-by` lists incoming `blocks` relations, names the query once as top-level `blockedIssue`, and uses `blockerIssue` instead of the generic `identifier` in each relation row. The shorthand cannot be mixed with the generic relation flags.
 
@@ -141,5 +173,7 @@ Only `linear-axi` is intended to be installable from this repo.
 ```sh
 bun run check
 ```
+
+After changing command specs or help, run `bun run skill:generate` to refresh the bundled command reference. To refresh the frozen official inventory, authenticate locally and run `bun run parity:capture --date YYYY-MM-DD`, then update the parity manifest's observation date, inventory hash, mappings, and rationales. Do not hand-edit the generated inventory. `bun run parity:check` verifies the inventory, manifest, command capabilities, and generated reference agree.
 
 Effect source is vendored under `repos/effect` as read-only reference material. Application code imports package dependencies, not the vendored source.

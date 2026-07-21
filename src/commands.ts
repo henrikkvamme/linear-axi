@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Effect, Predicate, Schema } from "effect"
 import {
   commandSpecs,
   DEFAULT_ISSUE_FIELDS,
@@ -22,15 +22,50 @@ import type {
   RelationType
 } from "./linear"
 import { DESCRIPTION_CONCURRENCY_WARNING } from "./linear"
+import { labelGroupSelectionError } from "./label-validation"
 import { decodeLocalCursorOffset } from "./linear-pagination"
 import { connectOAuth, setupOAuth } from "./oauth"
-import { truncateText, type OutputValue } from "./output"
+import { truncateDetail, truncateText, type OutputValue } from "./output"
+import { richTextEqual } from "./rich-text"
+import { isCanonicalDate, isCanonicalTimestamp } from "./validation"
+import {
+  findCanonicalIntersection,
+  officialCollectionAbsent as collectionAbsent,
+  officialCollectionContains as collectionContains,
+  officialCollectionEqual as collectionEqual,
+  officialReferenceEqual
+} from "./official-collection"
+import {
+  filterOfficialActiveEntities,
+  hasValidOfficialArchivedState,
+  requireOfficialEntityActive,
+  resolveOfficialViewerUser
+} from "./official-active"
+import { runOfficialCommand } from "./official-commands"
+import {
+  officialEntityIdentity,
+  officialEntityMatchesSelector,
+  officialOwnerReference,
+  officialReferenceMatchesIdentity,
+  officialReferenceSelector,
+  officialReferenceValues,
+  officialSelectorIsImmutableId,
+  type OfficialEntityIdentity
+} from "./official-identity"
+import { indeterminateOfficialMutation, officialMutationInspectionCommand } from "./official-inspection"
+import { fetchOfficialRows } from "./official-pagination"
+import { renderCandidateIds, resolveExactOfficialId as uniqueOfficialId } from "./official-selector"
 import { validateFrontierCursor } from "./wayfinder"
 
 const ISSUE_FIELD_SET: ReadonlySet<string> = new Set(ISSUE_FIELDS)
 const LABEL_FIELD_SET: ReadonlySet<string> = new Set(LABEL_FIELDS)
 const RELATION_TYPES = new Set<RelationType>(["blocks", "related", "duplicate", "similar"])
 const RELATION_DIRECTIONS = new Set(["outgoing", "incoming", "both"])
+const decodeStringArray = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)))
+const decodeLinkArray = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.Struct({
+  url: Schema.String.check(Schema.isPattern(/^https?:\/\//)),
+  title: Schema.NonEmptyString
+}))))
 
 export const runCommand = (
   parsed: ParsedArgs,
@@ -71,22 +106,30 @@ const dispatchCommand = (
     case "auth oauth setup": return authOAuthSetup(parsed, env)
     case "auth oauth connect": return authOAuthConnect(parsed, env, credentialPathEnv)
     case "teams list": return teamsList(parsed, gateway)
+    case "workflow-states list": return workflowStatesList(parsed, gateway)
     case "issues list": return issuesList(parsed, gateway)
     case "issues view": return issuesView(parsed, gateway)
     case "issues create": return issuesCreate(parsed, gateway)
     case "issues assign": return issuesAssign(parsed, gateway)
     case "issues unassign": return issuesUnassign(parsed, gateway)
     case "issues close": return issuesClose(parsed, gateway)
+    case "issues state": return issuesState(parsed, gateway)
+    case "issues parent set": return issuesParent(parsed, gateway, false)
+    case "issues parent clear": return issuesParent(parsed, gateway, true)
     case "issues update": return issuesUpdate(parsed, gateway)
     case "labels list": return labelsList(parsed, gateway)
     case "labels create": return labelsCreate(parsed, gateway)
     case "labels apply": return labelsApply(parsed, gateway)
+    case "labels add": return labelsApply(parsed, gateway)
+    case "labels remove": return labelsRemove(parsed, gateway)
+    case "labels replace": return labelsReplace(parsed, gateway)
     case "relations list": return relationsList(parsed, gateway)
     case "relations create": return relationsCreate(parsed, gateway)
+    case "relations remove": return relationsRemove(parsed, gateway)
     case "comments list": return commentsList(parsed, gateway)
     case "comments create": return commentsCreate(parsed, gateway)
     case "wayfinder frontier": return wayfinderFrontier(parsed, gateway)
-    default: return Effect.fail(new UsageError({ message: `unknown command ${path}`, help: topLevelHelp }))
+    default: return runOfficialCommand(parsed, gateway) ?? Effect.fail(new UsageError({ message: `unknown command ${path}`, help: topLevelHelp }))
   }
 }
 
@@ -124,6 +167,17 @@ const teamsList = (parsed: ParsedArgs, gateway: LinearGateway) =>
       count: `${teams.length} teams shown`,
       ...(teams.length === 0 ? { teams: "0 teams found for this Linear account" } : { teams }),
       help: teams.length === 0 ? [] : ["Run `linear-axi issues list --team <key-or-id>` to list issues for a team."]
+    }))
+  )
+
+const workflowStatesList = (parsed: ParsedArgs, gateway: LinearGateway) =>
+  gateway.listWorkflowStates({ team: readStringFlag(parsed.flags, "team")! }).pipe(
+    Effect.map((states) => ({
+      count: `${states.length} workflow states shown`,
+      ...(states.length === 0
+        ? { states: `0 workflow states found for ${readStringFlag(parsed.flags, "team")}` }
+        : { states }),
+      help: []
     }))
   )
 
@@ -193,23 +247,128 @@ const issuesCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
   if (id && !isUuidV4(id)) {
     return usage("--id must be a UUID v4", parsed.command)
   }
+  const labelsJson = readStringFlag(parsed.flags, "labels-json")
+  if (labelsJson !== undefined && readStringFlag(parsed.flags, "label") !== undefined) {
+    return usage("--label and --labels-json are mutually exclusive", parsed.command)
+  }
+  if (id && readBooleanFlag(parsed.flags, "if-absent")) {
+    return usage("--id and --if-absent are mutually exclusive", parsed.command)
+  }
+  const advanced = ["labels-json", "assignee", "delegate", "state", "priority", "due-date", "estimate", "project", "cycle", "milestone", "links-json", "releases-json", "blocks-json", "blocked-by-json", "related-to-json", "duplicate-of"]
+    .some((flag) => parsed.flags.has(flag)) || readBooleanFlag(parsed.flags, "if-absent")
+  if (advanced && id) {
+    return usage("--id is available only for native core creation; use --if-absent with advanced properties", parsed.command)
+  }
+  if (advanced && !readBooleanFlag(parsed.flags, "if-absent")) {
+    return usage("advanced issue creation requires --if-absent so retries have a resumable boundary", parsed.command)
+  }
+  if (advanced) issuePropertyInput(parsed, undefined, labelsJson)
   return readOptionalText(description, descriptionFile, "description-file", parsed.command).pipe(
-    Effect.flatMap((body) => gateway.createIssue({
-      team: readStringFlag(parsed.flags, "team")!,
-      title: readStringFlag(parsed.flags, "title")!,
-      description: body,
-      parent: readStringFlag(parsed.flags, "parent"),
-      label: readStringFlag(parsed.flags, "label"),
-      id
-    })),
-    Effect.map((result) => ({
-      issue: result.value,
-      changed: result.changed,
-      result: result.result,
-      help: result.changed ? [`Run \`linear-axi issues view --id ${result.value.identifier}\` for details.`] : []
-    }))
+    Effect.flatMap((body) => {
+      if (advanced) return createOfficialIssue(parsed, gateway, body, labelsJson)
+      return gateway.createIssue({
+        team: readStringFlag(parsed.flags, "team")!,
+        title: readStringFlag(parsed.flags, "title")!,
+        description: body,
+        parent: readStringFlag(parsed.flags, "parent"),
+        label: readStringFlag(parsed.flags, "label"),
+        id
+      }).pipe(Effect.map((result): OutputValue => ({
+        issue: result.value,
+        changed: result.changed,
+        result: result.result,
+        help: result.changed ? [`Run \`linear-axi issues view --id ${result.value.identifier}\` for details.`] : []
+      })))
+    })
   )
 }
+
+const createOfficialIssue = (
+  parsed: ParsedArgs,
+  gateway: LinearGateway,
+  description: string | undefined,
+  labelsJson: string | undefined
+): Effect.Effect<OutputValue, CliError> => Effect.gen(function*() {
+  const title = readStringFlag(parsed.flags, "title")!
+  const teamInput = readStringFlag(parsed.flags, "team")!
+  const teamIdentity = yield* resolveOfficialTeamIdentity(gateway, teamInput)
+  const team = teamIdentity.id
+  const input = issuePropertyInput(parsed, description, labelsJson)
+  input.title = title
+  input.team = team
+  if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialAssignableUserSelector(gateway, input.assignee)
+  if (typeof input.state === "string") input.state = yield* resolveOfficialStateSelector(gateway, teamIdentity, input.state)
+  yield* resolveOfficialIssueSelectors(gateway, input, teamIdentity)
+  const candidates = yield* fetchOfficialRows(gateway, "list_issues", {
+    query: title,
+    team,
+    limit: 100,
+    includeArchived: false
+  }, "issues")
+  for (const candidate of candidates) {
+    const candidateTeam = officialOwnerReference(candidate, "team")
+    const candidateId = officialIssueIdentity(candidate)
+    if (!candidateId || !nonEmptyString(candidate.title) ||
+      officialReferenceValues(candidateTeam).length === 0 ||
+      !officialReferenceMatchesIdentity(candidateTeam, teamIdentity)) {
+      return yield* officialShapeError("list_issues candidate identity, title, and team")
+    }
+    if (!hasValidOfficialArchivedState(candidate)) {
+      return yield* officialShapeError("issue archived state")
+    }
+  }
+  const matches = candidates.filter((issue) =>
+    issue.archivedAt === null && issue.title === title &&
+    officialReferenceMatchesIdentity(officialOwnerReference(issue, "team"), teamIdentity))
+  if (matches.length > 1) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: `Multiple issues exactly match title ${title} in team ${teamInput}`,
+      help: renderCandidateIds(matches)
+    }))
+  }
+  if (matches.length === 1) {
+    const candidate = matches[0]!
+    const candidateId = officialIssueIdentity(candidate)
+    if (!candidateId) return yield* officialShapeError("list_issues identity")
+    const detail = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(candidateId, input))
+    if (!Predicate.isObject(detail) || !officialEntityMatchesSelector(detail, candidateId, ["id", "identifier"])) {
+      return yield* officialShapeError("get_issue identity")
+    }
+    yield* requireOfficialEntityActive("issue", candidateId, detail)
+    if (officialIssueSatisfies(detail, input)) {
+      return officialIssueMutationOutput(
+        detail,
+        false,
+        "exact issue already exists (no-op)",
+        officialMutationInspectionCommand("save_issue", { ...input, id: candidateId })
+      )
+    }
+    return yield* Effect.fail(new LinearDomainError({
+      message: `Issue title ${title} already exists in team ${teamInput} with different requested properties`,
+      help: `Inspect candidate id ${candidateId} and update it explicitly, or choose a different title.`
+    }))
+  }
+  const created = yield* gateway.callOfficialTool("save_issue", input)
+  let inspectionArgs: Readonly<Record<string, unknown>> = input
+  let inspection = officialMutationInspectionCommand("save_issue", inspectionArgs)
+  return yield* Effect.gen(function*() {
+    if (!Predicate.isObject(created)) return yield* officialShapeError("save_issue identity")
+    const createdId = officialIssueIdentity(created)
+    if (!createdId) return yield* officialShapeError("save_issue identity")
+    inspectionArgs = { ...input, id: createdId }
+    inspection = officialMutationInspectionCommand("save_issue", inspectionArgs)
+    const issue = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(createdId, input))
+    if (!Predicate.isObject(issue) || !officialEntityMatchesSelector(issue, createdId, ["id", "identifier"])) {
+      return yield* officialShapeError("get_issue identity")
+    }
+    if (!officialIssueSatisfies(issue, input)) {
+      return yield* Effect.fail(new LinearDomainError({ message: "save_issue create could not be verified" }))
+    }
+    return officialIssueMutationOutput(issue, true, "issue created through official save_issue", inspection)
+  }).pipe(
+    Effect.mapError(() => indeterminateOfficialMutation("save_issue", inspectionArgs))
+  )
+})
 
 const issuesAssign = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const assignee = readStringFlag(parsed.flags, "assignee")!
@@ -238,16 +397,71 @@ const issuesClose = (parsed: ParsedArgs, gateway: LinearGateway) => {
   return gateway.closeIssue({ id: readStringFlag(parsed.flags, "id")!, state }).pipe(Effect.map(issueMutationOutput))
 }
 
+const issuesState = (parsed: ParsedArgs, gateway: LinearGateway) =>
+  gateway.changeIssueState({
+    id: readStringFlag(parsed.flags, "id")!,
+    state: readStringFlag(parsed.flags, "state")!
+  }).pipe(Effect.map(issueMutationOutput))
+
+const issuesParent = (parsed: ParsedArgs, gateway: LinearGateway, clear: boolean) =>
+  gateway.setIssueParent({
+    id: readStringFlag(parsed.flags, "id")!,
+    parent: clear ? null : readStringFlag(parsed.flags, "parent")!
+  }).pipe(Effect.map(issueMutationOutput))
+
 const issuesUpdate = (parsed: ParsedArgs, gateway: LinearGateway) => {
-  const timestamp = readStringFlag(parsed.flags, "if-updated-at")!
-  if (!isCanonicalTimestamp(timestamp)) {
+  const description = readStringFlag(parsed.flags, "description")
+  const descriptionFile = readStringFlag(parsed.flags, "description-file")
+  if (description !== undefined && descriptionFile !== undefined) {
+    return usage("--description and --description-file are mutually exclusive", parsed.command)
+  }
+  const timestamp = readStringFlag(parsed.flags, "if-updated-at")
+  if ((description !== undefined || descriptionFile !== undefined) && (timestamp === undefined || !isCanonicalTimestamp(timestamp))) {
+    return usage("description changes require --if-updated-at with the exact canonical timestamp emitted by the CLI", parsed.command)
+  }
+  if (timestamp !== undefined && !isCanonicalTimestamp(timestamp)) {
     return usage("--if-updated-at must be the exact canonical timestamp emitted by the CLI (YYYY-MM-DDTHH:mm:ss.sssZ)", parsed.command)
   }
-  return readRequiredText(readStringFlag(parsed.flags, "description-file")!, "description-file", parsed.command).pipe(
-    Effect.flatMap((description) => gateway.updateIssueDescription({
+  const conflicts: ReadonlyArray<readonly [string, string]> = [
+    ["assignee", "clear-assignee"], ["delegate", "clear-delegate"], ["due-date", "clear-due-date"], ["estimate", "clear-estimate"],
+    ["project", "clear-project"], ["cycle", "clear-cycle"], ["milestone", "clear-milestone"],
+    ["parent", "clear-parent"], ["labels-json", "clear-labels"], ["duplicate-of", "clear-duplicate"]
+  ]
+  for (const [setFlag, clearFlag] of conflicts) {
+    if (parsed.flags.has(setFlag) && parsed.flags.has(clearFlag)) {
+      return usage(`--${setFlag} and --${clearFlag} are mutually exclusive`, parsed.command)
+    }
+  }
+  if (parsed.flags.has("set-releases-json") && (parsed.flags.has("add-releases-json") || parsed.flags.has("remove-releases-json"))) {
+    return usage("--set-releases-json cannot be combined with --add-releases-json or --remove-releases-json", parsed.command)
+  }
+  if (parsed.flags.has("clear-project") && parsed.flags.has("milestone")) {
+    return usage("--clear-project and --milestone cannot be combined", parsed.command)
+  }
+  const propertyFlags = [...parsed.flags.keys()].filter((flag) => !["id", "help", "if-updated-at", "description-file", "description"].includes(flag))
+  if (description === undefined && descriptionFile === undefined && propertyFlags.length === 0) {
+    return usage("at least one issue property or explicit clear flag is required", parsed.command)
+  }
+  const nativeClearDue = readBooleanFlag(parsed.flags, "clear-due-date")
+  const nativeClearMilestone = readBooleanFlag(parsed.flags, "clear-milestone")
+  if (nativeClearDue || nativeClearMilestone) {
+    const other = [...parsed.flags.keys()].filter((flag) => !["id", "help", "clear-due-date", "clear-milestone"].includes(flag))
+    if (other.length > 0) {
+      return usage("--clear-due-date and --clear-milestone may be combined with each other, but not with other updates; they use one verified native mutation", parsed.command)
+    }
+    return gateway.clearIssueFields({
       id: readStringFlag(parsed.flags, "id")!,
-      description,
-      ifUpdatedAt: timestamp
+      dueDate: nativeClearDue,
+      milestone: nativeClearMilestone
+    }).pipe(Effect.map(issueMutationOutput))
+  }
+  const nativeDescriptionOnly = descriptionFile !== undefined && propertyFlags.length === 0
+  if (nativeDescriptionOnly) {
+    return readRequiredText(descriptionFile, "description-file", parsed.command).pipe(
+      Effect.flatMap((body) => gateway.updateIssueDescription({
+      id: readStringFlag(parsed.flags, "id")!,
+      description: body,
+      ifUpdatedAt: timestamp!
     })),
     Effect.map((result) => ({
       issue: result.value,
@@ -255,8 +469,568 @@ const issuesUpdate = (parsed: ParsedArgs, gateway: LinearGateway) => {
       result: result.result,
       concurrency: DESCRIPTION_CONCURRENCY_WARNING
     }))
+    )
+  }
+  issuePropertyInput(parsed, undefined, readStringFlag(parsed.flags, "labels-json"))
+  return readOptionalText(description, descriptionFile, "description-file", parsed.command).pipe(
+    Effect.flatMap((body) => updateOfficialIssue(parsed, gateway, body, timestamp))
   )
 }
+
+const updateOfficialIssue = (
+  parsed: ParsedArgs,
+  gateway: LinearGateway,
+  description: string | undefined,
+  timestamp: string | undefined
+): Effect.Effect<OutputValue, CliError> => Effect.gen(function*() {
+  const id = readStringFlag(parsed.flags, "id")!
+  const input = issuePropertyInput(parsed, description, readStringFlag(parsed.flags, "labels-json"))
+  input.id = id
+  const before = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(id, input))
+  if (!Predicate.isObject(before) || !nonEmptyString(before.id) || !officialEntityMatchesSelector(before, id)) {
+    return yield* officialShapeError("get_issue identity")
+  }
+  const canonicalId = before.id
+  yield* requireOfficialEntityActive("issue", id, before)
+  input.id = canonicalId
+  if (timestamp !== undefined && before.updatedAt !== timestamp) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: `Issue changed since ${timestamp}; refusing a known-stale description update`,
+      help: `Run \`linear-axi issues inspect --id ${canonicalId} --full\`, then retry with its updatedAt.`
+    }))
+  }
+  if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialAssignableUserSelector(gateway, input.assignee)
+  const teamSelector = officialTeamSelector(before)
+  if (!teamSelector) return yield* officialShapeError("get_issue team")
+  const needsCanonicalTeam = typeof input.state === "string" || typeof input.cycle === "string" ||
+    typeof input.parentId === "string" || (Array.isArray(input.labels) && input.labels.length > 0)
+  const teamIdentity = needsCanonicalTeam
+    ? yield* resolveOfficialTeamIdentity(gateway, teamSelector)
+    : { id: teamSelector, aliases: [teamSelector] }
+  if (needsCanonicalTeam) yield* requireOfficialOwnership("issue", id, before, "team", teamIdentity)
+  if (typeof input.state === "string") {
+    input.state = yield* resolveOfficialStateSelector(gateway, teamIdentity, input.state)
+  }
+  yield* resolveOfficialIssueSelectors(gateway, input, teamIdentity, before)
+  if (officialIssueSatisfies(before, input)) {
+    return officialIssueMutationOutput(
+      before,
+      false,
+      "requested issue properties already match (no-op)",
+      officialMutationInspectionCommand("save_issue", input)
+    )
+  }
+  yield* gateway.callOfficialTool("save_issue", input)
+  const inspection = officialMutationInspectionCommand("save_issue", input)
+  return yield* Effect.gen(function*() {
+    const after = yield* gateway.callOfficialTool("get_issue", officialIssueReadArgs(canonicalId, input))
+    if (!Predicate.isObject(after) || !officialEntityMatchesSelector(after, canonicalId)) return yield* officialShapeError("get_issue identity")
+    if (!officialIssueSatisfies(after, input)) {
+      return yield* Effect.fail(new LinearDomainError({ message: "save_issue update could not be verified" }))
+    }
+    return {
+      ...officialIssueMutationOutput(after, true, "requested issue properties saved and verified", inspection),
+      concurrency: DESCRIPTION_CONCURRENCY_WARNING
+    }
+  }).pipe(
+    Effect.mapError(() => indeterminateOfficialMutation("save_issue", input))
+  )
+})
+
+const issuePropertyInput = (
+  parsed: ParsedArgs,
+  description: string | undefined,
+  labelsJson: string | undefined
+): Record<string, unknown> => {
+  const input: Record<string, unknown> = {}
+  const strings: ReadonlyArray<readonly [string, string]> = [
+    ["title", "title"], ["assignee", "assignee"], ["delegate", "delegate"], ["state", "state"], ["due-date", "dueDate"],
+    ["project", "project"], ["cycle", "cycle"], ["milestone", "milestone"], ["parent", "parentId"]
+  ]
+  for (const [flag, arg] of strings) {
+    const value = readStringFlag(parsed.flags, flag)
+    if (value !== undefined) {
+      if (flag === "due-date" && !isCanonicalDate(value)) {
+        throw new UsageError({ message: "--due-date must be a valid YYYY-MM-DD date", help: helpFor(parsed.command) })
+      }
+      input[arg] = value
+    }
+  }
+  if (description !== undefined) input.description = description
+  for (const [flag, arg] of [["priority", "priority"], ["estimate", "estimate"]] as const) {
+    const value = readStringFlag(parsed.flags, flag)
+    if (value !== undefined) {
+      const number = Number(value)
+      if (!Number.isFinite(number) || (flag === "priority" && (!Number.isInteger(number) || number < 0 || number > 4))) {
+        throw new UsageError({ message: `--${flag} must be ${flag === "priority" ? "an integer from 0 to 4" : "a number"}`, help: helpFor(parsed.command) })
+      }
+      input[arg] = number
+    }
+  }
+  if (labelsJson !== undefined) {
+    input.labels = readStringArrayJson(labelsJson, "labels-json", parsed.command)
+  } else {
+    const label = readStringFlag(parsed.flags, "label")
+    if (label !== undefined) input.labels = [label]
+  }
+  const releases = readStringFlag(parsed.flags, "releases-json") ?? readStringFlag(parsed.flags, "set-releases-json")
+  if (releases !== undefined) input.setReleases = readStringArrayJson(releases, parsed.flags.has("releases-json") ? "releases-json" : "set-releases-json", parsed.command)
+  for (const [flag, arg] of [["add-releases-json", "addReleases"], ["remove-releases-json", "removeReleases"]] as const) {
+    const value = readStringFlag(parsed.flags, flag)
+    if (value !== undefined) input[arg] = readStringArrayJson(value, flag, parsed.command)
+  }
+  const links = readStringFlag(parsed.flags, "links-json")
+  if (links !== undefined) input.links = readLinkArrayJson(links, parsed.command)
+  for (const [flag, arg] of [
+    ["blocks-json", "blocks"], ["blocked-by-json", "blockedBy"], ["related-to-json", "relatedTo"],
+    ["remove-blocks-json", "removeBlocks"], ["remove-blocked-by-json", "removeBlockedBy"], ["remove-related-to-json", "removeRelatedTo"]
+  ] as const) {
+    const value = readStringFlag(parsed.flags, flag)
+    if (value !== undefined) input[arg] = readStringArrayJson(value, flag, parsed.command)
+  }
+  const duplicate = readStringFlag(parsed.flags, "duplicate-of")
+  if (duplicate !== undefined) input.duplicateOf = duplicate
+  const clears: ReadonlyArray<readonly [string, string, unknown]> = [
+    ["clear-assignee", "assignee", null], ["clear-delegate", "delegate", null], ["clear-estimate", "estimate", null],
+    ["clear-project", "project", null], ["clear-cycle", "cycle", null],
+    ["clear-parent", "parentId", null], ["clear-labels", "labels", []], ["clear-duplicate", "duplicateOf", null]
+  ]
+  for (const [flag, arg, value] of clears) if (readBooleanFlag(parsed.flags, flag)) input[arg] = value
+  return input
+}
+
+const resolveOfficialAssignableUserSelector = (
+  gateway: LinearGateway,
+  selector: string
+): Effect.Effect<string, CliError> => Effect.gen(function*() {
+  let user: Record<string, unknown>
+  if (selector === "me") {
+    user = yield* resolveOfficialViewerUser(gateway)
+  } else if (officialSelectorIsImmutableId(selector)) {
+    const result = yield* gateway.callOfficialTool("get_user", { query: selector })
+    if (!Predicate.isObject(result) || !nonEmptyString(result.id) ||
+      !officialEntityMatchesSelector(result, selector, ["id", "email", "name", "displayName"])) {
+      return yield* officialShapeError("get_user identity")
+    }
+    user = result
+  } else {
+    const rows = yield* fetchOfficialRows(gateway, "list_users", { query: selector, limit: 100 }, "users")
+    const normalized = selector.toLowerCase()
+    const matches = rows.filter((candidate) =>
+      [candidate.id, candidate.email, candidate.name, candidate.displayName].some((value) => typeof value === "string" && value.toLowerCase() === normalized))
+    if (matches.length !== 1 || !nonEmptyString(matches[0]!.id)) {
+      const candidates = matches.length > 0 ? matches : rows
+      return yield* Effect.fail(new LinearDomainError({
+        message: matches.length === 0 ? `No Linear user exactly matched ${selector}` : `Ambiguous or invalid Linear user selector ${selector}`,
+        help: renderCandidateIds(candidates)
+      }))
+    }
+    user = matches[0]!
+  }
+  if (!hasValidOfficialArchivedState(user) || typeof user.active !== "boolean" || typeof user.isAssignable !== "boolean") {
+    return yield* officialShapeError("user assignability")
+  }
+  if (user.archivedAt !== null || user.active !== true || user.isAssignable !== true) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: `Linear user ${user.id} cannot be assigned issues`,
+      help: "Choose an active, unarchived, assignable user."
+    }))
+  }
+  return user.id as string
+})
+
+const resolveOfficialTeamIdentity = (
+  gateway: LinearGateway,
+  selector: string
+): Effect.Effect<OfficialEntityIdentity, CliError> => Effect.gen(function*() {
+  const team = yield* gateway.callOfficialTool("get_team", { query: selector })
+  if (!Predicate.isObject(team) || !officialEntityMatchesSelector(team, selector, ["id", "key", "name"])) {
+    return yield* officialShapeError("get_team identity")
+  }
+  const identity = officialEntityIdentity(team, ["key", "name"])
+  if (!identity) return yield* officialShapeError("get_team identity")
+  yield* requireOfficialEntityActive("team", selector, team)
+  return identity
+})
+
+const resolveOfficialProjectIdentity = (
+  gateway: LinearGateway,
+  selector: string
+): Effect.Effect<OfficialEntityIdentity, CliError> => Effect.gen(function*() {
+  const project = yield* gateway.callOfficialTool("get_project", { query: selector })
+  if (!Predicate.isObject(project) || !officialEntityMatchesSelector(project, selector, ["id", "name", "slugId"])) {
+    return yield* officialShapeError("get_project identity")
+  }
+  const identity = officialEntityIdentity(project, ["name", "slugId"])
+  if (!identity) return yield* officialShapeError("get_project identity")
+  yield* requireOfficialEntityActive("project", selector, project)
+  return identity
+})
+
+const resolveOfficialIssueSelectors = (
+  gateway: LinearGateway,
+  input: Record<string, unknown>,
+  team: OfficialEntityIdentity,
+  current?: Readonly<Record<string, unknown>>
+): Effect.Effect<void, CliError> => Effect.gen(function*() {
+  if (typeof input.delegate === "string" && !officialSelectorIsImmutableId(input.delegate)) {
+    const selector = input.delegate
+    const user = yield* gateway.callOfficialTool("get_user", { query: selector })
+    if (!Predicate.isObject(user) || !nonEmptyString(user.id) || !officialEntityMatchesSelector(user, selector, ["id", "name", "email", "displayName"])) {
+      return yield* officialShapeError("get_user identity")
+    }
+    input.delegate = user.id
+  }
+  let projectIdentity: OfficialEntityIdentity | undefined
+  if (typeof input.project === "string") {
+    projectIdentity = yield* resolveOfficialProjectIdentity(gateway, input.project)
+    input.project = projectIdentity.id
+  }
+  if (typeof input.parentId === "string") input.parentId = yield* resolveOfficialParentId(gateway, input.parentId, team)
+  if (typeof input.cycle === "string") {
+    const selector = input.cycle
+    const cycles = yield* gateway.callOfficialTool("list_cycles", { teamId: team.id })
+    if (!Array.isArray(cycles) || cycles.some((cycle) => !Predicate.isObject(cycle))) return yield* officialShapeError("list_cycles")
+    const activeCycles = yield* filterOfficialActiveEntities("cycle", cycles as ReadonlyArray<Record<string, unknown>>, "cycle archived state")
+    const cycleId = yield* uniqueOfficialId("cycle", selector, activeCycles, ["id", "name", "number"])
+    const cycle = activeCycles.find((candidate) => candidate.id === cycleId)!
+    yield* requireOfficialOwnership("cycle", selector, cycle, "team", team)
+    input.cycle = cycleId
+  }
+  if (typeof input.milestone === "string") {
+    if (!projectIdentity) {
+      const projectSelector = officialReferenceSelector(officialOwnerReference(current ?? {}, "project"))
+      if (!projectSelector) {
+        return yield* Effect.fail(new LinearDomainError({
+          message: "Milestone resolution requires the issue project",
+          help: "Pass --project with --milestone, or assign the issue to a project first."
+        }))
+      }
+      projectIdentity = yield* resolveOfficialProjectIdentity(gateway, projectSelector)
+      if (current !== undefined) {
+        yield* requireOfficialOwnership("issue", nonEmptyString(current.id) ? current.id : "current", current, "project", projectIdentity)
+      }
+    }
+    const selector = input.milestone
+    const milestone = yield* gateway.callOfficialTool("get_milestone", { project: projectIdentity.id, query: selector })
+    if (!Predicate.isObject(milestone) || !nonEmptyString(milestone.id) || !officialEntityMatchesSelector(milestone, selector, ["id", "name"])) {
+      return yield* officialShapeError("get_milestone identity")
+    }
+    yield* requireOfficialEntityActive("milestone", selector, milestone)
+    yield* requireOfficialOwnership("milestone", selector, milestone, "project", projectIdentity)
+    input.milestone = milestone.id
+  }
+  if (Array.isArray(input.labels)) input.labels = uniqueStrings(yield* resolveOfficialLabels(gateway, input.labels, team))
+  for (const key of ["setReleases", "addReleases"] as const) {
+    if (Array.isArray(input[key])) input[key] = uniqueStrings(yield* resolveOfficialReleases(gateway, input[key], false))
+  }
+  if (Array.isArray(input.removeReleases)) {
+    input.removeReleases = uniqueStrings(yield* resolveOfficialReleases(gateway, input.removeReleases, true))
+  }
+  for (const [key, includeArchived] of [
+    ["blocks", false], ["blockedBy", false], ["relatedTo", false],
+    ["removeBlocks", true], ["removeBlockedBy", true], ["removeRelatedTo", true]
+  ] as const) {
+    if (Array.isArray(input[key])) {
+      input[key] = uniqueStrings(yield* Effect.forEach(input[key], (selector) =>
+        resolveOfficialIssueId(gateway, String(selector), includeArchived)))
+    }
+  }
+  if (typeof input.duplicateOf === "string") input.duplicateOf = yield* resolveOfficialIssueId(gateway, input.duplicateOf, false)
+
+  for (const [addKey, removeKey, noun] of [
+    ["addReleases", "removeReleases", "release"],
+    ["blocks", "removeBlocks", "blocks relation"],
+    ["blockedBy", "removeBlockedBy", "blocked-by relation"],
+    ["relatedTo", "removeRelatedTo", "related relation"]
+  ] as const) {
+    const conflict = findCanonicalIntersection(input[addKey], input[removeKey])
+    if (conflict) {
+      return yield* Effect.fail(new LinearDomainError({
+        message: `${noun} ${conflict} cannot be both add and remove in one issue update`,
+        help: "Choose one final state for each association."
+      }))
+    }
+  }
+
+  if (current !== undefined) {
+    if (!nonEmptyString(current.id)) return yield* officialShapeError("get_issue canonical identity")
+    const currentId = current.id
+    if (typeof input.parentId === "string" && officialTextEqual(input.parentId, currentId)) {
+      return yield* Effect.fail(new LinearDomainError({
+        message: "An issue cannot parent itself",
+        help: "Choose a different parent issue."
+      }))
+    }
+    for (const key of ["blocks", "blockedBy"] as const) {
+      if (Array.isArray(input[key]) && input[key].some((target) => typeof target === "string" && officialTextEqual(target, currentId))) {
+        return yield* Effect.fail(new LinearDomainError({
+          message: "An issue cannot block itself",
+          help: "Choose a different issue for the blocking relation."
+        }))
+      }
+    }
+  }
+})
+
+const resolveOfficialIssueId = (
+  gateway: LinearGateway,
+  selector: string,
+  includeArchived: boolean
+): Effect.Effect<string, CliError> => Effect.gen(function*() {
+  const issue = yield* gateway.callOfficialTool("get_issue", { id: selector })
+  if (!Predicate.isObject(issue) || !nonEmptyString(issue.id) ||
+    !officialEntityMatchesSelector(issue, selector, ["id", "identifier"])) {
+    return yield* officialShapeError("get_issue identity")
+  }
+  if (!includeArchived) yield* requireOfficialEntityActive("issue", selector, issue)
+  return issue.id
+})
+
+const resolveOfficialParentId = (
+  gateway: LinearGateway,
+  selector: string,
+  team: OfficialEntityIdentity
+): Effect.Effect<string, CliError> => Effect.gen(function*() {
+  const issue = yield* gateway.callOfficialTool("get_issue", { id: selector })
+  if (!Predicate.isObject(issue) || !nonEmptyString(issue.id) || !officialEntityMatchesSelector(issue, selector, ["id", "identifier"])) {
+    return yield* officialShapeError("get_issue identity")
+  }
+  yield* requireOfficialEntityActive("issue", selector, issue)
+  const parentTeamSelector = officialReferenceSelector(officialOwnerReference(issue, "team"))
+  if (!parentTeamSelector) return yield* officialShapeError("parent team ownership")
+  const parentTeam = yield* resolveOfficialTeamIdentity(gateway, parentTeamSelector)
+  yield* requireOfficialOwnership("parent", selector, issue, "team", parentTeam)
+  if (!officialTextEqual(parentTeam.id, team.id)) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: `parent ${selector} belongs to another team`,
+      help: "Choose a parent from the issue's team."
+    }))
+  }
+  return issue.id
+})
+
+const resolveOfficialLabels = (
+  gateway: LinearGateway,
+  selectors: ReadonlyArray<unknown>,
+  team: OfficialEntityIdentity
+): Effect.Effect<ReadonlyArray<string>, CliError> => Effect.gen(function*() {
+  if (selectors.length === 0) return []
+  const rows = yield* fetchOfficialRows(gateway, "list_issue_labels", { team: team.id, limit: 250 }, "labels")
+  const activeLabels = yield* filterOfficialActiveEntities("label", rows, "label archived state")
+  const labels = yield* Effect.forEach(selectors, (raw) => Effect.gen(function*() {
+    const selector = String(raw)
+    const id = yield* uniqueOfficialId("label", selector, activeLabels, ["id", "name"])
+    const label = activeLabels.find((row) => row.id === id)
+    if (!label || !Object.prototype.hasOwnProperty.call(label, "isGroup") || typeof label.isGroup !== "boolean") {
+      return yield* officialShapeError("label group state")
+    }
+    if (label.isGroup) {
+      return yield* Effect.fail(new LinearDomainError({
+        message: `Issue label ${selector} is a label group`,
+        help: "Choose an ordinary issue label."
+      }))
+    }
+    const parentId = yield* officialLabelParentId(label)
+    yield* requireOfficialLabelScope(selector, label, team)
+    return { id, parentId }
+  }))
+  const groupConflict = labelGroupSelectionError(labels)
+  if (groupConflict) return yield* Effect.fail(groupConflict)
+  return labels.map((label) => label.id)
+})
+
+const officialLabelParentId = (
+  label: Readonly<Record<string, unknown>>
+): Effect.Effect<string | null, LinearDomainError> => {
+  const hasParentId = Object.prototype.hasOwnProperty.call(label, "parentId")
+  const hasParent = Object.prototype.hasOwnProperty.call(label, "parent")
+  if (!hasParentId && !hasParent) return officialShapeError("label parent group")
+
+  const flattened = hasParentId
+    ? label.parentId === null
+      ? null
+      : nonEmptyString(label.parentId)
+        ? label.parentId
+        : undefined
+    : undefined
+  const nested = hasParent
+    ? label.parent === null
+      ? null
+      : Predicate.isObject(label.parent) && nonEmptyString(label.parent.id)
+        ? label.parent.id
+        : undefined
+    : undefined
+
+  if (hasParentId && flattened === undefined) return officialShapeError("label parent group")
+  if (hasParent && nested === undefined) return officialShapeError("label parent group")
+  if (hasParentId && hasParent) {
+    if (flattened === undefined || nested === undefined) return officialShapeError("label parent group")
+    if (flattened === null || nested === null
+      ? flattened !== nested
+      : !officialTextEqual(flattened, nested)) {
+      return officialShapeError("label parent group")
+    }
+  }
+  if (hasParentId) {
+    return flattened === undefined ? officialShapeError("label parent group") : Effect.succeed(flattened)
+  }
+  return nested === undefined ? officialShapeError("label parent group") : Effect.succeed(nested)
+}
+
+const requireOfficialLabelScope = (
+  selector: string,
+  label: Readonly<Record<string, unknown>>,
+  team: OfficialEntityIdentity
+): Effect.Effect<void, LinearDomainError> => {
+  const hasScope = Object.prototype.hasOwnProperty.call(label, "scope")
+  if (hasScope && !nonEmptyString(label.scope)) return officialShapeError("label team scope")
+  const scope = hasScope ? label.scope as string : undefined
+  const workspaceScope = scope !== undefined && officialTextEqual(scope, "workspace")
+  const hasTeamId = Object.prototype.hasOwnProperty.call(label, "teamId")
+  const hasTeam = Object.prototype.hasOwnProperty.call(label, "team")
+  if (!hasTeamId && !hasTeam) {
+    return workspaceScope ? Effect.void : officialShapeError("label team scope")
+  }
+  const reference = officialOwnerReference(label, "team")
+  if (reference === null) {
+    return scope === undefined || workspaceScope ? Effect.void : officialShapeError("label team scope")
+  }
+  if (officialReferenceValues(reference).length === 0 || workspaceScope) return officialShapeError("label team scope")
+  if (scope !== undefined && !officialTextEqual(scope, "team") && !officialReferenceMatchesIdentity(scope, team)) {
+    return officialShapeError("label team scope")
+  }
+  return officialReferenceMatchesIdentity(reference, team)
+    ? Effect.void
+    : Effect.fail(new LinearDomainError({
+        message: `Issue label ${selector} belongs to another team`,
+        help: "Choose a workspace label or a label from the issue's team."
+      }))
+}
+
+const resolveOfficialReleases = (
+  gateway: LinearGateway,
+  selectors: ReadonlyArray<unknown>,
+  includeArchived: boolean
+): Effect.Effect<ReadonlyArray<string>, CliError> => Effect.gen(function*() {
+  const result: Array<string> = []
+  for (const raw of selectors) {
+    const selector = String(raw)
+    const rows = yield* fetchOfficialRows(gateway, "list_releases", {
+      query: selector,
+      limit: 250,
+      ...(includeArchived ? { includeArchived: true } : {})
+    }, "releases")
+    const candidates = includeArchived ? rows : yield* filterOfficialActiveEntities("release", rows, "release archived state")
+    result.push(yield* uniqueOfficialId("release", selector, candidates, ["id", "name", "version", "slugId"]))
+  }
+  return result
+})
+
+const requireOfficialOwnership = (
+  noun: string,
+  selector: string,
+  entity: Readonly<Record<string, unknown>>,
+  ownerNoun: "project" | "team",
+  owner: OfficialEntityIdentity
+): Effect.Effect<void, LinearDomainError> => {
+  const reference = officialOwnerReference(entity, ownerNoun)
+  if (officialReferenceValues(reference).length === 0) {
+    return officialShapeError(`${noun} ${ownerNoun} ownership`)
+  }
+  return officialReferenceMatchesIdentity(reference, owner)
+    ? Effect.void
+    : Effect.fail(new LinearDomainError({
+        message: `${noun} ${selector} belongs to another ${ownerNoun}`,
+        help: `Choose a ${noun} from the issue's ${ownerNoun}.`
+      }))
+}
+
+const resolveOfficialStateSelector = (
+  gateway: LinearGateway,
+  team: OfficialEntityIdentity,
+  selector: string
+): Effect.Effect<string, CliError> => Effect.gen(function*() {
+  const result = yield* gateway.callOfficialTool("list_issue_statuses", { team: team.id })
+  if (!Array.isArray(result) || result.some((state) => !Predicate.isObject(state))) {
+    return yield* officialShapeError("list_issue_statuses")
+  }
+  const activeStates = yield* filterOfficialActiveEntities("workflow state", result as ReadonlyArray<Record<string, unknown>>, "workflow state archived state")
+  const stateId = yield* uniqueOfficialId("workflow state", selector, activeStates, ["id", "name"])
+  const state = activeStates.find((candidate) => candidate.id === stateId)!
+  yield* requireOfficialOwnership("workflow state", selector, state, "team", team)
+  return stateId
+})
+
+const officialTeamSelector = (issue: Record<string, unknown>): string | undefined =>
+  officialReferenceSelector(officialOwnerReference(issue, "team"))
+
+const officialIssueReadArgs = (id: string, input: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> => ({
+  id,
+  ...(["setReleases", "addReleases", "removeReleases"].some((key) => input[key] !== undefined) ? { includeReleases: true } : {}),
+  ...(["blocks", "blockedBy", "relatedTo", "removeBlocks", "removeBlockedBy", "removeRelatedTo", "duplicateOf"].some((key) => input[key] !== undefined) ? { includeRelations: true } : {})
+})
+
+const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<string, unknown>): boolean =>
+  Object.entries(input).every(([key, desired]) => {
+    if (key === "id" || key === "team") return key === "id" || officialReferenceMatches(officialOwnerReference(issue, "team"), desired)
+    if (key === "links") return officialLinksContain(issue.attachments ?? issue.links, desired)
+    if (key === "state") return officialReferenceMatches(issue.status ?? issue.state, desired)
+    if (key === "parentId") return ("parentId" in issue || "parent" in issue) &&
+      officialReferenceMatches(issue.parentId ?? issue.parent, desired)
+    if (["blocks", "blockedBy", "relatedTo"].includes(key)) {
+      return Predicate.isObject(issue.relations) && officialCollectionContains(issue.relations[key], desired)
+    }
+    if (["removeBlocks", "removeBlockedBy", "removeRelatedTo"].includes(key)) {
+      const relationKey = key.slice("remove".length)
+      const normalizedKey = `${relationKey.slice(0, 1).toLowerCase()}${relationKey.slice(1)}`
+      return Predicate.isObject(issue.relations) && officialCollectionAbsent(issue.relations[normalizedKey], desired)
+    }
+    if (key === "duplicateOf") return Predicate.isObject(issue.relations) && "duplicateOf" in issue.relations
+      ? officialReferenceMatches(issue.relations.duplicateOf, desired)
+      : false
+    if (key === "setReleases") return officialCollectionEqual(issue.releases, desired)
+    if (key === "addReleases") return officialCollectionContains(issue.releases, desired)
+    if (key === "removeReleases") return officialCollectionAbsent(issue.releases, desired)
+    if (key === "labels") return officialCollectionEqual(issue.labels, desired)
+    if (key === "description" && typeof issue[key] === "string" && typeof desired === "string") {
+      return richTextEqual(issue[key], desired)
+    }
+    if (desired === null && !(key in issue)) return false
+    return OFFICIAL_ISSUE_REFERENCE_KEYS.has(key)
+      ? officialReferenceMatches(issue[key], desired)
+      : officialLiteralMatches(issue[key], desired)
+  })
+
+const OFFICIAL_ISSUE_REFERENCE_KEYS = new Set([
+  "assignee", "delegate", "state", "project", "cycle", "milestone", "parentId"
+])
+
+const ISSUE_COLLECTION_OPTIONS = {
+  referenceKeys: ["id", "identifier", "name", "version", "slugId"],
+  canonicalIdentityKey: "id"
+} as const
+const officialCollectionContains = (current: unknown, desired: unknown): boolean => collectionContains(current, desired, ISSUE_COLLECTION_OPTIONS)
+const officialCollectionEqual = (current: unknown, desired: unknown): boolean => collectionEqual(current, desired, ISSUE_COLLECTION_OPTIONS)
+const officialCollectionAbsent = (current: unknown, desired: unknown): boolean => collectionAbsent(current, desired, ISSUE_COLLECTION_OPTIONS)
+const officialLinksContain = (current: unknown, desired: unknown): boolean => Array.isArray(current) && Array.isArray(desired) &&
+  desired.every((link) => Predicate.isObject(link) && typeof link.url === "string" && typeof link.title === "string" &&
+    current.some((attachment) => Predicate.isObject(attachment) && attachment.url === link.url && attachment.title === link.title))
+
+const officialReferenceMatches = (current: unknown, desired: unknown): boolean => {
+  if (desired === null) return current === null || current === undefined
+  return officialReferenceEqual(current, desired, ISSUE_COLLECTION_OPTIONS)
+}
+const officialLiteralMatches = (current: unknown, desired: unknown): boolean =>
+  desired === null ? current === null || current === undefined : current === desired
+
+const officialIssueIdentity = (issue: Readonly<Record<string, unknown>>): string | undefined =>
+  nonEmptyString(issue.id) ? issue.id : nonEmptyString(issue.identifier) ? issue.identifier : undefined
+
+const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0
+
+const officialTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
+const uniqueStrings = (values: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(values)]
 
 const labelsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const workspace = readBooleanFlag(parsed.flags, "workspace")
@@ -308,6 +1082,11 @@ const labelsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
   if (id && !isUuidV4(id)) {
     return usage("--id must be a UUID v4", parsed.command)
   }
+  const isGroup = readBooleanFlag(parsed.flags, "group")
+  const parent = readStringFlag(parsed.flags, "parent")
+  if (isGroup && parent) {
+    return usage("--group must not combine with --parent", parsed.command)
+  }
   return gateway.createLabel({
     name: readStringFlag(parsed.flags, "name")!,
     color,
@@ -315,7 +1094,9 @@ const labelsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
     team,
     description: readStringFlag(parsed.flags, "description"),
     id,
-    ifAbsent: readBooleanFlag(parsed.flags, "if-absent")
+    ifAbsent: readBooleanFlag(parsed.flags, "if-absent"),
+    ...(isGroup ? { isGroup: true } : {}),
+    ...(parent ? { parent } : {})
   }).pipe(Effect.map((result) => ({ label: result.value, changed: result.changed, result: result.result })))
 }
 
@@ -324,6 +1105,17 @@ const labelsApply = (parsed: ParsedArgs, gateway: LinearGateway) =>
     issue: readStringFlag(parsed.flags, "issue")!,
     label: readStringFlag(parsed.flags, "label")!
   }).pipe(Effect.map(issueMutationOutput))
+
+const labelsRemove = (parsed: ParsedArgs, gateway: LinearGateway) =>
+  gateway.removeLabel({
+    issue: readStringFlag(parsed.flags, "issue")!,
+    label: readStringFlag(parsed.flags, "label")!
+  }).pipe(Effect.map(issueMutationOutput))
+
+const labelsReplace = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const labels = readStringArrayJson(readStringFlag(parsed.flags, "labels-json")!, "labels-json", parsed.command)
+  return gateway.replaceLabels({ issue: readStringFlag(parsed.flags, "issue")!, labels }).pipe(Effect.map(issueMutationOutput))
+}
 
 const relationsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const blockedBy = readBooleanFlag(parsed.flags, "blocked-by")
@@ -400,6 +1192,39 @@ const relationsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
     ...(blockerIssue === undefined ? {} : { blockedIssue, blockerIssue })
   })))
 }
+
+const relationsRemove = (parsed: ParsedArgs, gateway: LinearGateway) => {
+  const id = readStringFlag(parsed.flags, "id")
+  const issue = readStringFlag(parsed.flags, "issue")
+  const blockedBy = readStringFlag(parsed.flags, "blocked-by")
+  const relatedIssue = readStringFlag(parsed.flags, "related-issue")
+  const type = readStringFlag(parsed.flags, "type")
+  if (id) {
+    if (issue || blockedBy || relatedIssue || type) {
+      return usage("--id must not be combined with relation tuple flags", parsed.command)
+    }
+    if (!isUuidV4(id)) {
+      return usage("--id must be a UUID v4", parsed.command)
+    }
+    return gateway.removeRelation({ id }).pipe(Effect.map(relationRemovalOutput))
+  }
+  if (blockedBy) {
+    if (!issue || relatedIssue || type) {
+      return usage("--blocked-by requires --issue and must not combine with --related-issue or --type", parsed.command)
+    }
+    return gateway.removeRelation({ issue: blockedBy, relatedIssue: issue, type: "blocks" }).pipe(Effect.map(relationRemovalOutput))
+  }
+  if (!issue || !relatedIssue || !type || !RELATION_TYPES.has(type as RelationType)) {
+    return usage("pass --id, or pass --issue, --related-issue, and a valid --type", parsed.command)
+  }
+  return gateway.removeRelation({ issue, relatedIssue, type: type as RelationType }).pipe(Effect.map(relationRemovalOutput))
+}
+
+const relationRemovalOutput = (result: { value: unknown; changed: boolean; result: string }): OutputValue => ({
+  relation: result.value as OutputValue,
+  changed: result.changed,
+  result: result.result
+})
 
 const commentsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const full = readBooleanFlag(parsed.flags, "full")
@@ -550,10 +1375,10 @@ const validateAssignee = (
   allowNone: boolean,
   help: string
 ): void => {
-  if (value === undefined || value === "me" || (allowNone && value === "none") || isUuidV4(value)) {
+  if (value === undefined || value === "me" || (allowNone && value === "none") || value.trim().length > 0) {
     return
   }
-  throw new UsageError({ message: `--${flag} must be ${allowNone ? "me, none, or" : "me or"} a user UUID`, help })
+  throw new UsageError({ message: `--${flag} requires a user id, email, display name, or ${allowNone ? "me|none" : "me"}`, help })
 }
 
 const readFields = (
@@ -577,6 +1402,30 @@ const readFields = (
   return [...new Set(fields)]
 }
 
+const readStringArrayJson = (
+  value: string,
+  flag: string,
+  command: ReadonlyArray<string>
+): ReadonlyArray<string> => {
+  let decoded: unknown
+  try {
+    decoded = decodeStringArray(value)
+  } catch {
+    throw new UsageError({ message: `--${flag} must be a JSON string array`, help: helpFor(command) })
+  }
+  return decoded as ReadonlyArray<string>
+}
+
+const readLinkArrayJson = (value: string, command: ReadonlyArray<string>): ReadonlyArray<{ readonly url: string; readonly title: string }> => {
+  let decoded: unknown
+  try {
+    decoded = decodeLinkArray(value)
+  } catch {
+    throw new UsageError({ message: "--links-json must be a JSON array of {url,title} objects", help: helpFor(command) })
+  }
+  return decoded as ReadonlyArray<{ readonly url: string; readonly title: string }>
+}
+
 const projectIssue = (issue: IssueSummary, fields: ReadonlyArray<string>): Record<string, unknown> =>
   Object.fromEntries(fields.map((field) => [field, issueField(issue, field)]))
 
@@ -597,6 +1446,29 @@ const issueMutationOutput = (result: { value: IssueSummary; changed: boolean; re
   changed: result.changed,
   result: result.result
 })
+
+const officialIssueMutationOutput = (
+  issue: Readonly<Record<string, unknown>>,
+  changed: boolean,
+  result: string,
+  inspection: string
+): OutputValue => {
+  const truncated = truncateDetail(issue)
+  const rendered = Predicate.isObject(truncated.value) ? truncated.value : issue
+  const omitted = OFFICIAL_ISSUE_EXPANDED_OUTPUT_KEYS.filter((key) => key in rendered)
+  const concise = Object.fromEntries(Object.entries(rendered).filter(([key]) => !omitted.some((field) => field === key)))
+  const shortened = truncated.fields.length > 0 || omitted.length > 0
+  return {
+    issue: concise,
+    changed,
+    result,
+    ...(omitted.length > 0 ? { omitted } : {}),
+    ...(truncated.fields.length > 0 ? { truncated: truncated.fields } : {}),
+    ...(shortened ? { help: [`Run \`${inspection}\` for complete issue details.`] } : {})
+  }
+}
+
+const OFFICIAL_ISSUE_EXPANDED_OUTPUT_KEYS = ["relations", "releases", "attachments", "customerNeeds"] as const
 
 const continuationCommand = (command: string, parsed: ParsedArgs, cursor: string): string =>
   `Run \`${replayCommand(command, parsed, { after: cursor })}\` for the next page.`
@@ -622,6 +1494,12 @@ const replayCommand = (
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
 
+const officialShapeError = (tool: string): Effect.Effect<never, LinearDomainError> =>
+  Effect.fail(new LinearDomainError({
+    message: `Official Linear MCP output shape drifted for ${tool}: expected an object result`,
+    help: "Refresh the frozen parity inventory and update linear-axi before retrying."
+  }))
+
 const usage = (message: string, command: ReadonlyArray<string>): Effect.Effect<never, UsageError> =>
   Effect.fail(new UsageError({ message, help: helpFor(command) }))
 
@@ -629,14 +1507,6 @@ const helpFor = (path: ReadonlyArray<string>): string => findSpec(path, commandS
 
 const isUuidV4 = (value: string): boolean =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
-
-const isCanonicalTimestamp = (value: string): boolean => {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
-    return false
-  }
-  const timestamp = new Date(value)
-  return !Number.isNaN(timestamp.getTime()) && timestamp.toISOString() === value
-}
 
 const collapseHome = (path: string): string => {
   const home = process.env.HOME

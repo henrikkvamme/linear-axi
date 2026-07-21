@@ -1,0 +1,67 @@
+import { LinearApiError } from "./errors"
+
+export const officialMutationInspectionCommand = (
+  tool: string,
+  args: Readonly<Record<string, unknown>>
+): string => {
+  const id = shellQuote(String(args.id))
+  if (tool === "save_issue") {
+    if (nonEmptyString(args.id)) {
+      const inclusions = issueInspectionInclusions(args)
+      return `linear-axi issues inspect --id ${id}${inclusions.length > 0 ? ` ${inclusions.join(" ")}` : ""} --full`
+    }
+    const selectors = [
+      ...(nonEmptyString(args.team) ? [`--team ${shellQuote(args.team)}`] : []),
+      ...(nonEmptyString(args.title) ? [`--query ${shellQuote(args.title)}`] : [])
+    ]
+    return `linear-axi issues search${selectors.length > 0 ? ` ${selectors.join(" ")}` : ""} --full`
+  }
+  if (tool === "save_project") return `linear-axi projects view --query ${id} --full`
+  if (tool === "save_milestone") return `linear-axi milestones view --project ${shellQuote(String(args.project))} --query ${id} --full`
+  if (tool === "save_status_update") return `linear-axi status-updates view --type ${shellQuote(String(args.type))} --id ${id} --full`
+  const noun = tool === "save_document"
+    ? "documents"
+    : tool === "save_release_note"
+      ? "release-notes"
+      : "releases"
+  const inclusions = tool === "save_release_note" && officialReleaseNoteNeedsReleases(args) ? " --releases" : ""
+  return `linear-axi ${noun} view --id ${id}${inclusions} --full`
+}
+
+export const officialReleaseNoteNeedsReleases = (args: Readonly<Record<string, unknown>>): boolean =>
+  RELEASE_NOTE_ASSOCIATION_KEYS.some((key) => args[key] !== undefined)
+
+export const officialMutationInspectionHelp = (
+  tool: string,
+  args: Readonly<Record<string, unknown>>
+): string => {
+  const inspection = officialMutationInspectionCommand(tool, args)
+  if (tool !== "save_issue" || nonEmptyString(args.id)) {
+    return `Run \`${inspection}\` to inspect the current state.`
+  }
+  const inclusions = issueInspectionInclusions(args)
+  const candidateInspection = `linear-axi issues inspect --id '<candidate-id>'${inclusions.length > 0 ? ` ${inclusions.join(" ")}` : ""} --full`
+  return `Run \`${inspection}\` to find the candidate issue ID, then run \`${candidateInspection}\` to inspect the current state.`
+}
+
+export const indeterminateOfficialMutation = (
+  tool: string,
+  args: Readonly<Record<string, unknown>>
+): LinearApiError => new LinearApiError({
+  message: `${tool} was dispatched but its result could not be verified; mutation outcome is unknown`,
+  help: `${officialMutationInspectionHelp(tool, args)} Do not repeat the mutation until the outcome is known.`
+})
+
+const ISSUE_RELATION_KEYS = [
+  "blocks", "blockedBy", "relatedTo", "removeBlocks", "removeBlockedBy", "removeRelatedTo", "duplicateOf"
+] as const
+const ISSUE_RELEASE_KEYS = ["setReleases", "addReleases", "removeReleases"] as const
+const RELEASE_NOTE_ASSOCIATION_KEYS = ["releases", "rangeFromRelease", "rangeToRelease"] as const
+
+const issueInspectionInclusions = (args: Readonly<Record<string, unknown>>): ReadonlyArray<string> => [
+  ...(ISSUE_RELATION_KEYS.some((key) => args[key] !== undefined) ? ["--relations"] : []),
+  ...(ISSUE_RELEASE_KEYS.some((key) => args[key] !== undefined) ? ["--releases"] : [])
+]
+
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
+const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0

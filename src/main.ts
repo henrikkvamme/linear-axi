@@ -22,7 +22,9 @@ const main: Effect.Effect<Record<string, unknown>, CliError> = Effect.gen(functi
   const parsed = yield* parseProgramArgs
   const env = loadEnv(process.cwd(), process.env)
   const gateway = makeLinearGateway(env)
-  return yield* runCommand(parsed, gateway, process.execPath, env, process.env)
+  return yield* runCommand(parsed, gateway, process.execPath, env, process.env).pipe(
+    Effect.ensuring(gateway.close())
+  )
 })
 
 const exitCodeFor = (error: unknown): number => {

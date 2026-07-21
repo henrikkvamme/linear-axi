@@ -41,13 +41,24 @@ test("standalone binary runs without a source checkout", () => {
       ["issues", "unassign"],
       ["issues", "close"],
       ["issues", "update"],
+      ["issues", "state"],
+      ["issues", "parent", "set"],
+      ["workflow-states", "list"],
       ["labels", "list"],
       ["labels", "create"],
       ["labels", "apply"],
+      ["labels", "remove"],
+      ["labels", "replace"],
       ["relations", "list"],
       ["relations", "create"],
+      ["relations", "remove"],
       ["comments", "list"],
       ["comments", "create"],
+      ["projects", "list"],
+      ["projects", "update"],
+      ["documents", "update"],
+      ["users", "list"],
+      ["status-updates", "update"],
       ["wayfinder", "frontier"]
     ]) {
       const helpResult = Bun.spawnSync({
@@ -67,7 +78,50 @@ test("standalone binary runs without a source checkout", () => {
       if (command.join(" ") === "relations list") {
         expect(helpStdout).toContain("--issue <blocked-issue> --blocked-by")
       }
+      if (command.join(" ") === "projects update") {
+        expect(helpStdout).toContain("--priority <integer:0..4>")
+        expect(helpStdout).toContain("--start-date-resolution <halfYear|month|quarter|year>")
+        expect(helpStdout).toContain("conflicts: --add-teams-json, --remove-teams-json")
+        expect(helpStdout).toContain("--full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.")
+      }
+      if (command.join(" ") === "labels create") {
+        expect(helpStdout).toContain("--parent <group-id-or-name>")
+        expect(helpStdout).not.toContain("--parent <issue>")
+      }
     }
+
+    const rejected = Bun.spawnSync({
+      cmd: [binary, "projects", "update", "--bogus"],
+      cwd: root,
+      env: { HOME: home, PATH: process.env.PATH ?? "" },
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    expect(rejected.exitCode).toBe(2)
+    expect(new TextDecoder().decode(rejected.stderr)).toBe("")
+    expect(new TextDecoder().decode(rejected.stdout)).toContain("unknown flag --bogus")
+
+    const repeated = Bun.spawnSync({
+      cmd: [binary, "projects", "update", "--id", "project-id", "--state", "planned", "--state", "started"],
+      cwd: root,
+      env: { HOME: home, PATH: process.env.PATH ?? "" },
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    expect(repeated.exitCode).toBe(2)
+    expect(new TextDecoder().decode(repeated.stderr)).toBe("")
+    expect(new TextDecoder().decode(repeated.stdout)).toContain("--state may only be specified once")
+
+    const conflicting = Bun.spawnSync({
+      cmd: [binary, "projects", "update", "--id", "project-id", "--summary", "text", "--clear-summary"],
+      cwd: root,
+      env: { HOME: home, PATH: process.env.PATH ?? "" },
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    expect(conflicting.exitCode).toBe(2)
+    expect(new TextDecoder().decode(conflicting.stderr)).toBe("")
+    expect(new TextDecoder().decode(conflicting.stdout)).toContain("--summary and --clear-summary are mutually exclusive")
 
     const homeResult = Bun.spawnSync({
       cmd: [binary],

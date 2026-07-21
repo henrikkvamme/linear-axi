@@ -1,29 +1,45 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
 const repoRoot = process.cwd()
 
-const runCli = (...args: ReadonlyArray<string>) => {
+const runCliInTemporaryDirectory = (...args: ReadonlyArray<string>) => {
   const cwd = mkdtempSync(join(tmpdir(), "linear-axi-cli-test-"))
-  return Bun.spawnSync({
-    cmd: ["bun", join(repoRoot, "src/main.ts"), ...args],
-    cwd,
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: join(cwd, "home"),
-      XDG_CONFIG_HOME: join(cwd, "config")
-    },
-    stdout: "pipe",
-    stderr: "pipe"
-  })
+  try {
+    return {
+      cwd,
+      result: Bun.spawnSync({
+        cmd: ["bun", join(repoRoot, "src/main.ts"), ...args],
+        cwd,
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: join(cwd, "home"),
+          XDG_CONFIG_HOME: join(cwd, "config")
+        },
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
 }
+
+const runCli = (...args: ReadonlyArray<string>) => runCliInTemporaryDirectory(...args).result
 
 const stdoutText = (result: ReturnType<typeof runCli>) => new TextDecoder().decode(result.stdout)
 const stderrText = (result: ReturnType<typeof runCli>) => new TextDecoder().decode(result.stderr)
 
 describe("linear-axi process", () => {
+  test("removes its isolated credential sandbox after each invocation", () => {
+    const { cwd, result } = runCliInTemporaryDirectory("--help")
+
+    expect(result.exitCode).toBe(0)
+    expect(existsSync(cwd)).toBe(false)
+  })
+
   test("prints content-first home output without credentials", () => {
     const result = runCli()
     const stdout = stdoutText(result)
@@ -75,6 +91,18 @@ describe("linear-axi process", () => {
       expect(stdout).toContain(command.join(" "))
     })
   }
+
+  test("prints precise official command help before authentication", () => {
+    const result = runCli("projects", "update", "--help")
+    const stdout = stdoutText(result)
+
+    expect(result.exitCode).toBe(0)
+    expect(stderrText(result)).toBe("")
+    expect(stdout).toContain("--priority <integer:0..4>")
+    expect(stdout).toContain("--start-date-resolution <halfYear|month|quarter|year>")
+    expect(stdout).toContain("conflicts: --add-teams-json, --remove-teams-json")
+    expect(stdout).toContain("--full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.")
+  })
 
   test("prints OAuth setup guidance without credentials", () => {
     const result = runCli("auth", "oauth", "setup")
@@ -195,17 +223,17 @@ describe("linear-axi process", () => {
     expect(stdout).not.toContain("Linear credentials are not configured")
   })
 
-  test("reports the invalid assignee option before authentication", () => {
+  test("reports blank assignee selectors before authentication", () => {
     for (const [args, flag] of [
-      [["issues", "assign", "--id", "ENG-123", "--assignee", "invalid"], "--assignee"],
-      [["issues", "unassign", "--id", "ENG-123", "--if-assignee", "invalid"], "--if-assignee"]
+      [["issues", "assign", "--id", "ENG-123", "--assignee", " "], "--assignee"],
+      [["issues", "unassign", "--id", "ENG-123", "--if-assignee", " "], "--if-assignee"]
     ] as const) {
       const result = runCli(...args)
       const stdout = stdoutText(result)
 
       expect(result.exitCode).toBe(2)
       expect(stderrText(result)).toBe("")
-      expect(stdout).toContain(`${flag} must be me or a user UUID`)
+      expect(stdout).toContain(`${flag} requires a user id, email, display name`)
       expect(stdout).not.toContain("Linear credentials are not configured")
     }
   })
@@ -234,5 +262,5 @@ describe("linear-axi process", () => {
       expect(stdout).toContain("cannot be empty")
       expect(stdout).not.toContain("Linear credentials are not configured")
     }
-  })
+  }, 15_000)
 })
