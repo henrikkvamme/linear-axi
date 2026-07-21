@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHash } from "node:crypto"
+import { open } from "node:fs/promises"
 import { Effect } from "effect"
 import { commandSpecs, parseArgs } from "../src/args"
 import { runAttachmentCommand, type AttachmentRuntime } from "../src/attachments"
@@ -169,6 +170,33 @@ describe("attachment content boundary", () => {
     expect(fetches).toBe(1)
     expect(readFileSync(outputPath, "utf8")).toBe("keep")
     expect(existsSync(`${outputPath}.partial`)).toBe(false)
+  })
+
+  test("download completes every short file write before publishing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
+    roots.push(root)
+    const outputPath = join(root, "trace.txt")
+    const probe = await open(join(root, "probe"), "w")
+    const prototype = Object.getPrototypeOf(probe) as { write: typeof probe.write }
+    const originalWrite = prototype.write
+    await probe.close()
+    rmSync(join(root, "probe"))
+    prototype.write = async function(this: typeof probe, buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset, position: number | null = null) {
+      return Reflect.apply(originalWrite, this, [buffer, offset, Math.max(1, Math.floor(length / 2)), position])
+    } as typeof probe.write
+
+    const bytes = new TextEncoder().encode("a complete streamed download")
+    try {
+      const output = await run(["attachments", "download", "--id", "attachment-1", "--output", outputPath], detail({
+        size: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex")
+      }), { fetcher: async () => new Response(bytes, { status: 200 }) })
+
+      expect(output).toMatchObject({ bytes: bytes.length })
+      expect(readFileSync(outputPath)).toEqual(Buffer.from(bytes))
+    } finally {
+      prototype.write = originalWrite
+    }
   })
 
   test("download removes partial data on checksum mismatch and rejects non-HTTPS redirects", async () => {
@@ -381,6 +409,119 @@ describe("resumable attachment upload", () => {
     expect(finalizeCalls).toBe(1)
     expect(output).toMatchObject({ attachmentId: "attachment-1", changed: false, recovery: "finalized attachment verified" })
     expect(repeated).toMatchObject({ attachmentId: "attachment-1", changed: false, recovery: "finalized attachment verified" })
+  })
+
+  test("rejects a finalized upload whose subtitle differs from the intent", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
+    roots.push(root)
+    const source = join(root, "trace.txt")
+    writeFileSync(source, "hello world\n")
+    const uploadGateway = {
+      ...gateway({}),
+      callOfficialTool: (name: string) => {
+        if (name === "get_issue") return Effect.succeed({ id: "issue-1", identifier: "ENG-123", attachments: [] })
+        if (name === "prepare_attachment_upload") return Effect.succeed({
+          assetUrl: "https://uploads.linear.app/assets/stable-1",
+          uploadRequest: { url: "https://storage.example.test/put", headers: { "content-type": "text/plain" } }
+        })
+        if (name === "create_attachment_from_upload") return Effect.succeed({ id: "attachment-1" })
+        if (name === "get_attachment") return Effect.succeed(detail({
+          subtitle: "Different subtitle",
+          issue: { id: "issue-1", identifier: "ENG-123" },
+          assetUrl: "https://uploads.linear.app/assets/stable-1",
+          sha256: "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
+        }))
+        return Effect.die(`unexpected ${name}`)
+      }
+    } as LinearGateway
+    const parsed = parseArgs([
+      "attachments", "upload", "--issue", "ENG-123", "--file", source, "--subtitle", "Expected subtitle"
+    ], commandSpecs)
+    const effect = runAttachmentCommand(parsed, uploadGateway, {
+      stateRoot: join(root, "state"),
+      fetcher: async () => new Response(null, { status: 200 })
+    })!
+
+    const error = await Effect.runPromise(Effect.flip(effect))
+    expect(error.message).toContain("did not match the upload intent")
+  })
+
+  test("allows only one concurrent upload for the same recovery intent", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
+    roots.push(root)
+    const source = join(root, "trace.txt")
+    writeFileSync(source, "hello world\n")
+    let prepares = 0
+    let finalizes = 0
+    let releaseFirstPut!: () => void
+    const firstPutEntered = new Promise<void>((resolvePromise) => {
+      releaseFirstPut = resolvePromise
+    })
+    let notifyFirstPut!: () => void
+    const firstPutStarted = new Promise<void>((resolvePromise) => {
+      notifyFirstPut = resolvePromise
+    })
+    const assets = new Map<string, string>()
+    const uploadGateway = {
+      ...gateway({}),
+      callOfficialTool: (name: string, args: Readonly<Record<string, unknown>>) => {
+        if (name === "get_issue") return Effect.succeed({ id: "issue-1", identifier: "ENG-123", attachments: [] })
+        if (name === "prepare_attachment_upload") {
+          prepares += 1
+          return Effect.succeed({
+            assetUrl: `https://uploads.linear.app/assets/stable-${prepares}`,
+            uploadRequest: { url: `https://storage.example.test/put/${prepares}`, headers: { "content-type": "text/plain" } }
+          })
+        }
+        if (name === "create_attachment_from_upload") {
+          finalizes += 1
+          const id = `attachment-${finalizes}`
+          assets.set(id, String(args.assetUrl))
+          return Effect.succeed({ id })
+        }
+        if (name === "get_attachment") {
+          const id = String(args.id)
+          return Effect.succeed(detail({
+            id,
+            issue: { id: "issue-1", identifier: "ENG-123" },
+            assetUrl: assets.get(id),
+            sha256: "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
+          }))
+        }
+        return Effect.die(`unexpected ${name}`)
+      }
+    } as LinearGateway
+    let puts = 0
+    const runtime = {
+      stateRoot: join(root, "state"),
+      fetcher: async () => {
+        puts += 1
+        if (puts === 1) {
+          notifyFirstPut()
+          await firstPutEntered
+        }
+        return new Response(null, { status: 200 })
+      }
+    }
+
+    const first = runUpload(source, uploadGateway, runtime)
+    await firstPutStarted
+    const second = runUpload(source, uploadGateway, runtime)
+    try {
+      await expect(second).rejects.toThrow("already in progress")
+    } finally {
+      releaseFirstPut()
+      await first
+    }
+
+    const recoveryPath = join(root, "state", readdirSync(join(root, "state")).find((name) => name.endsWith(".json"))!)
+    writeFileSync(`${recoveryPath}.lock`, JSON.stringify({ version: 1, owner: "stale-owner", pid: 2147483647 }))
+    const recovered = await runUpload(source, uploadGateway, runtime)
+
+    expect(recovered).toMatchObject({ changed: false, recovery: "finalized attachment verified" })
+    expect(existsSync(`${recoveryPath}.lock`)).toBe(false)
+    expect(prepares).toBe(1)
+    expect(finalizes).toBe(1)
   })
 
   test("a partial streaming transfer persists no signed material and safely re-prepares", async () => {

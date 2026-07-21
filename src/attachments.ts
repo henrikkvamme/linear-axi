@@ -1,5 +1,5 @@
 import { constants, createReadStream } from "node:fs"
-import { chmod, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises"
+import { chmod, link, lstat, mkdir, open, realpath, rename, rmdir, unlink } from "node:fs/promises"
 import { basename, dirname, resolve } from "node:path"
 import { randomUUID } from "node:crypto"
 import { Readable } from "node:stream"
@@ -111,61 +111,71 @@ const uploadAttachment = Effect.fn("Attachments.upload")(function*(
   return yield* Effect.acquireUseRelease(
     openUploadSource(parsed),
     (source) => Effect.gen(function*() {
-    const issue = yield* resolveUploadIssue(readStringFlag(parsed.flags, "issue")!, gateway)
-    const title = readStringFlag(parsed.flags, "title") ?? null
-    const subtitle = readStringFlag(parsed.flags, "subtitle") ?? null
-    const recoveryPath = resolve(runtime.stateRoot, `${uploadRecoveryKey(issue.id, source, title, subtitle)}.json`)
-    let recovery = yield* loadRecovery(recoveryPath)
-    if (recovery && !recoveryMatches(recovery, issue, source, title, subtitle)) {
-      return yield* domain("Upload recovery metadata conflicts with this file intent", "Remove only the named private recovery record after inspecting it, then retry.")
-    }
+      const issue = yield* resolveUploadIssue(readStringFlag(parsed.flags, "issue")!, gateway)
+      const title = readStringFlag(parsed.flags, "title") ?? null
+      const subtitle = readStringFlag(parsed.flags, "subtitle") ?? null
+      const recoveryPath = resolve(runtime.stateRoot, `${uploadRecoveryKey(issue.id, source, title, subtitle)}.json`)
+      return yield* Effect.acquireUseRelease(
+        acquireUploadIntentLock(recoveryPath),
+        () => Effect.gen(function*() {
+          let recovery = yield* loadRecovery(recoveryPath)
+          if (recovery && !recoveryMatches(recovery, issue, source, title, subtitle)) {
+            return yield* domain("Upload recovery metadata conflicts with this file intent", "Remove only the named private recovery record after inspecting it, then retry.")
+          }
 
-    if (recovery?.stage === "finalized" && recovery.attachmentId) {
-      const verified = yield* verifyUploadedAttachment(recovery.attachmentId, issue, source, title, recovery.assetUrl, gateway)
-      return uploadOutput(verified, issue, source, false, "finalized attachment verified")
-    }
+          if (recovery?.stage === "finalized" && recovery.attachmentId) {
+            const verified = yield* verifyUploadedAttachment(
+              recovery.attachmentId, issue, source, recovery.title, recovery.subtitle, recovery.assetUrl, gateway
+            )
+            return uploadOutput(verified, issue, source, false, "finalized attachment verified")
+          }
 
-    if (recovery?.stage === "transferred" && recovery.assetUrl) {
-      const reconciled = findRecoveredAttachment(issue.attachments, recovery.assetUrl, source, title)
-      if (reconciled) {
-        const verified = yield* verifyUploadedAttachment(reconciled.id, issue, source, title, recovery.assetUrl, gateway)
-        recovery = { ...recovery, stage: "finalized", attachmentId: verified.id }
-        yield* persistRecovery(recoveryPath, recovery)
-        return uploadOutput(verified, issue, source, false, "finalized attachment verified")
-      }
-      return yield* finalizeUpload(parsed, gateway, recoveryPath, recovery, issue, source, title)
-    }
+          if (recovery?.stage === "transferred" && recovery.assetUrl) {
+            const reconciled = findRecoveredAttachment(issue.attachments, recovery.assetUrl, source, recovery.title, recovery.subtitle)
+            if (reconciled) {
+              const verified = yield* verifyUploadedAttachment(
+                reconciled.id, issue, source, recovery.title, recovery.subtitle, recovery.assetUrl, gateway
+              )
+              recovery = { ...recovery, stage: "finalized", attachmentId: verified.id }
+              yield* persistRecovery(recoveryPath, recovery)
+              return uploadOutput(verified, issue, source, false, "finalized attachment verified")
+            }
+            return yield* finalizeUpload(gateway, recoveryPath, recovery, issue, source)
+          }
 
-    yield* assertSourceUnchanged(source)
-    const preparedRaw = yield* gateway.callOfficialTool("prepare_attachment_upload", {
-      issue: issue.id,
-      filename: source.filename,
-      contentType: source.mediaType,
-      size: source.size,
-      ...(title === null ? {} : { title }),
-      ...(subtitle === null ? {} : { subtitle })
-    })
-    const prepared = yield* decodePreparedUpload(preparedRaw)
-    recovery = {
-      version: 1,
-      stage: "prepared",
-      issueId: issue.id,
-      issueIdentifier: issue.identifier,
-      filename: source.filename,
-      size: source.size,
-      mediaType: source.mediaType,
-      sha256: source.sha256,
-      title,
-      subtitle,
-      assetUrl: prepared.assetUrl,
-      attachmentId: null
-    }
-    yield* persistRecovery(recoveryPath, recovery)
-    yield* transferUpload(prepared, source, runtime)
-    yield* assertSourceUnchanged(source)
-    recovery = { ...recovery, stage: "transferred" }
-    yield* persistRecovery(recoveryPath, recovery)
-      return yield* finalizeUpload(parsed, gateway, recoveryPath, recovery, issue, source, title)
+          yield* assertSourceUnchanged(source)
+          const preparedRaw = yield* gateway.callOfficialTool("prepare_attachment_upload", {
+            issue: issue.id,
+            filename: source.filename,
+            contentType: source.mediaType,
+            size: source.size,
+            ...(title === null ? {} : { title }),
+            ...(subtitle === null ? {} : { subtitle })
+          })
+          const prepared = yield* decodePreparedUpload(preparedRaw)
+          recovery = {
+            version: 1,
+            stage: "prepared",
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            filename: source.filename,
+            size: source.size,
+            mediaType: source.mediaType,
+            sha256: source.sha256,
+            title,
+            subtitle,
+            assetUrl: prepared.assetUrl,
+            attachmentId: null
+          }
+          yield* persistRecovery(recoveryPath, recovery)
+          yield* transferUpload(prepared, source, runtime)
+          yield* assertSourceUnchanged(source)
+          recovery = { ...recovery, stage: "transferred" }
+          yield* persistRecovery(recoveryPath, recovery)
+          return yield* finalizeUpload(gateway, recoveryPath, recovery, issue, source)
+        }),
+        releaseUploadIntentLock
+      )
     }),
     (source) => Effect.promise(() => source.handle.close().catch(() => undefined))
   )
@@ -673,8 +683,12 @@ const recoveryMatches = (
   recovery.filename === source.filename && recovery.size === source.size && recovery.mediaType === source.mediaType &&
   recovery.sha256 === source.sha256 && recovery.title === title && recovery.subtitle === subtitle
 
-const persistRecovery = Effect.fn("Attachments.persistRecovery")(function*(path: string, recovery: UploadRecovery) {
-  const parent = dirname(path)
+interface UploadIntentLock {
+  readonly path: string
+  readonly owner: string
+}
+
+const ensureRecoveryDirectory = Effect.fn("Attachments.ensureRecoveryDirectory")(function*(parent: string) {
   yield* Effect.tryPromise({
     try: async () => {
       await mkdir(parent, { recursive: true, mode: 0o700 })
@@ -683,6 +697,114 @@ const persistRecovery = Effect.fn("Attachments.persistRecovery")(function*(path:
     },
     catch: () => new LinearDomainError({ message: "Could not create the private upload recovery directory", help: "Check state-directory permissions and retry." })
   })
+})
+
+const acquireUploadIntentLock = Effect.fn("Attachments.acquireUploadIntentLock")(function*(recoveryPath: string) {
+  const parent = dirname(recoveryPath)
+  const path = `${recoveryPath}.lock`
+  const owner = randomUUID()
+  yield* ensureRecoveryDirectory(parent)
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const temp = resolve(parent, `.${basename(path)}.${owner}.tmp`)
+    const installed = yield* Effect.tryPromise({
+      try: async () => {
+        const handle = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
+        try {
+          await handle.writeFile(JSON.stringify({ version: 1, owner, pid: process.pid }), "utf8")
+          await handle.sync()
+        } finally {
+          await handle.close()
+        }
+        try {
+          await link(temp, path)
+          return true
+        } catch (cause) {
+          if (Predicate.hasProperty(cause, "code") && cause.code === "EEXIST") return false
+          throw cause
+        } finally {
+          await unlink(temp).catch(() => undefined)
+        }
+      },
+      catch: () => new LinearDomainError({ message: "Could not acquire private upload recovery ownership", help: "Check state-directory permissions and retry." })
+    })
+    if (installed) {
+      yield* syncDirectory(parent)
+      return { path, owner } satisfies UploadIntentLock
+    }
+    const reclaimed = yield* reclaimDeadUploadIntentLock(path)
+    if (!reclaimed) {
+      return yield* domain("An identical attachment upload is already in progress", "Wait for the active upload to finish, then retry the same command.")
+    }
+  }
+  return yield* domain("Could not acquire attachment upload recovery ownership", "Retry after the other upload command exits.")
+})
+
+const reclaimDeadUploadIntentLock = Effect.fn("Attachments.reclaimDeadUploadIntentLock")(function*(path: string) {
+  const lock = yield* Effect.tryPromise({
+    try: async () => {
+      try {
+        const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+        try {
+          const value: unknown = JSON.parse(await handle.readFile("utf8"))
+          if (!Predicate.isObject(value) || value.version !== 1 || !Predicate.isString(value.owner) ||
+            !Predicate.isNumber(value.pid) || !Number.isSafeInteger(value.pid) || value.pid <= 0) throw new Error("invalid lock")
+          return { owner: value.owner, pid: value.pid }
+        } finally {
+          await handle.close()
+        }
+      } catch (cause) {
+        if (Predicate.hasProperty(cause, "code") && cause.code === "ENOENT") return null
+        throw cause
+      }
+    },
+    catch: () => new LinearDomainError({ message: "Private upload recovery ownership is unreadable or invalid", help: "Inspect the private recovery directory before retrying." })
+  })
+  if (lock === null) return true
+  const alive = yield* Effect.sync(() => {
+    try {
+      process.kill(lock.pid, 0)
+      return true
+    } catch (cause) {
+      return !(Predicate.hasProperty(cause, "code") && cause.code === "ESRCH")
+    }
+  })
+  if (alive) return false
+  return yield* Effect.tryPromise({
+    try: async () => {
+      try {
+        const value: unknown = JSON.parse(await Bun.file(path).text())
+        if (!Predicate.isObject(value) || value.owner !== lock.owner) return false
+        await unlink(path)
+        return true
+      } catch (cause) {
+        if (Predicate.hasProperty(cause, "code") && cause.code === "ENOENT") return true
+        throw cause
+      }
+    },
+    catch: () => new LinearDomainError({ message: "Could not reclaim stale upload recovery ownership", help: "Inspect the private recovery directory before retrying." })
+  })
+})
+
+const releaseUploadIntentLock = Effect.fn("Attachments.releaseUploadIntentLock")(function*(lock: UploadIntentLock) {
+  yield* Effect.tryPromise({
+    try: async () => {
+      try {
+        const value: unknown = JSON.parse(await Bun.file(lock.path).text())
+        if (Predicate.isObject(value) && value.owner === lock.owner) {
+          await unlink(lock.path)
+          await rmdir(dirname(lock.path)).catch(() => undefined)
+        }
+      } catch (cause) {
+        if (!(Predicate.hasProperty(cause, "code") && cause.code === "ENOENT")) throw cause
+      }
+    },
+    catch: () => undefined
+  }).pipe(Effect.catch(() => Effect.void))
+})
+
+const persistRecovery = Effect.fn("Attachments.persistRecovery")(function*(path: string, recovery: UploadRecovery) {
+  const parent = dirname(path)
+  yield* ensureRecoveryDirectory(parent)
   const temp = resolve(parent, `.${basename(path)}.${randomUUID()}.tmp`)
   const handle = yield* Effect.tryPromise({
     try: () => open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600),
@@ -775,13 +897,11 @@ const transferUpload = Effect.fn("Attachments.transferUpload")(function*(prepare
 })
 
 const finalizeUpload = Effect.fn("Attachments.finalizeUpload")(function*(
-  _parsed: ParsedArgs,
   gateway: LinearGateway,
   recoveryPath: string,
   recovery: UploadRecovery,
   issue: { readonly id: string; readonly identifier: string },
-  source: UploadSource,
-  title: string | null
+  source: UploadSource
 ) {
   if (!recovery.assetUrl) return yield* domain("Upload recovery metadata has no transferred asset identity", "Retry the same upload command to prepare a fresh transfer.")
   const result = yield* gateway.callOfficialTool("create_attachment_from_upload", {
@@ -799,7 +919,9 @@ const finalizeUpload = Effect.fn("Attachments.finalizeUpload")(function*(
   if (!attachmentId) {
     return yield* domain("Official Linear MCP output shape drifted after attachment finalize", `Retry the same upload command; recovery will inspect ${issue.identifier} before another finalize.`)
   }
-  const verified = yield* verifyUploadedAttachment(attachmentId, issue, source, title, recovery.assetUrl, gateway)
+  const verified = yield* verifyUploadedAttachment(
+    attachmentId, issue, source, recovery.title, recovery.subtitle, recovery.assetUrl, gateway
+  )
   yield* persistRecovery(recoveryPath, { ...recovery, stage: "finalized", attachmentId })
   return uploadOutput(verified, issue, source, true, "attachment uploaded and verified")
 })
@@ -808,12 +930,14 @@ const findRecoveredAttachment = (
   attachments: ReadonlyArray<AttachmentWire>,
   assetUrl: string,
   source: UploadSource,
-  title: string | null
+  title: string | null,
+  subtitle: string | null
 ): { readonly id: string } | null => {
   const match = attachments.find((attachment) =>
     firstString(attachment.assetUrl, attachment.url, attachment.downloadUrl) === assetUrl &&
     (firstString(attachment.filename, attachment.name) === null || firstString(attachment.filename, attachment.name) === source.filename) &&
-    (title === null || firstString(attachment.title) === title))
+    (title === null || firstString(attachment.title) === title) &&
+    (subtitle === null || firstString(attachment.subtitle) === subtitle))
   return match ? { id: match.id } : null
 }
 
@@ -822,6 +946,7 @@ const verifyUploadedAttachment = Effect.fn("Attachments.verifyUploadedAttachment
   issue: { readonly id: string; readonly identifier: string },
   source: UploadSource,
   title: string | null,
+  subtitle: string | null,
   assetUrl: string | null,
   gateway: LinearGateway
 ) {
@@ -829,11 +954,12 @@ const verifyUploadedAttachment = Effect.fn("Attachments.verifyUploadedAttachment
   const sameIssue = detail?.issue?.id === issue.id || detail?.issue?.identifier === issue.identifier
   const sameFilename = detail?.filename === source.filename
   const sameTitle = title === null || detail?.title === title
+  const sameSubtitle = subtitle === null || detail?.subtitle === subtitle
   const sameSize = detail?.size === source.size
   const sameType = detail?.mediaType?.split(";", 1)[0]?.trim().toLowerCase() === source.mediaType
   const sameChecksum = detail?.sha256 === null || detail?.sha256 === source.sha256
   const sameAsset = assetUrl === null || detail?.assetUrl === assetUrl
-  if (!detail || detail.id !== attachmentId || !sameIssue || !sameFilename || !sameTitle || !sameSize || !sameType || !sameChecksum || !sameAsset) {
+  if (!detail || detail.id !== attachmentId || !sameIssue || !sameFilename || !sameTitle || !sameSubtitle || !sameSize || !sameType || !sameChecksum || !sameAsset) {
     return yield* domain("Finalized attachment verification did not match the upload intent", `Run \`linear-axi attachments view --id ${attachmentId}\` and do not repeat finalize blindly.`)
   }
   return detail
@@ -976,10 +1102,17 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
             return yield* domain("Attachment download exceeded its declared safety bound", "Retry with fresh metadata or a larger explicit --max-bytes value.")
           }
           hasher.update(next.value)
-          yield* Effect.tryPromise({
-            try: () => handle.write(next.value),
-            catch: () => new LinearDomainError({ message: "Writing the attachment destination failed", help: "Check available disk space and retry." })
-          })
+          let written = 0
+          while (written < next.value.byteLength) {
+            const result = yield* Effect.tryPromise({
+              try: () => handle.write(next.value, written, next.value.byteLength - written),
+              catch: () => new LinearDomainError({ message: "Writing the attachment destination failed", help: "Check available disk space and retry." })
+            })
+            if (result.bytesWritten <= 0) {
+              return yield* domain("Writing the attachment destination made no progress", "Check available disk space and retry.")
+            }
+            written += result.bytesWritten
+          }
         }
       } finally {
         try { reader.releaseLock() } catch {}
@@ -997,10 +1130,7 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
       catch: () => new LinearDomainError({ message: "Could not fsync the downloaded attachment", help: "Check the destination filesystem and retry." })
     })
     yield* verifyTargetUnchanged(target, pinnedParent)
-    yield* Effect.tryPromise({
-      try: () => rename(temp, resolve(pinnedParent, basename(target.path))),
-      catch: () => new LinearDomainError({ message: "Could not atomically install the downloaded attachment", help: "Check destination permissions and retry." })
-    })
+    yield* installAtomicDownload(temp, resolve(pinnedParent, basename(target.path)), target.existing === null)
     yield* Effect.tryPromise({
       try: () => parentHandle.sync(),
       catch: () => new LinearDomainError({ message: "Could not fsync the destination directory", help: "Check the destination filesystem and retry." })
@@ -1010,6 +1140,25 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
     await handle.close().catch(() => undefined)
     await unlink(temp).catch(() => undefined)
   }))
+})
+
+const installAtomicDownload = Effect.fn("Attachments.installAtomicDownload")(function*(temp: string, destination: string, noReplace: boolean) {
+  if (!noReplace) {
+    yield* Effect.tryPromise({
+      try: () => rename(temp, destination),
+      catch: () => new LinearDomainError({ message: "Could not atomically install the downloaded attachment", help: "Check destination permissions and retry." })
+    })
+    return
+  }
+  yield* Effect.tryPromise({
+    try: async () => {
+      await link(temp, destination)
+      await unlink(temp)
+    },
+    catch: (cause) => Predicate.hasProperty(cause, "code") && cause.code === "EEXIST"
+      ? new LinearDomainError({ message: "Destination changed during download; refusing to replace it", help: "Inspect the destination and retry explicitly." })
+      : new LinearDomainError({ message: "Could not atomically install the downloaded attachment without replacement", help: "Check destination filesystem support and permissions, then retry." })
+  })
 })
 
 const verifyTargetUnchanged = Effect.fn("Attachments.verifyTargetUnchanged")(function*(target: DownloadTarget, pinnedParent: string) {
