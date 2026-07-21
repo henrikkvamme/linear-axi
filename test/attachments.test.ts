@@ -151,7 +151,10 @@ describe("attachment content boundary", () => {
       }
     }
 
-    const output = await run(["attachments", "download", "--id", "attachment-1", "--output", outputPath], detail({ size: bytes.length }), runtime)
+    const output = await run(["attachments", "download", "--id", "attachment-1", "--output", outputPath], detail({
+      size: bytes.length,
+      sha256: "A948904F2F0F479B8F8197694B30184B0D2ED1C1CD2A1EC0FB85D299A192A447"
+    }), runtime)
     expect(readFileSync(outputPath)).toEqual(Buffer.from(bytes))
     expect(output).toMatchObject({ attachmentId: "attachment-1", path: outputPath, bytes: bytes.length, mediaType: "text/plain; charset=utf-8" })
     expect(output.sha256).toMatch(/^[a-f0-9]{64}$/)

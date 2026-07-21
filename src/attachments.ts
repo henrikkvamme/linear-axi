@@ -16,6 +16,7 @@ import {
   decodeHeadersWire,
   decodeHttpsUrl,
   decodeIssueAttachments,
+  decodeLinearDownloadUrl,
   decodePreparedUploadWire,
   decodeUploadRecovery,
   type AttachmentWire,
@@ -347,7 +348,7 @@ const decodeDetail = (value: unknown): AttachmentDetail | undefined => {
     contentUrl,
     assetUrl: firstString(attachment.assetUrl, attachment.url),
     headers: decodeHeaders(request?.headers),
-    sha256: firstString(attachment.sha256, attachment.checksum)
+    sha256: firstString(attachment.sha256, attachment.checksum)?.toLowerCase() ?? null
   }
 }
 
@@ -460,11 +461,7 @@ const fetchContent = Effect.fn("Attachments.fetchContent")(function*(attachment:
 
 const safeAssetUrl = Effect.fn("Attachments.safeAssetUrl")(function*(raw: string) {
   return yield* Effect.try({
-    try: () => {
-      const url = new URL(raw)
-      if (url.protocol !== "https:" || url.username || url.password || url.hostname !== "uploads.linear.app") throw new Error("unsafe")
-      return url.toString()
-    },
+    try: () => decodeLinearDownloadUrl(raw),
     catch: () => new LinearDomainError({
       message: "Linear returned an unsafe attachment content location",
       help: "Retry the command and do not supply or substitute a download URL."
@@ -474,11 +471,7 @@ const safeAssetUrl = Effect.fn("Attachments.safeAssetUrl")(function*(raw: string
 
 const safeRedirectUrl = Effect.fn("Attachments.safeRedirectUrl")(function*(raw: string, current: string) {
   return yield* Effect.try({
-    try: () => {
-      const url = new URL(raw, current)
-      if (url.protocol !== "https:" || url.username || url.password) throw new Error("unsafe")
-      return url.toString()
-    },
+    try: () => decodeHttpsUrl(new URL(raw, current).toString()),
     catch: () => new LinearDomainError({
       message: "Attachment download refused a non-HTTPS redirect",
       help: "Retry the command to request fresh authenticated content metadata."

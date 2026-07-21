@@ -28,6 +28,10 @@ const LinearPrivateAssetUrl = HttpsUrl.check(Schema.makeFilter(
   },
   { expected: "a private uploads.linear.app asset URL without query or fragment" }
 ))
+const LinearDownloadUrl = HttpsUrl.check(Schema.makeFilter(
+  (value) => new URL(value).hostname === "uploads.linear.app",
+  { expected: "an uploads.linear.app HTTPS URL" }
+))
 
 const OptionalString = Schema.optionalKey(Schema.NullOr(Schema.String))
 const OptionalNumber = Schema.optionalKey(Schema.NullOr(NonNegativeSafeInteger))
@@ -102,3 +106,4 @@ export const decodeFinalizedUpload = Schema.decodeUnknownSync(FinalizedUploadSch
 export const decodeUploadRecovery = Schema.decodeUnknownSync(UploadRecoverySchema)
 export const decodeAttachmentCursor = Schema.decodeUnknownSync(AttachmentCursorSchema)
 export const decodeHttpsUrl = Schema.decodeUnknownSync(HttpsUrl)
+export const decodeLinearDownloadUrl = Schema.decodeUnknownSync(LinearDownloadUrl)
