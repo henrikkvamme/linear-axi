@@ -1,5 +1,6 @@
 import { Effect } from "effect"
 import { LinearDomainError } from "./errors"
+import { officialEntityMatchesSelector } from "./official-identity"
 
 const MAX_CANDIDATE_IDS = 10
 
@@ -9,11 +10,7 @@ export const resolveExactOfficialEntity = (
   rows: ReadonlyArray<Record<string, unknown>>,
   keys: ReadonlyArray<string>
 ): Effect.Effect<Record<string, unknown>, LinearDomainError> => {
-  const normalized = selector.toLowerCase()
-  const matches = rows.filter((row) => keys.some((key) => {
-    const value = row[key]
-    return (typeof value === "string" || typeof value === "number") && String(value).toLowerCase() === normalized
-  }))
+  const matches = rows.filter((row) => officialEntityMatchesSelector(row, selector, keys))
   const candidateIds = renderCandidateIds(matches.length > 0 ? matches : rows)
   if (matches.length === 0) {
     return Effect.fail(new LinearDomainError({

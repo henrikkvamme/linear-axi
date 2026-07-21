@@ -44,10 +44,12 @@ import {
 import { runOfficialCommand } from "./official-commands"
 import {
   officialEntityIdentity,
+  officialEntityMatchesSelector,
   officialOwnerReference,
   officialReferenceMatchesIdentity,
   officialReferenceSelector,
   officialReferenceValues,
+  officialSelectorIsImmutableId,
   type OfficialEntityIdentity
 } from "./official-identity"
 import { indeterminateOfficialMutation, officialMutationInspectionCommand } from "./official-inspection"
@@ -505,6 +507,7 @@ const updateOfficialIssue = (
   const teamIdentity = needsCanonicalTeam
     ? yield* resolveOfficialTeamIdentity(gateway, teamSelector)
     : { id: teamSelector, aliases: [teamSelector] }
+  if (needsCanonicalTeam) yield* requireOfficialOwnership("issue", id, before, "team", teamIdentity)
   if (typeof input.state === "string") {
     input.state = yield* resolveOfficialStateSelector(gateway, teamIdentity, input.state)
   }
@@ -603,7 +606,7 @@ const resolveOfficialAssignableUserSelector = (
   let user: Record<string, unknown>
   if (selector === "me") {
     user = yield* resolveOfficialViewerUser(gateway)
-  } else if (looksLikeUuid(selector)) {
+  } else if (officialSelectorIsImmutableId(selector)) {
     const result = yield* gateway.callOfficialTool("get_user", { query: selector })
     if (!Predicate.isObject(result) || !nonEmptyString(result.id) ||
       !officialEntityMatchesSelector(result, selector, ["id", "email", "name", "displayName"])) {
@@ -670,7 +673,7 @@ const resolveOfficialIssueSelectors = (
   team: OfficialEntityIdentity,
   current?: Readonly<Record<string, unknown>>
 ): Effect.Effect<void, CliError> => Effect.gen(function*() {
-  if (typeof input.delegate === "string" && !looksLikeUuid(input.delegate)) {
+  if (typeof input.delegate === "string" && !officialSelectorIsImmutableId(input.delegate)) {
     const selector = input.delegate
     const user = yield* gateway.callOfficialTool("get_user", { query: selector })
     if (!Predicate.isObject(user) || !nonEmptyString(user.id) || !officialEntityMatchesSelector(user, selector, ["id", "name", "email", "displayName"])) {
@@ -704,6 +707,9 @@ const resolveOfficialIssueSelectors = (
         }))
       }
       projectIdentity = yield* resolveOfficialProjectIdentity(gateway, projectSelector)
+      if (current !== undefined) {
+        yield* requireOfficialOwnership("issue", nonEmptyString(current.id) ? current.id : "current", current, "project", projectIdentity)
+      }
     }
     const selector = input.milestone
     const milestone = yield* gateway.callOfficialTool("get_milestone", { project: projectIdentity.id, query: selector })
@@ -794,6 +800,7 @@ const resolveOfficialParentId = (
   const parentTeamSelector = officialReferenceSelector(officialOwnerReference(issue, "team"))
   if (!parentTeamSelector) return yield* officialShapeError("parent team ownership")
   const parentTeam = yield* resolveOfficialTeamIdentity(gateway, parentTeamSelector)
+  yield* requireOfficialOwnership("parent", selector, issue, "team", parentTeam)
   if (!officialTextEqual(parentTeam.id, team.id)) {
     return yield* Effect.fail(new LinearDomainError({
       message: `parent ${selector} belongs to another team`,
@@ -881,7 +888,7 @@ const requireOfficialLabelScope = (
   if (!hasTeamId && !hasTeam) {
     return label.scope === "workspace" ? Effect.void : officialShapeError("label team scope")
   }
-  const reference = hasTeamId ? label.teamId : label.team
+  const reference = officialOwnerReference(label, "team")
   if (reference === null) return Effect.void
   if (officialReferenceValues(reference).length === 0) return officialShapeError("label team scope")
   return officialReferenceMatchesIdentity(reference, team)
@@ -930,8 +937,6 @@ const requireOfficialOwnership = (
       }))
 }
 
-const looksLikeUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value)
-
 const resolveOfficialStateSelector = (
   gateway: LinearGateway,
   team: OfficialEntityIdentity,
@@ -948,15 +953,8 @@ const resolveOfficialStateSelector = (
   return stateId
 })
 
-const officialTeamSelector = (issue: Record<string, unknown>): string | undefined => {
-  if (typeof issue.teamId === "string") return issue.teamId
-  if (typeof issue.team === "string") return issue.team
-  if (Predicate.isObject(issue.team)) {
-    const value = issue.team.id ?? issue.team.key ?? issue.team.name
-    return typeof value === "string" ? value : undefined
-  }
-  return undefined
-}
+const officialTeamSelector = (issue: Record<string, unknown>): string | undefined =>
+  officialReferenceSelector(officialOwnerReference(issue, "team"))
 
 const officialIssueReadArgs = (id: string, input: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> => ({
   id,
@@ -966,7 +964,7 @@ const officialIssueReadArgs = (id: string, input: Readonly<Record<string, unknow
 
 const officialIssueSatisfies = (issue: Record<string, unknown>, input: Record<string, unknown>): boolean =>
   Object.entries(input).every(([key, desired]) => {
-    if (key === "id" || key === "team") return key === "id" || officialReferenceMatches(issue.team ?? issue.teamId, desired)
+    if (key === "id" || key === "team") return key === "id" || officialReferenceMatches(officialOwnerReference(issue, "team"), desired)
     if (key === "links") return officialLinksContain(issue.attachments ?? issue.links, desired)
     if (key === "state") return officialReferenceMatches(issue.status ?? issue.state, desired)
     if (key === "parentId") return ("parentId" in issue || "parent" in issue) &&
@@ -1016,12 +1014,6 @@ const officialReferenceMatches = (current: unknown, desired: unknown): boolean =
 }
 const officialLiteralMatches = (current: unknown, desired: unknown): boolean =>
   desired === null ? current === null || current === undefined : current === desired
-
-const officialEntityMatchesSelector = (
-  entity: Readonly<Record<string, unknown>>,
-  selector: string,
-  keys: ReadonlyArray<string> = ["id", "identifier"]
-): boolean => keys.some((key) => typeof entity[key] === "string" && officialTextEqual(entity[key], selector))
 
 const officialIssueIdentity = (issue: Readonly<Record<string, unknown>>): string | undefined =>
   nonEmptyString(issue.id) ? issue.id : nonEmptyString(issue.identifier) ? issue.identifier : undefined

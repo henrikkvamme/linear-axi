@@ -262,6 +262,53 @@ describe("runCommand", () => {
     }
   })
 
+  test("immutable selectors match only immutable entity ids", async () => {
+    const requestedId = "11111111-1111-4111-8111-111111111111"
+    const wrongId = "22222222-2222-4222-8222-222222222222"
+
+    const detailError = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["teams", "view", "--query", requestedId], commandSpecs),
+      fakeGateway({ callOfficialTool: () => Effect.succeed({ id: wrongId, name: requestedId }) }, false),
+      "/repo/src/main.ts"
+    )))
+    expect(detailError._tag).toBe("LinearDomainError")
+    expect(detailError.message).toContain("output shape drifted")
+
+    let selectorSaves = 0
+    const selectorError = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["projects", "update", "--id", "project-id", "--labels-json", `["${requestedId}"]`], commandSpecs),
+      fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_project") return Effect.succeed({ id: "project-id", name: "Roadmap", labels: [] })
+          if (name === "list_project_labels") {
+            return Effect.succeed({ labels: [{ id: wrongId, name: requestedId }], hasNextPage: false })
+          }
+          if (name === "save_project") selectorSaves += 1
+          return Effect.succeed({})
+        }
+      }),
+      "/repo/src/main.ts"
+    )))
+    expect(selectorError._tag).toBe("LinearDomainError")
+    expect(selectorError.message).toContain(`No project label exactly matched ${requestedId}`)
+    expect(selectorSaves).toBe(0)
+
+    let targetSaves = 0
+    const targetError = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["projects", "update", "--id", requestedId, "--state", "started"], commandSpecs),
+      fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "save_project") targetSaves += 1
+          return Effect.succeed({ id: wrongId, name: requestedId, state: "planned" })
+        }
+      }),
+      "/repo/src/main.ts"
+    )))
+    expect(targetError._tag).toBe("LinearDomainError")
+    expect(targetError.message).toContain("output shape drifted")
+    expect(targetSaves).toBe(0)
+  })
+
   test("milestone detail canonicalizes and validates project ownership", async () => {
     const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
     const output = await run(["milestones", "view", "--project", "Roadmap", "--query", "Launch"], fakeGateway({
@@ -1509,6 +1556,125 @@ describe("runCommand", () => {
       expect(error.message).toContain(owner === undefined ? "output shape drifted" : "belongs to another pipeline")
       expect(saves).toBe(0)
     }
+  })
+
+  test("official ownership rejects contradictory flattened and nested references", async () => {
+    const teamId = "33333333-3333-4333-8333-333333333333"
+    const otherTeamId = "44444444-4444-4444-8444-444444444444"
+    let documentSaves = 0
+    const documentError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "documents", "update", "--id", "document-id", "--cycle", "Cycle 7", "--team", "Engineering"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_document") return Effect.succeed({ id: "document-id", cycle: null })
+        if (name === "get_team") return Effect.succeed({ id: teamId, key: "ENG", name: "Engineering" })
+        if (name === "list_cycles") {
+          return Effect.succeed([{ id: "cycle-id", name: "Cycle 7", teamId, team: { id: otherTeamId } }])
+        }
+        if (name === "save_document") documentSaves += 1
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+    expect(documentError._tag).toBe("LinearDomainError")
+    expect(documentError.message).toContain("belongs to another team")
+    expect(documentSaves).toBe(0)
+
+    let milestoneSaves = 0
+    const milestoneError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "milestones", "update", "--project", "Roadmap", "--id", "Launch", "--target-date", "2026-08-01"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_project") return Effect.succeed({ id: "project-id", name: "Roadmap" })
+        if (name === "get_milestone") {
+          return Effect.succeed({
+            id: "milestone-id",
+            name: "Launch",
+            projectId: "project-id",
+            project: { id: "other-project" },
+            targetDate: null
+          })
+        }
+        if (name === "save_milestone") milestoneSaves += 1
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+    expect(milestoneError._tag).toBe("LinearDomainError")
+    expect(milestoneError.message).toContain("belongs to another project")
+    expect(milestoneSaves).toBe(0)
+
+    let releaseSaves = 0
+    const releaseError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "release-notes", "update", "--id", "note-id", "--pipeline", "Delivery", "--releases-json", "[\"v2\"]"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_release_note") return Effect.succeed({ id: "note-id", pipeline: { id: "pipeline-id" } })
+        if (name === "list_release_pipelines") {
+          return Effect.succeed({ releasePipelines: [{ id: "pipeline-id", name: "Delivery" }], hasNextPage: false })
+        }
+        if (name === "list_releases") {
+          return Effect.succeed({
+            releases: [{ id: "release-id", slugId: "v2", pipelineId: "pipeline-id", pipeline: { id: "other-pipeline" } }],
+            hasNextPage: false
+          })
+        }
+        if (name === "save_release_note") releaseSaves += 1
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+    expect(releaseError._tag).toBe("LinearDomainError")
+    expect(releaseError.message).toContain("belongs to another pipeline")
+    expect(releaseSaves).toBe(0)
+
+    let issueSaves = 0
+    const labelError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "update", "--id", "ENG-123", "--labels-json", "[\"Platform\"]"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_issue") {
+          return Effect.succeed({ id: "issue-id", identifier: "ENG-123", teamId, labels: [] })
+        }
+        if (name === "get_team") return Effect.succeed({ id: teamId, key: "ENG", name: "Engineering" })
+        if (name === "list_issue_labels") {
+          return Effect.succeed({
+            labels: [{
+              id: "label-id",
+              name: "Platform",
+              teamId,
+              team: { id: otherTeamId },
+              isGroup: false,
+              parentId: null
+            }],
+            hasNextPage: false
+          })
+        }
+        if (name === "save_issue") issueSaves += 1
+        return Effect.succeed({})
+      }
+    }), "/repo/src/main.ts")))
+    expect(labelError._tag).toBe("LinearDomainError")
+    expect(labelError.message).toContain("belongs to another team")
+    expect(issueSaves).toBe(0)
+  })
+
+  test("official ownership accepts consistent identity aliases", async () => {
+    let saves = 0
+    const output = await run([
+      "documents", "update", "--id", "document-id", "--cycle", "Cycle 7", "--team", "Engineering"
+    ], fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_document") return Effect.succeed({ id: "document-id", cycle: { id: "cycle-id" } })
+        if (name === "get_team") {
+          return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering" })
+        }
+        if (name === "list_cycles") {
+          return Effect.succeed([{ id: "cycle-id", name: "Cycle 7", teamId: "team-id", team: { key: "ENG" } }])
+        }
+        if (name === "save_document") saves += 1
+        return Effect.succeed({})
+      }
+    }))
+    expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
+    expect(saves).toBe(0)
   })
 
   test("official rich-text updates accept Linear-normalized readback", async () => {

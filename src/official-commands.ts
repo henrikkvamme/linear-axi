@@ -11,10 +11,12 @@ import {
 } from "./official-collection"
 import {
   officialEntityIdentity,
+  officialEntityMatchesSelector,
   officialOwnerReference,
   officialReferenceMatchesIdentity,
   officialReferenceSelector,
   officialReferenceValues,
+  officialSelectorIsImmutableId,
   type OfficialEntityIdentity
 } from "./official-identity"
 import {
@@ -335,10 +337,7 @@ const validateDetailIdentity = Effect.fn("validateDetailIdentity")(function*(
     }
     return value
   }
-  const matches = rule.keys.some((key) => {
-    const reference = value[key]
-    return (typeof reference === "string" || typeof reference === "number") && referenceTextEqual(String(reference), selector)
-  })
+  const matches = officialEntityMatchesSelector(value, selector, rule.keys)
   return matches
     ? value
     : yield* shapeDrift(entry, `returned ${rule.noun} did not match the requested selector`)
@@ -517,8 +516,9 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
     }
     if (typeof args.cycle === "string") {
       if (!team) {
+        const documentOwner = officialOwnerReference(document, "team")
         const cycleOwner = Predicate.isObject(document.cycle) ? officialOwnerReference(document.cycle, "team") : undefined
-        const currentTeam = officialReferenceSelector(document.team) ?? officialReferenceSelector(cycleOwner)
+        const currentTeam = officialReferenceSelector(documentOwner) ?? officialReferenceSelector(cycleOwner)
         if (!currentTeam) {
           return yield* Effect.fail(new LinearDomainError({
             message: `cycle selector ${args.cycle} requires a team whose identity can be verified`,
@@ -526,6 +526,14 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
           }))
         }
         team = yield* resolveGetAssociation(gateway, "team", currentTeam, "get_team", { query: currentTeam }, ["id", "key", "name"])
+        const teamIdentity = officialEntityIdentity(team, ["key", "name"])
+        if (!teamIdentity) return yield* mutationShapeDrift(tool)
+        if (officialReferenceValues(documentOwner).length > 0 && !officialReferenceMatchesIdentity(documentOwner, teamIdentity)) {
+          return yield* mutationShapeDrift(tool)
+        }
+        if (officialReferenceValues(documentOwner).length === 0 && !officialReferenceMatchesIdentity(cycleOwner, teamIdentity)) {
+          return yield* mutationShapeDrift(tool)
+        }
         canonical.team = team.id
       }
       const cycles = yield* gateway.callOfficialTool("list_cycles", { teamId: team.id })
@@ -657,7 +665,7 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
           const cacheKey = selector.toLowerCase()
           const cached = resolvedReleases.get(cacheKey)
           if (cached) return cached
-          const releases = isUuid(selector)
+          const releases = officialSelectorIsImmutableId(selector)
             ? [yield* gateway.callOfficialTool("get_release", { id: selector })].filter(Predicate.isObject)
             : yield* fetchOfficialRows(gateway, "list_releases", {
                 query: selector,
@@ -769,9 +777,7 @@ const requireAssociationOwnership = (
   ownerIdentity: OfficialEntityIdentity,
   tool: string
 ): Effect.Effect<void, LinearDomainError> => {
-  const reference = owner === "pipeline"
-    ? ("pipelineId" in entity ? entity.pipelineId : entity.pipeline)
-    : officialOwnerReference(entity, owner)
+  const reference = officialOwnerReference(entity, owner)
   if (officialReferenceValues(reference).length === 0) return mutationShapeDrift(tool)
   return officialReferenceMatchesIdentity(reference, ownerIdentity)
     ? Effect.void
@@ -909,19 +915,17 @@ const mutationEntityMatches = (
   tool: string
 ): boolean => {
   if (typeof selector !== "string") return false
-  const references = tool === "save_project"
-    ? [entity.id, entity.name, entity.slugId]
+  const keys = tool === "save_project"
+    ? ["id", "name", "slugId"]
     : tool === "save_milestone"
-      ? [entity.id, entity.name]
-      : [entity.id, entity.slugId]
-  return references.some((reference) => typeof reference === "string" && referenceTextEqual(reference, selector))
+      ? ["id", "name"]
+      : ["id", "slugId"]
+  return officialEntityMatchesSelector(entity, selector, keys)
 }
 const userEntityMatches = (entity: Readonly<Record<string, unknown>>, selector: string): boolean =>
-  [entity.id, entity.name, entity.email, entity.displayName]
-    .some((reference) => typeof reference === "string" && referenceTextEqual(reference, selector))
+  officialEntityMatchesSelector(entity, selector, ["id", "name", "email", "displayName"])
 const referenceTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
 const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0
-const isUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value)
 const uniqueStrings = (values: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(values)]
 const lowerFirst = (value: string): string => `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`
 
