@@ -34,6 +34,14 @@ import {
   officialCollectionEqual as collectionEqual
 } from "./official-collection"
 import { runOfficialCommand } from "./official-commands"
+import {
+  officialEntityIdentity,
+  officialOwnerReference,
+  officialReferenceMatchesIdentity,
+  officialReferenceSelector,
+  officialReferenceValues,
+  type OfficialEntityIdentity
+} from "./official-identity"
 import { indeterminateOfficialMutation, officialMutationInspectionCommand } from "./official-inspection"
 import { validateFrontierCursor } from "./wayfinder"
 
@@ -272,21 +280,31 @@ const createOfficialIssue = (
 ): Effect.Effect<OutputValue, CliError> => Effect.gen(function*() {
   const title = readStringFlag(parsed.flags, "title")!
   const teamInput = readStringFlag(parsed.flags, "team")!
-  const team = yield* resolveOfficialTeamSelector(gateway, teamInput)
+  const teamIdentity = yield* resolveOfficialTeamIdentity(gateway, teamInput)
+  const team = teamIdentity.id
   const input = issuePropertyInput(parsed, description, labelsJson)
   input.title = title
   input.team = team
   if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialAssignableUserSelector(gateway, input.assignee)
-  if (typeof input.state === "string") input.state = yield* resolveOfficialStateSelector(gateway, team, input.state)
-  yield* resolveOfficialIssueSelectors(gateway, input, team)
+  if (typeof input.state === "string") input.state = yield* resolveOfficialStateSelector(gateway, teamIdentity, input.state)
+  yield* resolveOfficialIssueSelectors(gateway, input, teamIdentity)
   const candidates = yield* fetchOfficialRows(gateway, "list_issues", {
     query: title,
     team,
     limit: 100,
     includeArchived: false
   }, "issues")
+  for (const candidate of candidates) {
+    const candidateTeam = officialOwnerReference(candidate, "team")
+    if (!officialIssueIdentity(candidate) || !nonEmptyString(candidate.title) ||
+      officialReferenceValues(candidateTeam).length === 0 ||
+      !officialReferenceMatchesIdentity(candidateTeam, teamIdentity)) {
+      return yield* officialShapeError("list_issues candidate identity, title, and team")
+    }
+  }
   const matches = candidates.filter((issue) =>
-    issue.archivedAt == null && issue.title === title && officialReferenceMatches(issue.teamId ?? issue.team, team))
+    issue.archivedAt == null && issue.title === title &&
+    officialReferenceMatchesIdentity(officialOwnerReference(issue, "team"), teamIdentity))
   if (matches.length > 1) {
     return yield* Effect.fail(new LinearDomainError({
       message: `Multiple issues exactly match title ${title} in team ${teamInput}`,
@@ -462,14 +480,15 @@ const updateOfficialIssue = (
     }))
   }
   if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialAssignableUserSelector(gateway, input.assignee)
+  const teamSelector = officialTeamSelector(before)
+  if (!teamSelector) return yield* officialShapeError("get_issue team")
+  const teamIdentity = typeof input.state === "string" || typeof input.cycle === "string"
+    ? yield* resolveOfficialTeamIdentity(gateway, teamSelector)
+    : { id: teamSelector, aliases: [teamSelector] }
   if (typeof input.state === "string") {
-    const team = officialTeamSelector(before)
-    if (!team) return yield* officialShapeError("get_issue team")
-    input.state = yield* resolveOfficialStateSelector(gateway, team, input.state)
+    input.state = yield* resolveOfficialStateSelector(gateway, teamIdentity, input.state)
   }
-  const team = officialTeamSelector(before)
-  if (!team) return yield* officialShapeError("get_issue team")
-  yield* resolveOfficialIssueSelectors(gateway, input, team, before)
+  yield* resolveOfficialIssueSelectors(gateway, input, teamIdentity, before)
   if (officialIssueSatisfies(before, input)) {
     return officialIssueMutationOutput(
       before,
@@ -595,22 +614,36 @@ const resolveOfficialAssignableUserSelector = (
   return user.id as string
 })
 
-const resolveOfficialTeamSelector = (
+const resolveOfficialTeamIdentity = (
   gateway: LinearGateway,
   selector: string
-): Effect.Effect<string, CliError> => Effect.gen(function*() {
+): Effect.Effect<OfficialEntityIdentity, CliError> => Effect.gen(function*() {
   const team = yield* gateway.callOfficialTool("get_team", { query: selector })
-  if (!Predicate.isObject(team) || !nonEmptyString(team.id) || !officialEntityMatchesSelector(team, selector, ["id", "key", "name"])) {
+  if (!Predicate.isObject(team) || !officialEntityMatchesSelector(team, selector, ["id", "key", "name"])) {
     return yield* officialShapeError("get_team identity")
   }
+  const identity = officialEntityIdentity(team, ["key", "name"])
+  if (!identity) return yield* officialShapeError("get_team identity")
   yield* requireOfficialEntityActive("team", selector, team)
-  return team.id
+  return identity
+})
+
+const resolveOfficialProjectIdentity = (
+  gateway: LinearGateway,
+  selector: string
+): Effect.Effect<OfficialEntityIdentity, CliError> => Effect.gen(function*() {
+  const project = yield* gateway.callOfficialTool("get_project", { query: selector })
+  if (!Predicate.isObject(project) || !officialEntityMatchesSelector(project, selector, ["id", "name", "slugId"])) {
+    return yield* officialShapeError("get_project identity")
+  }
+  const identity = officialEntityIdentity(project, ["name", "slugId"])
+  return identity ?? (yield* officialShapeError("get_project identity"))
 })
 
 const resolveOfficialIssueSelectors = (
   gateway: LinearGateway,
   input: Record<string, unknown>,
-  team: string,
+  team: OfficialEntityIdentity,
   current?: Readonly<Record<string, unknown>>
 ): Effect.Effect<void, CliError> => Effect.gen(function*() {
   if (typeof input.delegate === "string" && !looksLikeUuid(input.delegate)) {
@@ -621,46 +654,43 @@ const resolveOfficialIssueSelectors = (
     }
     input.delegate = user.id
   }
+  let projectIdentity: OfficialEntityIdentity | undefined
   if (typeof input.project === "string") {
-    const selector = input.project
-    const project = yield* gateway.callOfficialTool("get_project", { query: selector })
-    if (!Predicate.isObject(project) || !nonEmptyString(project.id) || !officialEntityMatchesSelector(project, selector, ["id", "name", "slugId"])) {
-      return yield* officialShapeError("get_project identity")
-    }
-    input.project = project.id
+    projectIdentity = yield* resolveOfficialProjectIdentity(gateway, input.project)
+    input.project = projectIdentity.id
   }
   if (typeof input.parentId === "string") input.parentId = yield* resolveOfficialParentId(gateway, input.parentId, team)
   if (typeof input.cycle === "string") {
     const selector = input.cycle
-    const cycles = yield* gateway.callOfficialTool("list_cycles", { teamId: team })
+    const cycles = yield* gateway.callOfficialTool("list_cycles", { teamId: team.id })
     if (!Array.isArray(cycles) || cycles.some((cycle) => !Predicate.isObject(cycle))) return yield* officialShapeError("list_cycles")
     const activeCycles = (cycles as ReadonlyArray<Record<string, unknown>>).filter((cycle) => cycle.archivedAt == null)
-    input.cycle = yield* uniqueOfficialId("cycle", selector, activeCycles, ["id", "name", "number"])
+    const cycleId = yield* uniqueOfficialId("cycle", selector, activeCycles, ["id", "name", "number"])
+    const cycle = activeCycles.find((candidate) => candidate.id === cycleId)!
+    yield* requireOfficialOwnership("cycle", selector, cycle, "team", team)
+    input.cycle = cycleId
   }
   if (typeof input.milestone === "string") {
-    const project = input.project ?? referenceId(current?.project)
-    if (typeof project !== "string") {
-      return yield* Effect.fail(new LinearDomainError({
-        message: "Milestone resolution requires the issue project",
-        help: "Pass --project with --milestone, or assign the issue to a project first."
-      }))
+    if (!projectIdentity) {
+      const projectSelector = officialReferenceSelector(officialOwnerReference(current ?? {}, "project"))
+      if (!projectSelector) {
+        return yield* Effect.fail(new LinearDomainError({
+          message: "Milestone resolution requires the issue project",
+          help: "Pass --project with --milestone, or assign the issue to a project first."
+        }))
+      }
+      projectIdentity = yield* resolveOfficialProjectIdentity(gateway, projectSelector)
     }
     const selector = input.milestone
-    const milestone = yield* gateway.callOfficialTool("get_milestone", { project, query: selector })
+    const milestone = yield* gateway.callOfficialTool("get_milestone", { project: projectIdentity.id, query: selector })
     if (!Predicate.isObject(milestone) || !nonEmptyString(milestone.id) || !officialEntityMatchesSelector(milestone, selector, ["id", "name"])) {
       return yield* officialShapeError("get_milestone identity")
     }
     yield* requireOfficialEntityActive("milestone", selector, milestone)
-    const milestoneProject = referenceId(milestone.project)
-    if (milestoneProject !== undefined && !officialTextEqual(milestoneProject, project)) {
-      return yield* Effect.fail(new LinearDomainError({
-        message: `milestone ${selector} belongs to another project`,
-        help: "Choose a milestone from the issue's project."
-      }))
-    }
+    yield* requireOfficialOwnership("milestone", selector, milestone, "project", projectIdentity)
     input.milestone = milestone.id
   }
-  if (Array.isArray(input.labels)) input.labels = uniqueStrings(yield* resolveOfficialLabels(gateway, input.labels, team))
+  if (Array.isArray(input.labels)) input.labels = uniqueStrings(yield* resolveOfficialLabels(gateway, input.labels, team.id))
   for (const key of ["setReleases", "addReleases"] as const) {
     if (Array.isArray(input[key])) input[key] = uniqueStrings(yield* resolveOfficialReleases(gateway, input[key], false))
   }
@@ -730,21 +760,14 @@ const resolveOfficialIssueId = (
 const resolveOfficialParentId = (
   gateway: LinearGateway,
   selector: string,
-  team: string
+  team: OfficialEntityIdentity
 ): Effect.Effect<string, CliError> => Effect.gen(function*() {
   const issue = yield* gateway.callOfficialTool("get_issue", { id: selector })
   if (!Predicate.isObject(issue) || !nonEmptyString(issue.id) || !officialEntityMatchesSelector(issue, selector, ["id", "identifier"])) {
     return yield* officialShapeError("get_issue identity")
   }
   yield* requireOfficialEntityActive("issue", selector, issue)
-  const parentTeam = officialTeamSelector(issue)
-  if (!parentTeam) return yield* officialShapeError("get_issue team")
-  if (!officialTextEqual(parentTeam, team)) {
-    return yield* Effect.fail(new LinearDomainError({
-      message: `parent ${selector} belongs to another team`,
-      help: "Choose a parent from the issue's team."
-    }))
-  }
+  yield* requireOfficialOwnership("parent", selector, issue, "team", team)
   return issue.id
 })
 
@@ -815,22 +838,41 @@ const requireOfficialEntityActive = (
       help: `Choose an active ${noun}.`
     }))
 
+const requireOfficialOwnership = (
+  noun: string,
+  selector: string,
+  entity: Readonly<Record<string, unknown>>,
+  ownerNoun: "project" | "team",
+  owner: OfficialEntityIdentity
+): Effect.Effect<void, LinearDomainError> => {
+  const reference = officialOwnerReference(entity, ownerNoun)
+  if (officialReferenceValues(reference).length === 0) {
+    return officialShapeError(`${noun} ${ownerNoun} ownership`)
+  }
+  return officialReferenceMatchesIdentity(reference, owner)
+    ? Effect.void
+    : Effect.fail(new LinearDomainError({
+        message: `${noun} ${selector} belongs to another ${ownerNoun}`,
+        help: `Choose a ${noun} from the issue's ${ownerNoun}.`
+      }))
+}
+
 const looksLikeUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value)
-const referenceId = (value: unknown): string | undefined => Predicate.isObject(value) && typeof value.id === "string"
-  ? value.id
-  : typeof value === "string" ? value : undefined
 
 const resolveOfficialStateSelector = (
   gateway: LinearGateway,
-  team: string,
+  team: OfficialEntityIdentity,
   selector: string
 ): Effect.Effect<string, CliError> => Effect.gen(function*() {
-  const result = yield* gateway.callOfficialTool("list_issue_statuses", { team })
+  const result = yield* gateway.callOfficialTool("list_issue_statuses", { team: team.id })
   if (!Array.isArray(result) || result.some((state) => !Predicate.isObject(state))) {
     return yield* officialShapeError("list_issue_statuses")
   }
   const activeStates = (result as ReadonlyArray<Record<string, unknown>>).filter((state) => state.archivedAt == null)
-  return yield* uniqueOfficialId("workflow state", selector, activeStates, ["id", "name"])
+  const stateId = yield* uniqueOfficialId("workflow state", selector, activeStates, ["id", "name"])
+  const state = activeStates.find((candidate) => candidate.id === stateId)!
+  yield* requireOfficialOwnership("workflow state", selector, state, "team", team)
+  return stateId
 })
 
 const officialTeamSelector = (issue: Record<string, unknown>): string | undefined => {
@@ -915,7 +957,7 @@ const officialEntityMatchesSelector = (
 const officialIssueIdentity = (issue: Readonly<Record<string, unknown>>): string | undefined =>
   nonEmptyString(issue.id) ? issue.id : nonEmptyString(issue.identifier) ? issue.identifier : undefined
 
-const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0
+const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0
 
 const officialTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
 const uniqueStrings = (values: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(values)]

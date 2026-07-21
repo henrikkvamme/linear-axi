@@ -8,6 +8,12 @@ import {
   officialCollectionContains as collectionContains,
   officialCollectionEqual as collectionEqual
 } from "./official-collection"
+import {
+  officialEntityIdentity,
+  officialOwnerReference,
+  officialReferenceMatchesIdentity,
+  officialReferenceValues
+} from "./official-identity"
 import { indeterminateOfficialMutation, officialMutationInspectionCommand, officialReleaseNoteNeedsReleases } from "./official-inspection"
 import { truncateDetail, truncateText, type OutputValue } from "./output"
 import { richTextEqual } from "./rich-text"
@@ -381,9 +387,19 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
     if (!Predicate.isObject(project) || !nonEmptyString(project.id) || !mutationEntityMatches(project, args.project, "save_project")) {
       return yield* mutationShapeDrift(tool)
     }
+    const projectIdentity = officialEntityIdentity(project, ["name", "slugId"])
+    if (!projectIdentity) return yield* mutationShapeDrift(tool)
     const milestone = yield* gateway.callOfficialTool("get_milestone", { project: project.id, query: args.id })
     if (!Predicate.isObject(milestone) || !nonEmptyString(milestone.id) || !mutationEntityMatches(milestone, args.id, "save_milestone")) {
       return yield* mutationShapeDrift(tool)
+    }
+    const milestoneProject = officialOwnerReference(milestone, "project")
+    if (officialReferenceValues(milestoneProject).length === 0) return yield* mutationShapeDrift(tool)
+    if (!officialReferenceMatchesIdentity(milestoneProject, projectIdentity)) {
+      return yield* Effect.fail(new LinearDomainError({
+        message: `milestone ${args.id} belongs to another project`,
+        help: "Choose a milestone from the requested project."
+      }))
     }
     return { ...args, project: project.id, id: milestone.id }
   }
