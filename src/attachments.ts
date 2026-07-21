@@ -533,9 +533,9 @@ const safeAssetUrl = Effect.fn("Attachments.safeAssetUrl")(function*(raw: string
 
 const safeRedirectUrl = Effect.fn("Attachments.safeRedirectUrl")(function*(raw: string, current: string) {
   return yield* Effect.try({
-    try: () => decodeHttpsUrl(new URL(raw, current).toString()),
+    try: () => decodeLinearDownloadUrl(new URL(raw, current).toString()),
     catch: () => new LinearDomainError({
-      message: "Attachment download refused a non-HTTPS redirect",
+      message: "Attachment download refused a non-HTTPS redirect or an untrusted redirect origin",
       help: "Retry the command to request fresh authenticated content metadata."
     })
   })

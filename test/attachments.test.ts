@@ -385,6 +385,81 @@ describe("attachment content boundary", () => {
     expect(readFileSync(outputPath, "utf8")).toBe("concurrent replacement")
   })
 
+  test("content fetch refuses redirects outside Linear storage before requesting them", async () => {
+    const targets = [
+      "https://127.0.0.1/private",
+      "https://[::1]/private",
+      "https://169.254.169.254/latest/meta-data",
+      "https://localhost/private",
+      "https://uploads.linear.app.evil.test/private",
+      "https://evil-uploads.linear.app/private",
+      "https://uploads.linear.app:8443/private"
+    ]
+
+    for (const target of targets) {
+      const requests: Array<string> = []
+      const error = await Effect.runPromise(Effect.flip(runEffect(
+        ["attachments", "read", "--id", "attachment-1"],
+        detail(),
+        {
+          fetcher: async (input) => {
+            requests.push(String(input))
+            if (requests.length === 1) return new Response(null, { status: 307, headers: { location: target } })
+            return new Response("hello world\n", { status: 200 })
+          }
+        }
+      )))
+
+      expect(error.message).toContain("untrusted redirect")
+      expect(requests).toEqual(["https://uploads.linear.app/private/signed?secret=value"])
+    }
+  })
+
+  test("content fetch follows same-origin redirects without forwarding signed headers", async () => {
+    const requests: Array<{ readonly url: string; readonly headers: HeadersInit | undefined }> = []
+    const output = await run(
+      ["attachments", "read", "--id", "attachment-1"],
+      detail({ downloadRequest: { url: "https://uploads.linear.app/private/signed", headers: { "x-signed-secret": "private" } } }),
+      {
+        fetcher: async (input, init) => {
+          requests.push({ url: String(input), headers: init?.headers })
+          if (requests.length === 1) return new Response(null, { status: 307, headers: { location: "/private/next" } })
+          return new Response("hello world\n", { status: 200 })
+        }
+      }
+    )
+
+    expect(output).toMatchObject({ text: "hello world\n", truncated: false })
+    expect(requests).toEqual([
+      { url: "https://uploads.linear.app/private/signed", headers: { "x-signed-secret": "private" } },
+      { url: "https://uploads.linear.app/private/next", headers: {} }
+    ])
+  })
+
+  test("content fetch validates every redirect hop", async () => {
+    const requests: Array<string> = []
+    const error = await Effect.runPromise(Effect.flip(runEffect(
+      ["attachments", "read", "--id", "attachment-1"],
+      detail(),
+      {
+        fetcher: async (input) => {
+          const url = String(input)
+          requests.push(url)
+          if (requests.length === 1) {
+            return new Response(null, { status: 307, headers: { location: "/private/next" } })
+          }
+          return new Response(null, { status: 307, headers: { location: "https://10.0.0.1/private" } })
+        }
+      }
+    )))
+
+    expect(error.message).toContain("untrusted redirect")
+    expect(requests).toEqual([
+      "https://uploads.linear.app/private/signed?secret=value",
+      "https://uploads.linear.app/private/next"
+    ])
+  })
+
   test("download removes partial data on checksum mismatch and rejects non-HTTPS redirects", async () => {
     const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
     roots.push(root)

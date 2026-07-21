@@ -29,8 +29,8 @@ const LinearPrivateAssetUrl = HttpsUrl.check(Schema.makeFilter(
   { expected: "a private uploads.linear.app asset URL without query or fragment" }
 ))
 const LinearDownloadUrl = HttpsUrl.check(Schema.makeFilter(
-  (value) => new URL(value).hostname === "uploads.linear.app",
-  { expected: "an uploads.linear.app HTTPS URL" }
+  (value) => new URL(value).origin === "https://uploads.linear.app",
+  { expected: "an uploads.linear.app HTTPS URL on the default port" }
 ))
 
 const OptionalString = Schema.optionalKey(Schema.NullOr(Schema.String))
