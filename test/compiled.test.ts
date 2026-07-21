@@ -82,6 +82,7 @@ test("standalone binary runs without a source checkout", () => {
         expect(helpStdout).toContain("--priority <integer:0..4>")
         expect(helpStdout).toContain("--start-date-resolution <halfYear|month|quarter|year>")
         expect(helpStdout).toContain("conflicts: --add-teams-json, --remove-teams-json")
+        expect(helpStdout).toContain("--full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.")
       }
     }
 

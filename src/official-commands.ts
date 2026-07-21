@@ -50,13 +50,15 @@ interface OfficialCommand {
   readonly validate?: (flags: ReadonlyMap<string, string | boolean>) => string | undefined
 }
 
+const FULL_FLAG_DESCRIPTION = "Disable local projection and text truncation; associations still require explicit inclusion flags."
+
 const OFFICIAL_FLAG_DESCRIPTIONS: Readonly<Record<string, string>> = {
   id: "Entity ID or documented stable selector.",
   query: "Search text or documented entity selector.",
   limit: "Maximum results to return.",
   after: "Continue after this pagination cursor.",
   "order-by": "Sort results by this timestamp.",
-  full: "Return complete fields without concise projection or truncation.",
+  full: FULL_FLAG_DESCRIPTION,
   team: "Team name, key, or ID.",
   "team-id": "Team ID.",
   project: "Project name, slug, or ID.",
@@ -97,7 +99,7 @@ const commonList = {
   limit: { kind: "number", arg: "limit", integer: true, minimum: 1, maximum: 100, defaultValue: 50, description: "Maximum results to return." },
   after: { kind: "string", arg: "cursor", description: "Continue after this pagination cursor." },
   "order-by": { kind: "string", arg: "orderBy", values: ["createdAt", "updatedAt"], defaultValue: "updatedAt", description: "Sort results by this timestamp." },
-  full: { kind: "boolean", defaultValue: false, description: "Return complete fields without concise projection or truncation." }
+  full: { kind: "boolean", defaultValue: false, description: FULL_FLAG_DESCRIPTION }
 } as const
 const decodeStringArray = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)))
 
@@ -285,6 +287,10 @@ const renderResult = (
     }
     if (result.hasNextPage === true && (typeof result.cursor !== "string" || result.cursor.trim().length === 0)) {
       return shapeDrift(entry, "expected a non-blank cursor when hasNextPage is true")
+    }
+    const currentCursor = parsed.flags.get("after")
+    if (result.hasNextPage === true && typeof currentCursor === "string" && result.cursor === currentCursor) {
+      return shapeDrift(entry, "expected the next cursor to advance beyond --after")
     }
     const projection = full ? { items: rows, truncatedBodies: false } : projectRows(rows, entry.defaultFields ?? [])
     if (!full && projection.items.some((row) => Predicate.isObject(row) && Object.keys(row).length === 0)) {
@@ -703,7 +709,7 @@ function bool(arg?: string, defaultValue?: boolean): OfficialFlag {
   return { kind: "boolean", arg, defaultValue }
 }
 function fullFlag(): OfficialFlag {
-  return { kind: "boolean", defaultValue: false, description: "Return complete fields without concise projection or truncation." }
+  return { kind: "boolean", defaultValue: false, description: FULL_FLAG_DESCRIPTION }
 }
 function nullFlag(arg: string, conflictsWith: ReadonlyArray<string>): OfficialFlag {
   return { kind: "null", arg, conflictsWith }

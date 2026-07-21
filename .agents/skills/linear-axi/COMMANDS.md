@@ -469,7 +469,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --issue-id <id> - Issue identifier or ID.
   --project-id <id> - Project ID.
   --initiative-id <id> - Initiative ID.
@@ -490,7 +490,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi agent-skills list --limit 50
 ```
@@ -502,7 +502,7 @@ Usage: linear-axi agent-skills view --id <id>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi agent-skills view --id <skill-id> --full
 ```
@@ -515,7 +515,7 @@ Options (single-use unless marked repeatable):
   --help - Show command help.
   --team-id <id> (required) - Team ID.
   --type <current|previous|next> - Set or filter by type.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi cycles list --team-id <team-id> --type current
 ```
@@ -529,7 +529,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --query <query> - Search text or documented entity selector.
   --project-id <id> - Project ID.
   --initiative-id <id> - Initiative ID.
@@ -549,7 +549,7 @@ Usage: linear-axi documents view --id <id>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi documents view --id <id-or-slug> --full
 ```
@@ -572,7 +572,7 @@ Options (single-use unless marked repeatable):
   --team <selector> - Team name, key, or ID.
   --icon <text> - Icon name or emoji code, not raw Unicode.
   --color <#RRGGBB> - Six-digit hexadecimal color.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -589,7 +589,7 @@ Options (single-use unless marked repeatable):
   --relations | --no-relations (default: false) - Include relations.
   --customer-needs | --no-customer-needs (default: false) - Include customer needs.
   --releases | --no-releases (default: false) - Include releases.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi issues inspect --id ENG-123 --relations --full
 ```
@@ -603,7 +603,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --query <query> - Search text or documented entity selector.
   --team <selector> - Team name, key, or ID.
   --state <selector> - State type, name, or ID.
@@ -631,7 +631,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..50> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --query <query> - Search text or documented entity selector.
   --state <selector> - State type, name, or ID.
   --initiative <selector> - Initiative name or ID.
@@ -657,7 +657,7 @@ Options (single-use unless marked repeatable):
   --milestones | --no-milestones (default: false) - Include milestones.
   --members | --no-members (default: false) - Include members.
   --resources | --no-resources (default: false) - Include resources.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi projects view --query <id-name-or-slug> --full
 ```
@@ -692,7 +692,7 @@ Options (single-use unless marked repeatable):
   --add-initiatives-json <JSON-string-array> (conflicts: --initiatives-json) - Add the listed initiatives.
   --remove-initiatives-json <JSON-string-array> (conflicts: --initiatives-json) - Remove the listed initiatives.
   --initiatives-json <JSON-string-array> (conflicts: --add-initiatives-json, --remove-initiatives-json) - Replace the complete initiatives set.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -708,7 +708,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --name <text> - Literal name.
 Example:
   linear-axi project-labels list --name Platform
@@ -723,7 +723,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --query <query> - Search text or documented entity selector.
   --team <selector> - Team name, key, or ID.
   --type <continuous|scheduled> - Set or filter by type.
@@ -746,7 +746,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --query <query> - Search text or documented entity selector.
   --pipeline <selector> - Release pipeline name, slug, or ID.
   --stage <selector> - Release stage name, type, or ID.
@@ -769,7 +769,7 @@ Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
   --release-notes | --no-release-notes (default: false) - Include release notes.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi releases view --id <id-or-slug> --release-notes
 ```
@@ -798,7 +798,7 @@ Options (single-use unless marked repeatable):
   --completed-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Set or filter by completed at.
   --clear-completed-at (conflicts: --completed-at) - Clear completed at to null.
   --commit-sha <SHA> - Set or filter by commit sha.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -814,7 +814,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --query <query> - Search text or documented entity selector.
   --pipeline <selector> - Release pipeline name, slug, or ID.
   --release <selector> - Release ID or slug.
@@ -835,7 +835,7 @@ Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
   --releases | --no-releases (default: false) - Include releases.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi release-notes view --id <id-or-slug> --full
 ```
@@ -855,7 +855,7 @@ Options (single-use unless marked repeatable):
   --releases-json <JSON-string-array> (conflicts: --range-from, --range-to) - Replace the complete releases set.
   --range-from <selector> (conflicts: --releases-json) - First release in the note range.
   --range-to <selector> (conflicts: --releases-json) - Last release in the note range.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -871,7 +871,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --query <query> - Search text or documented entity selector.
   --owner <selector> - Set or filter by owner.
   --repo <text> - Set or filter by repo.
@@ -887,7 +887,7 @@ Usage: linear-axi diffs view --id <id>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi diffs view --id <url-or-id> --full
 ```
@@ -902,7 +902,7 @@ Options (single-use unless marked repeatable):
   --thread-id <id> - Set or filter by thread id.
   --resolved | --no-resolved - Filter by resolved.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort threads by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi diffs threads --id <url-or-id>
 ```
@@ -914,7 +914,7 @@ Usage: linear-axi milestones list --project <selector>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --project <selector> (required) - Project name, slug, or ID.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi milestones list --project <project>
 ```
@@ -927,7 +927,7 @@ Options (single-use unless marked repeatable):
   --help - Show command help.
   --project <selector> (required) - Project name, slug, or ID.
   --query <query> (required) - Search text or documented entity selector.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi milestones view --project <project> --query <id-or-name>
 ```
@@ -946,7 +946,7 @@ Options (single-use unless marked repeatable):
   --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Require the exact updatedAt from the latest full view before replacing rich text.
   --target-date <YYYY-MM-DD> - Set or filter by target date.
   --clear-target-date (conflicts: --target-date) - Clear target date to null.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -962,7 +962,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --query <query> - Search text or documented entity selector.
   --include-archived | --no-include-archived (default: false) - Include archived.
   --created-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
@@ -978,7 +978,7 @@ Usage: linear-axi teams view --query <query>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --query <query> (required) - Search text or documented entity selector.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi teams view --query <id-key-or-name>
 ```
@@ -992,7 +992,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --query <query> - Search text or documented entity selector.
   --team <selector> - Team name, key, or ID.
 Example:
@@ -1006,7 +1006,7 @@ Usage: linear-axi users view --query <query>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --query <query> (required) - Search text or documented entity selector.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi users view --query <id-name-or-email>
 ```
@@ -1032,7 +1032,7 @@ Options (single-use unless marked repeatable):
   --limit <integer:1..100> (default: 50) - Maximum results to return.
   --after <cursor> - Continue after this pagination cursor.
   --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --type <project|initiative> (required) - Set or filter by type.
   --project <selector> - Project name, slug, or ID.
   --initiative <selector> - Initiative name or ID.
@@ -1052,7 +1052,7 @@ Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
   --type <project|initiative> (required) - Set or filter by type.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Example:
   linear-axi status-updates view --id <update-id> --type project
 ```
@@ -1071,7 +1071,7 @@ Options (single-use unless marked repeatable):
   --clear-body (conflicts: --body) - Clear body to an empty string.
   --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Require the exact updatedAt from the latest full view before replacing rich text.
   --health <onTrack|atRisk|offTrack> - Set or filter by health.
-  --full (default: false) - Return complete fields without concise projection or truncation.
+  --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:

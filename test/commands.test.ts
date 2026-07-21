@@ -116,6 +116,7 @@ describe("runCommand", () => {
     expect(issueHelp).toContain("--limit <integer:1..100> (default: 50)")
     expect(issueHelp).toContain("--order-by <createdAt|updatedAt> (default: updatedAt)")
     expect(issueHelp).toContain("--include-archived | --no-include-archived (default: true)")
+    expect(issueHelp).toContain("--full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.")
   })
 
   test("official list commands pass validated arguments and render a minimal page", async () => {
@@ -241,6 +242,14 @@ describe("runCommand", () => {
       expect(cursorError._tag).toBe("LinearDomainError")
       expect(cursorError.message).toContain("non-blank cursor")
     }
+
+    const repeatedCursorError = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["users", "list", "--after", "cursor-1"], commandSpecs),
+      fakeGateway({ callOfficialTool: () => Effect.succeed({ users: [], hasNextPage: true, cursor: "cursor-1" }) }),
+      "/repo/src/main.ts"
+    )))
+    expect(repeatedCursorError._tag).toBe("LinearDomainError")
+    expect(repeatedCursorError.message).toContain("next cursor to advance beyond --after")
   })
 
   test("official list projections reject rows without any default fields", async () => {

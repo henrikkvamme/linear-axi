@@ -85,6 +85,7 @@ describe("linear-axi process", () => {
     expect(stdout).toContain("--priority <integer:0..4>")
     expect(stdout).toContain("--start-date-resolution <halfYear|month|quarter|year>")
     expect(stdout).toContain("conflicts: --add-teams-json, --remove-teams-json")
+    expect(stdout).toContain("--full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.")
   })
 
   test("prints OAuth setup guidance without credentials", () => {

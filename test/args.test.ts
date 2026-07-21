@@ -15,6 +15,13 @@ describe("parseArgs", () => {
     expect(parsed.flags.get("limit")).toBe("5")
   })
 
+  test("parses official pagination and full-output controls", () => {
+    const parsed = parseArgs(["users", "list", "--after", "cursor-1", "--full"], commandSpecs)
+
+    expect(parsed.flags.get("after")).toBe("cursor-1")
+    expect(parsed.flags.get("full")).toBe(true)
+  })
+
   test("parses workflow state listing and transition commands", () => {
     const list = parseArgs(["workflow-states", "list", "--team", "ENG"], commandSpecs)
     const change = parseArgs(["issues", "state", "--id", "ENG-123", "--state", "In Progress"], commandSpecs)
