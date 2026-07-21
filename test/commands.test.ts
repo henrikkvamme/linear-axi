@@ -2699,8 +2699,13 @@ describe("runCommand", () => {
     }
   })
 
-  test("advanced issue labels require explicit parent-group metadata", async () => {
-    for (const parentId of [undefined, 42] as const) {
+  test("advanced issue labels require unambiguous parent-group metadata", async () => {
+    for (const hierarchy of [
+      {},
+      { parentId: 42 },
+      { parent: {} },
+      { parentId: "platform-a", parent: { id: "platform-b" } }
+    ]) {
       let saves = 0
       const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
         "issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Bug"]', "--if-absent"
@@ -2714,7 +2719,7 @@ describe("runCommand", () => {
               archivedAt: null,
               isGroup: false,
               teamId: "team-id",
-              ...(parentId === undefined ? {} : { parentId })
+              ...hierarchy
             }],
             hasNextPage: false
           })
@@ -2726,6 +2731,44 @@ describe("runCommand", () => {
       expect(error.message).toContain("label parent group")
       expect(saves).toBe(0)
     }
+  })
+
+  test("advanced issue labels normalize nested parent groups", async () => {
+    let saves = 0
+    const output = await run([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Backend"]', "--if-absent"
+    ], fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
+        if (name === "list_issue_labels") return Effect.succeed({
+          labels: [{
+            id: "backend-id",
+            name: "Backend",
+            archivedAt: null,
+            isGroup: false,
+            parent: { id: "platform-id", name: "Platform" },
+            teamId: "team-id"
+          }],
+          hasNextPage: false
+        })
+        if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+        if (name === "save_issue") {
+          saves += 1
+          return Effect.succeed({ id: "issue-id" })
+        }
+        if (name === "get_issue") return Effect.succeed({
+          id: "issue-id",
+          title: "Launch",
+          teamId: "team-id",
+          archivedAt: null,
+          labels: [{ id: "backend-id" }]
+        })
+        throw new Error(`unexpected tool ${name}`)
+      }
+    }, false))
+
+    expect(output).toMatchObject({ changed: true })
+    expect(saves).toBe(1)
   })
 
   test("advanced issue labels reject duplicate parent groups before mutation", async () => {

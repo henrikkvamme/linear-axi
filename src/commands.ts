@@ -823,17 +823,52 @@ const resolveOfficialLabels = (
         help: "Choose an ordinary issue label."
       }))
     }
-    if (!Object.prototype.hasOwnProperty.call(label, "parentId") ||
-      (label.parentId !== null && !nonEmptyString(label.parentId))) {
-      return yield* officialShapeError("label parent group")
-    }
+    const parentId = yield* officialLabelParentId(label)
     yield* requireOfficialLabelScope(selector, label, team)
-    return { id, parentId: label.parentId }
+    return { id, parentId }
   }))
   const groupConflict = labelGroupSelectionError(labels)
   if (groupConflict) return yield* Effect.fail(groupConflict)
   return labels.map((label) => label.id)
 })
+
+const officialLabelParentId = (
+  label: Readonly<Record<string, unknown>>
+): Effect.Effect<string | null, LinearDomainError> => {
+  const hasParentId = Object.prototype.hasOwnProperty.call(label, "parentId")
+  const hasParent = Object.prototype.hasOwnProperty.call(label, "parent")
+  if (!hasParentId && !hasParent) return officialShapeError("label parent group")
+
+  const flattened = hasParentId
+    ? label.parentId === null
+      ? null
+      : nonEmptyString(label.parentId)
+        ? label.parentId
+        : undefined
+    : undefined
+  const nested = hasParent
+    ? label.parent === null
+      ? null
+      : Predicate.isObject(label.parent) && nonEmptyString(label.parent.id)
+        ? label.parent.id
+        : undefined
+    : undefined
+
+  if (hasParentId && flattened === undefined) return officialShapeError("label parent group")
+  if (hasParent && nested === undefined) return officialShapeError("label parent group")
+  if (hasParentId && hasParent) {
+    if (flattened === undefined || nested === undefined) return officialShapeError("label parent group")
+    if (flattened === null || nested === null
+      ? flattened !== nested
+      : !officialTextEqual(flattened, nested)) {
+      return officialShapeError("label parent group")
+    }
+  }
+  if (hasParentId) {
+    return flattened === undefined ? officialShapeError("label parent group") : Effect.succeed(flattened)
+  }
+  return nested === undefined ? officialShapeError("label parent group") : Effect.succeed(nested)
+}
 
 const requireOfficialLabelScope = (
   selector: string,
