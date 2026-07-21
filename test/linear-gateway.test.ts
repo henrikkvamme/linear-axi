@@ -947,25 +947,28 @@ describe("SDK LinearGateway conflict contracts", () => {
     }])
   })
 
-  test("ambiguous user names return candidate ids without mutating", async () => {
-    const first = user({ name: "Alex", email: "first@example.com" })
-    const second = user({
-      id: "77777777-7777-4777-8777-777777777777",
+  test("ambiguous user names return bounded candidate ids without private data", async () => {
+    const users = Array.from({ length: 15 }, (_, index) => user({
+      id: `77777777-7777-4777-8777-${String(index + 1).padStart(12, "0")}`,
       name: "Alex",
-      email: "second@example.com"
-    })
+      email: `alex-${index + 1}@example.com`
+    }))
     let updates = 0
     const client = clientWithIssues([issue()], {
-      users: async () => page([first, second]),
+      users: async () => page(users),
       updateIssue: async () => { updates += 1; return { success: true } }
     })
 
     const error = await Effect.runPromise(Effect.flip(
       makeLinearGateway({}, { client }).assignIssue({ id: "BEN-1", assignee: "Alex", replace: false })
     ))
+    const diagnostic = `${error.message}\n${error.help}`
 
-    expect(error.message).toContain(first.id)
-    expect(error.message).toContain(second.id)
+    expect(error.message).toContain("Ambiguous Linear user Alex")
+    expect(error.help).toContain("showing 10 of 15")
+    expect(error.help).toContain(users[9]!.id)
+    expect(error.help).not.toContain(users[10]!.id)
+    expect(diagnostic).not.toContain("@example.com")
     expect(updates).toBe(0)
   })
 

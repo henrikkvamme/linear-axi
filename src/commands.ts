@@ -883,14 +883,23 @@ const requireOfficialLabelScope = (
   label: Readonly<Record<string, unknown>>,
   team: OfficialEntityIdentity
 ): Effect.Effect<void, LinearDomainError> => {
+  const hasScope = Object.prototype.hasOwnProperty.call(label, "scope")
+  if (hasScope && !nonEmptyString(label.scope)) return officialShapeError("label team scope")
+  const scope = hasScope ? label.scope as string : undefined
+  const workspaceScope = scope !== undefined && officialTextEqual(scope, "workspace")
   const hasTeamId = Object.prototype.hasOwnProperty.call(label, "teamId")
   const hasTeam = Object.prototype.hasOwnProperty.call(label, "team")
   if (!hasTeamId && !hasTeam) {
-    return label.scope === "workspace" ? Effect.void : officialShapeError("label team scope")
+    return workspaceScope ? Effect.void : officialShapeError("label team scope")
   }
   const reference = officialOwnerReference(label, "team")
-  if (reference === null) return Effect.void
-  if (officialReferenceValues(reference).length === 0) return officialShapeError("label team scope")
+  if (reference === null) {
+    return scope === undefined || workspaceScope ? Effect.void : officialShapeError("label team scope")
+  }
+  if (officialReferenceValues(reference).length === 0 || workspaceScope) return officialShapeError("label team scope")
+  if (scope !== undefined && !officialTextEqual(scope, "team") && !officialReferenceMatchesIdentity(scope, team)) {
+    return officialShapeError("label team scope")
+  }
   return officialReferenceMatchesIdentity(reference, team)
     ? Effect.void
     : Effect.fail(new LinearDomainError({

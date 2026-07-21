@@ -629,13 +629,15 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
     const release = mutationTarget ?? (yield* mutationShapeDrift(tool))
     canonical.id = release.id
     if (typeof args.pipeline === "string" || typeof args.stage === "string") {
-      let pipelineSelector = typeof args.pipeline === "string" ? args.pipeline : undefined
-      if (!pipelineSelector) {
-        pipelineSelector = officialReferenceSelector(release.pipeline)
-        if (!pipelineSelector) return yield* mutationShapeDrift(tool)
-      }
-      const pipeline = yield* resolveReleasePipeline(gateway, pipelineSelector, typeof args.stage === "string")
-      if (typeof args.pipeline === "string") canonical.pipeline = pipeline.id
+      const { pipeline, pipelineWasExplicit } = yield* resolveMutationPipeline(
+        gateway,
+        "release",
+        release,
+        typeof args.pipeline === "string" ? args.pipeline : undefined,
+        typeof args.stage === "string",
+        tool
+      )
+      if (pipelineWasExplicit) canonical.pipeline = pipeline.id
       if (typeof args.stage === "string") {
         if (!Array.isArray(pipeline.stages) || pipeline.stages.some((stage) => !Predicate.isObject(stage))) return yield* mutationShapeDrift(tool)
         canonical.stage = yield* resolveExactOfficialId("release stage", args.stage, pipeline.stages as ReadonlyArray<Record<string, unknown>>, ["id", "name", "type"])
@@ -650,13 +652,15 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
     const releaseSelectors = Array.isArray(args.releases) ? args.releases.map(String) : []
     const rangeSelectors = [args.rangeFromRelease, args.rangeToRelease].filter((value): value is string => typeof value === "string")
     if (typeof args.pipeline === "string" || releaseSelectors.length > 0 || rangeSelectors.length > 0) {
-      let pipelineSelector = typeof args.pipeline === "string" ? args.pipeline : undefined
-      if (!pipelineSelector) {
-        pipelineSelector = officialReferenceSelector(releaseNote.pipeline)
-        if (!pipelineSelector) return yield* mutationShapeDrift(tool)
-      }
-      const pipeline = yield* resolveReleasePipeline(gateway, pipelineSelector, false)
-      if (typeof args.pipeline === "string") canonical.pipeline = pipeline.id
+      const { pipeline, pipelineWasExplicit } = yield* resolveMutationPipeline(
+        gateway,
+        "release note",
+        releaseNote,
+        typeof args.pipeline === "string" ? args.pipeline : undefined,
+        false,
+        tool
+      )
+      if (pipelineWasExplicit) canonical.pipeline = pipeline.id
       if (releaseSelectors.length > 0 || rangeSelectors.length > 0) {
         const pipelineIdentity = officialEntityIdentity(pipeline, ["name", "slugId"])
         if (!pipelineIdentity) return yield* mutationShapeDrift(tool)
@@ -800,6 +804,26 @@ const resolveReleasePipeline = Effect.fn("resolveReleasePipeline")(function*(
   const pipeline = yield* resolveExactOfficialEntity("release pipeline", selector, rows, ["id", "name", "slugId"])
   yield* requireOfficialEntityActive("release pipeline", selector, pipeline, "list_release_pipelines")
   return pipeline
+})
+
+const resolveMutationPipeline = Effect.fn("resolveMutationPipeline")(function*(
+  gateway: LinearGateway,
+  noun: "release" | "release note",
+  target: Readonly<Record<string, unknown>>,
+  explicitSelector: string | undefined,
+  includeStages: boolean,
+  tool: string
+) {
+  const ownerReference = officialOwnerReference(target, "pipeline")
+  const selector = explicitSelector ?? officialReferenceSelector(ownerReference)
+  if (!selector) return yield* mutationShapeDrift(tool)
+  const pipeline = yield* resolveReleasePipeline(gateway, selector, includeStages)
+  if (explicitSelector === undefined) {
+    const pipelineIdentity = officialEntityIdentity(pipeline, ["name", "slugId"])
+    if (!pipelineIdentity) return yield* mutationShapeDrift(tool)
+    yield* requireAssociationOwnership(noun, String(target.id), target, "pipeline", pipelineIdentity, tool)
+  }
+  return { pipeline, pipelineWasExplicit: explicitSelector !== undefined }
 })
 
 const mutationReadTool = (tool: string): string => ({

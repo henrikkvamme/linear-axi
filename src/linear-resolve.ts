@@ -1,6 +1,7 @@
 import { LinearError, type Issue, type IssueLabel, type IssueRelation, type LinearClient, type Team, type User, type WorkflowState } from "@linear/sdk"
 import { LinearDomainError } from "./errors"
 import { fetchAllPages } from "./linear-pagination"
+import { renderCandidateIds } from "./official-selector"
 
 export const resolveTeam = async (client: LinearClient, keyOrId: string): Promise<Team> => {
   const identity = normalizeUuid(keyOrId)
@@ -159,11 +160,13 @@ export const resolveUser = async (client: LinearClient, selector: string): Promi
     ? uuidEqual(user.id, identity)
     : [user.name, user.displayName, user.email]
       .some((value) => value?.toLowerCase() === normalized))
-  return exactlyOne(
-    `user ${selector}`,
-    matches,
-    (user) => `${user.id} (${user.name}${user.email ? `, ${user.email}` : ""})`
-  )
+  if (matches.length > 1) {
+    throw new LinearDomainError({
+      message: `Ambiguous Linear user ${selector}`,
+      help: renderCandidateIds(matches.map((user) => ({ id: user.id })))
+    })
+  }
+  return exactlyOne(`user ${selector}`, matches, (user) => user.id)
 }
 
 export const resolveAssignableUser = async (client: LinearClient, idOrMe: string): Promise<User> => {

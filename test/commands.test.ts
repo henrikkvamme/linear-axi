@@ -1287,6 +1287,54 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: true })
   })
 
+  test("stage-only release updates infer and validate normalized pipeline ownership", async () => {
+    for (const before of [
+      { id: "release-id", pipelineId: "pipeline-id", stage: null },
+      { id: "release-id", pipelineId: "pipeline-id", pipeline: { id: "other-pipeline" }, stage: null }
+    ]) {
+      let reads = 0
+      let saved: Readonly<Record<string, unknown>> | undefined
+      const result = runCommand(parseArgs([
+        "releases", "update", "--id", "release-id", "--stage", "started"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name, args) => {
+          if (name === "get_release") {
+            reads += 1
+            return Effect.succeed(reads === 1
+              ? before
+              : { id: "release-id", pipelineId: "pipeline-id", stage: { id: "stage-id" } })
+          }
+          if (name === "list_release_pipelines") {
+            return Effect.succeed({
+              releasePipelines: [{
+                id: "pipeline-id",
+                name: "Delivery",
+                archivedAt: null,
+                stages: [{ id: "stage-id", name: "In progress", type: "started" }]
+              }],
+              hasNextPage: false
+            })
+          }
+          if (name === "save_release") {
+            saved = args
+            return Effect.succeed({ id: "release-id" })
+          }
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }), "/repo/src/main.ts")
+
+      if ("pipeline" in before) {
+        const error = await Effect.runPromise(Effect.flip(result))
+        expect(error.message).toContain("belongs to another pipeline")
+        expect(saved).toBeUndefined()
+      } else {
+        const output = await Effect.runPromise(result)
+        expect(saved).toEqual({ id: "release-id", stage: "stage-id" })
+        expect(output).toMatchObject({ changed: true })
+      }
+    }
+  })
+
   test("release updates canonicalize pipeline and scoped stage selectors", async () => {
     let reads = 0
     let saved: Readonly<Record<string, unknown>> | undefined
@@ -1319,6 +1367,57 @@ describe("runCommand", () => {
 
     expect(saved).toEqual({ id: "release-id", pipeline: "pipeline-id", stage: "stage-id" })
     expect(output).toMatchObject({ changed: true })
+  })
+
+  test("release-note associations infer and validate normalized pipeline ownership", async () => {
+    for (const before of [
+      { id: "note-id", pipelineId: "pipeline-id" },
+      { id: "note-id", pipelineId: "pipeline-id", pipeline: { id: "other-pipeline" } }
+    ]) {
+      let verificationReads = 0
+      let saved: Readonly<Record<string, unknown>> | undefined
+      const result = runCommand(parseArgs([
+        "release-notes", "update", "--id", "note-id", "--releases-json", '["v2"]'
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name, args) => {
+          if (name === "get_release_note") {
+            if (args.includeReleases !== true) return Effect.succeed(before)
+            verificationReads += 1
+            return Effect.succeed({
+              ...before,
+              releases: verificationReads === 1 ? [] : [{ id: "release-id" }]
+            })
+          }
+          if (name === "list_release_pipelines") {
+            return Effect.succeed({
+              releasePipelines: [{ id: "pipeline-id", name: "Delivery", archivedAt: null }],
+              hasNextPage: false
+            })
+          }
+          if (name === "list_releases") {
+            return Effect.succeed({
+              releases: [{ id: "release-id", slugId: "v2", pipelineId: "pipeline-id" }],
+              hasNextPage: false
+            })
+          }
+          if (name === "save_release_note") {
+            saved = args
+            return Effect.succeed({ id: "note-id" })
+          }
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }), "/repo/src/main.ts")
+
+      if ("pipeline" in before) {
+        const error = await Effect.runPromise(Effect.flip(result))
+        expect(error.message).toContain("belongs to another pipeline")
+        expect(saved).toBeUndefined()
+      } else {
+        const output = await Effect.runPromise(result)
+        expect(saved).toEqual({ id: "note-id", releases: ["release-id"] })
+        expect(output).toMatchObject({ changed: true })
+      }
+    }
   })
 
   test("release-note updates canonicalize pipeline and release selectors", async () => {
@@ -3040,6 +3139,39 @@ describe("runCommand", () => {
     }
   })
 
+  test("advanced issue labels reject contradictory scope and team ownership", async () => {
+    for (const label of [
+      { scope: "team", teamId: null },
+      { scope: "workspace", teamId: "team-id" }
+    ]) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Bug"]', "--if-absent"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
+          if (name === "list_issue_labels") return Effect.succeed({
+            labels: [{
+              id: "label-id",
+              name: "Bug",
+              archivedAt: null,
+              isGroup: false,
+              parentId: null,
+              ...label
+            }],
+            hasNextPage: false
+          })
+          if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+          if (name === "save_issue") saves += 1
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }, false), "/repo/src/main.ts")))
+
+      expect(error.message).toContain("output shape drifted")
+      expect(saves).toBe(0)
+    }
+  })
+
   test("advanced label-only updates canonicalize the issue team before scope validation", async () => {
     const calls: string[] = []
     let reads = 0
@@ -3073,7 +3205,13 @@ describe("runCommand", () => {
   })
 
   test("advanced issue labels accept explicit workspace and canonical team scope", async () => {
-    for (const scope of [{ teamId: null }, { team: { id: "team-id" } }]) {
+    for (const scope of [
+      { teamId: null },
+      { scope: "workspace", teamId: null },
+      { team: { id: "team-id" } },
+      { scope: "team", team: { id: "team-id" } },
+      { scope: "ENG", teamId: "team-id" }
+    ]) {
       let saves = 0
       const output = await run([
         "issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Bug"]', "--if-absent"
