@@ -416,6 +416,7 @@ describe("attachment content boundary", () => {
     expect(readdirSync(outputDir)).toEqual([])
 
     const moved = join(root, "moved")
+    let swapCanceled = false
     const swapError = await Effect.runPromise(Effect.flip(runEffect(
       ["attachments", "download", "--id", "attachment-1", "--output", outputPath],
       detail({ size: 12 }),
@@ -423,11 +424,14 @@ describe("attachment content boundary", () => {
         fetcher: async () => {
           renameSync(outputDir, moved)
           symlinkSync(moved, outputDir)
-          return new Response("hello world\n", { status: 200 })
+          return new Response(new ReadableStream({
+            cancel() { swapCanceled = true }
+          }), { status: 200 })
         }
       }
     )))
     expect(swapError.message).toMatch(/directory changed|pin the destination directory/)
+    expect(swapCanceled).toBe(true)
     expect(existsSync(join(moved, "trace.txt"))).toBe(false)
     expect(readdirSync(moved)).toEqual([])
 
@@ -534,7 +538,11 @@ describe("resumable attachment upload", () => {
     const output = await runUpload(source, uploadGateway, {
       stateRoot: join(root, "state"),
       fetcher: async (_url, init) => {
-        expect(new Headers(init?.headers).has("authorization")).toBe(false)
+        const headers = new Headers(init?.headers)
+        expect(headers.has("authorization")).toBe(false)
+        expect(headers.get("content-length")).toBe("12")
+        expect(headers.get("content-type")).toBe("text/plain")
+        expect(headers.get("x-signed-secret")).toBe("header-secret")
         uploaded = await new Response(init?.body).text()
         return new Response(null, { status: 200 })
       }

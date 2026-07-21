@@ -271,16 +271,21 @@ const downloadAttachment = Effect.fn("Attachments.download")(function*(
       `Retry with \`--max-bytes ${attachment.size}\` if this exact size is intended.`
     )
   }
-  const response = yield* fetchContent(attachment, runtime)
-  const result = yield* writeAtomicDownload(response, target, attachment, maxBytes, runtime.requestTimeoutMs)
-  return {
-    attachmentId: attachment.id,
-    path: target.path,
-    bytes: result.bytes,
-    mediaType: attachment.mediaType,
-    sha256: result.sha256,
-    help: []
-  }
+  return yield* Effect.acquireUseRelease(
+    fetchContent(attachment, runtime),
+    (response) => Effect.gen(function*() {
+      const result = yield* writeAtomicDownload(response, target, attachment, maxBytes, runtime.requestTimeoutMs)
+      return {
+        attachmentId: attachment.id,
+        path: target.path,
+        bytes: result.bytes,
+        mediaType: attachment.mediaType,
+        sha256: result.sha256,
+        help: []
+      }
+    }),
+    cancelResponseBody
+  )
 })
 
 const getAttachment = Effect.fn("Attachments.get")(function*(parsed: ParsedArgs, gateway: LinearGateway) {
@@ -540,6 +545,12 @@ const safeRequestHeaders = Effect.fn("Attachments.safeRequestHeaders")(function*
   const forbidden = Object.keys(headers).find((key) => ["authorization", "cookie", "proxy-authorization"].includes(key.toLowerCase()))
   if (forbidden) return yield* domain("Linear returned forbidden credentials for the separate attachment host", "Retry the command and do not forward Linear authentication to asset storage.")
   return { ...headers }
+})
+
+const cancelResponseBody = Effect.fn("Attachments.cancelResponseBody")(function*(response: Response) {
+  yield* Effect.promise(async () => {
+    try { await response.body?.cancel() } catch {}
+  })
 })
 
 const readBoundedResponse = Effect.fn("Attachments.readBounded")(function*(
@@ -832,6 +843,7 @@ const decodePreparedUpload = Effect.fn("Attachments.decodePreparedUpload")(funct
 })
 
 const transferUpload = Effect.fn("Attachments.transferUpload")(function*(prepared: PreparedUpload, source: UploadSource, runtime: AttachmentRuntime) {
+  const headers = yield* uploadRequestHeaders(prepared.headers, source.size)
   let url = prepared.uploadUrl
   for (let redirects = 0; redirects <= 2; redirects += 1) {
     const controller = new AbortController()
@@ -841,7 +853,7 @@ const transferUpload = Effect.fn("Attachments.transferUpload")(function*(prepare
     const response = yield* Effect.tryPromise({
       try: () => abortablePromise(runtime.fetcher(url, {
         method: "PUT",
-        headers: prepared.headers,
+        headers,
         body,
         redirect: "manual",
         signal: controller.signal,
@@ -875,6 +887,21 @@ const transferUpload = Effect.fn("Attachments.transferUpload")(function*(prepare
       return yield* domain("Direct attachment upload refused an unsafe cross-origin redirect", "Retry the same upload command; never substitute an upload URL.")
     }
     url = redirected
+  }
+})
+
+const uploadRequestHeaders = Effect.fn("Attachments.uploadRequestHeaders")(function*(
+  headers: Readonly<Record<string, string>>,
+  size: number
+) {
+  const expected = String(size)
+  const contentLengths = Object.entries(headers).filter(([key]) => key.toLowerCase() === "content-length")
+  if (contentLengths.some(([, value]) => value !== expected)) {
+    return yield* domain("Linear returned an upload request with an invalid content length", "Retry the same upload command to prepare a fresh signed request.")
+  }
+  return {
+    ...Object.fromEntries(Object.entries(headers).filter(([key]) => key.toLowerCase() !== "content-length")),
+    "Content-Length": expected
   }
 })
 
