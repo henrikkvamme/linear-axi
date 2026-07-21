@@ -373,21 +373,34 @@ const decodeDetail = (value: unknown): AttachmentDetail | undefined => {
   }
 }
 
-const publicDetail = (attachment: AttachmentDetail) => ({
-  id: attachment.id,
-  filename: attachment.filename,
-  title: attachment.title,
-  subtitle: attachment.subtitle,
-  mediaType: attachment.mediaType,
-  size: attachment.size,
-  createdAt: attachment.createdAt,
-  updatedAt: attachment.updatedAt,
-  issue: attachment.issue,
-  content: {
-    available: attachment.contentUrl !== null,
-    transport: attachment.contentUrl === null ? "unavailable" : "authenticated-signed-https"
+const publicDetail = (attachment: AttachmentDetail) => {
+  const contentAvailable = isLinearDownloadUrl(attachment.contentUrl)
+  return {
+    id: attachment.id,
+    filename: attachment.filename,
+    title: attachment.title,
+    subtitle: attachment.subtitle,
+    mediaType: attachment.mediaType,
+    size: attachment.size,
+    createdAt: attachment.createdAt,
+    updatedAt: attachment.updatedAt,
+    issue: attachment.issue,
+    content: {
+      available: contentAvailable,
+      transport: contentAvailable ? "authenticated-signed-https" : "unavailable"
+    }
   }
-})
+}
+
+const isLinearDownloadUrl = (value: string | null): boolean => {
+  if (value === null) return false
+  try {
+    decodeLinearDownloadUrl(value)
+    return true
+  } catch {
+    return false
+  }
+}
 
 const decodeHeaders = (value: unknown): Readonly<Record<string, string>> => {
   let headers: HeadersWire
@@ -427,14 +440,33 @@ const makeTerminalSafe = (value: string): string => {
 }
 
 const decodeUtf8 = (bytes: Uint8Array, truncated: boolean): { readonly text: string; readonly bytesRead: number } | null => {
-  const attempts = truncated ? Math.min(3, bytes.byteLength) : 0
-  for (let removed = 0; removed <= attempts; removed += 1) {
-    const candidate = bytes.subarray(0, bytes.byteLength - removed)
-    try {
-      return { text: new TextDecoder("utf-8", { fatal: true }).decode(candidate), bytesRead: candidate.byteLength }
-    } catch {}
+  const incompleteSuffix = truncated ? incompleteUtf8SuffixLength(bytes) : 0
+  const candidate = bytes.subarray(0, bytes.byteLength - incompleteSuffix)
+  try {
+    return { text: new TextDecoder("utf-8", { fatal: true }).decode(candidate), bytesRead: candidate.byteLength }
+  } catch {
+    return null
   }
-  return null
+}
+
+const incompleteUtf8SuffixLength = (bytes: Uint8Array): number => {
+  if (bytes.byteLength === 0) return 0
+  let leadIndex = bytes.byteLength - 1
+  while (leadIndex >= 0 && leadIndex >= bytes.byteLength - 4 && (bytes[leadIndex]! & 0xc0) === 0x80) leadIndex -= 1
+  if (leadIndex < 0 || leadIndex < bytes.byteLength - 4) return 0
+  const lead = bytes[leadIndex]!
+  const expected = lead >= 0xc2 && lead <= 0xdf ? 2 : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 0
+  const present = bytes.byteLength - leadIndex
+  if (expected === 0 || present >= expected) return 0
+  for (let index = leadIndex + 1; index < bytes.byteLength; index += 1) {
+    if ((bytes[index]! & 0xc0) !== 0x80) return 0
+  }
+  if (present >= 2) {
+    const second = bytes[leadIndex + 1]!
+    if ((lead === 0xe0 && second < 0xa0) || (lead === 0xed && second > 0x9f) ||
+      (lead === 0xf0 && second < 0x90) || (lead === 0xf4 && second > 0x8f)) return 0
+  }
+  return present
 }
 
 const fetchContent = Effect.fn("Attachments.fetchContent")(function*(attachment: AttachmentDetail, runtime: AttachmentRuntime) {
@@ -512,7 +544,12 @@ const readBoundedResponse = Effect.fn("Attachments.readBounded")(function*(
   expectedSize: number | null,
   timeoutMs: number
 ) {
-  if (!response.body) return { bytes: new Uint8Array(), truncated: expectedSize !== null && expectedSize > 0 }
+  if (!response.body) {
+    if (expectedSize !== null && expectedSize > 0) {
+      return yield* domain("Attachment content length did not match its metadata", "Retry the command to request fresh attachment metadata.")
+    }
+    return { bytes: new Uint8Array(), truncated: false }
+  }
   const reader = response.body.getReader()
   const chunks: Array<Uint8Array> = []
   let total = 0
@@ -1096,6 +1133,8 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
     if (!syncFileDescriptor(parentHandle.fd)) {
       return yield* domain("Could not fsync the destination directory", "Check the destination filesystem and retry.")
     }
+    yield* Effect.promise(() => new Promise<void>((resolvePromise) => setImmediate(resolvePromise)))
+    yield* verifyCompletedDownloadParent(target)
     return { bytes, sha256 }
   }), (fd) => Effect.sync(() => {
     try { closeFileDescriptor(fd) } catch {}
@@ -1124,6 +1163,17 @@ const verifyDownloadParentUnchanged = Effect.fn("Attachments.verifyDownloadParen
   if (!current || !current.isDirectory() || current.isSymbolicLink() ||
     Number(current.dev) !== target.parentIdentity.dev || Number(current.ino) !== target.parentIdentity.ino) {
     return yield* domain("Destination directory changed during download; refusing unsafe install", "Inspect the destination path and retry explicitly.")
+  }
+})
+
+const verifyCompletedDownloadParent = Effect.fn("Attachments.verifyCompletedDownloadParent")(function*(target: DownloadTarget) {
+  const current = yield* Effect.promise(() => lstat(target.parent).catch(() => undefined))
+  if (!current || !current.isDirectory() || current.isSymbolicLink() ||
+    Number(current.dev) !== target.parentIdentity.dev || Number(current.ino) !== target.parentIdentity.ino) {
+    return yield* domain(
+      "Destination directory changed as download installation completed; output path was not confirmed",
+      "A verified file may remain in the original moved directory; inspect the destination paths before retrying."
+    )
   }
 })
 

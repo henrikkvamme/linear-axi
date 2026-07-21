@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs"
+import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, watch, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHash } from "node:crypto"
@@ -67,6 +67,17 @@ describe("attachment content boundary", () => {
     expect(JSON.stringify(output)).not.toMatch(/uploads\.linear|signed-secret|private/)
   })
 
+  test("view reports external link attachments as unavailable content", async () => {
+    const output = await run(["attachments", "view", "--id", "attachment-1"], detail({
+      downloadUrl: null,
+      url: "https://example.com/reference"
+    }))
+
+    expect(output).toMatchObject({
+      attachment: { content: { available: false, transport: "unavailable" } }
+    })
+  })
+
   test("read emits bounded UTF-8 text and makes terminal controls explicit", async () => {
     const bytes = new TextEncoder().encode("hello\u001b[31mred\u0007\u009b31m\n")
     const output = await run(["attachments", "read", "--id", "attachment-1", "--max-bytes", "64"], detail({ size: bytes.length }), {
@@ -114,6 +125,16 @@ describe("attachment content boundary", () => {
     expect(error.message).toContain("not valid UTF-8")
   })
 
+  test("read rejects a missing response body when metadata expects content", async () => {
+    const error = await Effect.runPromise(Effect.flip(runEffect(
+      ["attachments", "read", "--id", "attachment-1"],
+      detail({ size: 12 }),
+      { fetcher: async () => new Response(null, { status: 200 }) }
+    )))
+
+    expect(error.message).toContain("length did not match")
+  })
+
   test("read fails closed when content exceeds metadata or the full-text ceiling", async () => {
     const metadataError = await Effect.runPromise(Effect.flip(runEffect(
       ["attachments", "read", "--id", "attachment-1"],
@@ -137,6 +158,16 @@ describe("attachment content boundary", () => {
       fetcher: async () => new Response(bytes, { status: 200 })
     })
     expect(output).toMatchObject({ text: "abc", bytesRead: 3, truncated: true })
+  })
+
+  test("bounded read does not discard an invalid trailing UTF-8 byte", async () => {
+    const error = await Effect.runPromise(Effect.flip(runEffect(
+      ["attachments", "read", "--id", "attachment-1", "--max-bytes", "4"],
+      detail({ size: 5 }),
+      { fetcher: async () => new Response(new Uint8Array([0x61, 0x62, 0x63, 0xff, 0x64]), { status: 200 }) }
+    )))
+
+    expect(error.message).toContain("not valid UTF-8")
   })
 
   test("full read accepts unknown-size text exactly at the safety ceiling", async () => {
@@ -239,6 +270,37 @@ describe("attachment content boundary", () => {
     })
 
     expect(readFileSync(outputPath)).toEqual(Buffer.from(bytes))
+  })
+
+  test("download fails if the pinned destination directory moves during installation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
+    roots.push(root)
+    const outputDir = join(root, "output")
+    const moved = join(root, "moved")
+    mkdirSync(outputDir)
+    const outputPath = join(outputDir, "trace.txt")
+    const bytes = new TextEncoder().encode("hello world\n")
+    let swapped = false
+    const watcher = watch(outputDir, (_event, filename) => {
+      if (!swapped && filename === "trace.txt") {
+        swapped = true
+        renameSync(outputDir, moved)
+        mkdirSync(outputDir)
+      }
+    })
+
+    try {
+      const error = await Effect.runPromise(Effect.flip(runEffect(
+        ["attachments", "download", "--id", "attachment-1", "--output", outputPath],
+        detail({ size: bytes.length }),
+        { fetcher: async () => new Response(bytes) }
+      )))
+      expect(error.message).toContain("directory changed")
+      expect(existsSync(outputPath)).toBe(false)
+      expect(existsSync(join(moved, "trace.txt"))).toBe(true)
+    } finally {
+      watcher.close()
+    }
   })
 
   test("download removes partial data on checksum mismatch and rejects non-HTTPS redirects", async () => {
