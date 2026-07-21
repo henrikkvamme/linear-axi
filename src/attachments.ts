@@ -1,4 +1,4 @@
-import { constants, createReadStream } from "node:fs"
+import { constants, createReadStream, fstatSync } from "node:fs"
 import { chmod, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises"
 import { basename, dirname, resolve } from "node:path"
 import { randomUUID } from "node:crypto"
@@ -12,13 +12,15 @@ import type { OutputValue } from "./output"
 import {
   closeFileDescriptor,
   createPrivateFileAt,
+  ensureNativeFileSupport,
   statFileAt,
   syncFileDescriptor,
   tryLinkFileAt,
   tryLockFileDescriptor,
   tryUnlinkFileAt,
   unlockFileDescriptor,
-  writeFileDescriptor
+  writeFileDescriptor,
+  type NativeFileIdentity
 } from "./native-files"
 import {
   decodeAttachmentCursor,
@@ -122,6 +124,7 @@ const uploadAttachment = Effect.fn("Attachments.upload")(function*(
   return yield* Effect.acquireUseRelease(
     openUploadSource(parsed),
     (source) => Effect.gen(function*() {
+      yield* requireNativeFiles()
       const issue = yield* resolveUploadIssue(readStringFlag(parsed.flags, "issue")!, gateway)
       const title = readStringFlag(parsed.flags, "title") ?? null
       const subtitle = readStringFlag(parsed.flags, "subtitle") ?? null
@@ -260,6 +263,7 @@ const downloadAttachment = Effect.fn("Attachments.download")(function*(
   const output = readStringFlag(parsed.flags, "output")!
   const target = yield* validateDownloadTarget(output, parsed.flags.get("overwrite") === true)
   const maxBytes = yield* byteLimit(parsed, DEFAULT_DOWNLOAD_BYTES, OFFICIAL_MAX_BYTES)
+  yield* requireNativeFiles()
   const attachment = yield* getAttachment(parsed, gateway)
   if (attachment.size !== null && attachment.size > maxBytes) {
     return yield* domain(
@@ -1127,6 +1131,16 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
     if (!syncFileDescriptor(fd)) {
       return yield* domain("Could not fsync the downloaded attachment", "Check the destination filesystem and retry.")
     }
+    const stagedIdentity = yield* Effect.try({
+      try: () => {
+        const metadata = fstatSync(fd)
+        return { dev: Number(metadata.dev), ino: Number(metadata.ino) } satisfies NativeFileIdentity
+      },
+      catch: () => new LinearDomainError({
+        message: "Could not verify the private downloaded attachment",
+        help: "Check the destination filesystem and retry."
+      })
+    })
     yield* verifyDownloadParentUnchanged(target)
     yield* installAtomicDownload(parentHandle.fd, temp, destination)
     installed = true
@@ -1135,6 +1149,7 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
     }
     yield* Effect.promise(() => new Promise<void>((resolvePromise) => setImmediate(resolvePromise)))
     yield* verifyCompletedDownloadParent(target)
+    yield* verifyCompletedDownloadDestination(parentHandle.fd, destination, stagedIdentity)
     return { bytes, sha256 }
   }), (fd) => Effect.sync(() => {
     try { closeFileDescriptor(fd) } catch {}
@@ -1163,6 +1178,20 @@ const verifyDownloadParentUnchanged = Effect.fn("Attachments.verifyDownloadParen
   if (!current || !current.isDirectory() || current.isSymbolicLink() ||
     Number(current.dev) !== target.parentIdentity.dev || Number(current.ino) !== target.parentIdentity.ino) {
     return yield* domain("Destination directory changed during download; refusing unsafe install", "Inspect the destination path and retry explicitly.")
+  }
+})
+
+const verifyCompletedDownloadDestination = Effect.fn("Attachments.verifyCompletedDownloadDestination")(function*(
+  directoryFd: number,
+  destination: string,
+  expected: NativeFileIdentity
+) {
+  const current = statFileAt(directoryFd, destination)
+  if (!current || current.dev !== expected.dev || current.ino !== expected.ino) {
+    return yield* domain(
+      "Downloaded attachment destination changed before completion; output path was not confirmed",
+      "Inspect the destination path and retry explicitly."
+    )
   }
 })
 
@@ -1207,6 +1236,16 @@ const usage = Effect.fn("Attachments.usage")(function*(message: string, parsed: 
 
 const domain = Effect.fn("Attachments.domain")(function*(message: string, help: string) {
   return yield* Effect.fail(new LinearDomainError({ message, help }))
+})
+
+const requireNativeFiles = Effect.fn("Attachments.requireNativeFiles")(function*() {
+  yield* Effect.try({
+    try: ensureNativeFileSupport,
+    catch: () => new LinearDomainError({
+      message: "Safe local attachment file operations are unavailable on this platform",
+      help: "Run this attachment upload or download on a supported macOS or Linux installation."
+    })
+  })
 })
 
 const abortablePromise = <Value>(promise: Promise<Value>, signal: AbortSignal): Promise<Value> => {

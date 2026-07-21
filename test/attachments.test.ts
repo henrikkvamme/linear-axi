@@ -303,6 +303,73 @@ describe("attachment content boundary", () => {
     }
   })
 
+  test("download fails if the installed destination is replaced before completion", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
+    roots.push(root)
+    const outputPath = join(root, "trace.txt")
+    const displacedPath = join(root, "verified.txt")
+    const bytes = new TextEncoder().encode("hello world\n")
+    let replaced = false
+    const watcher = watch(root, (_event, filename) => {
+      if (!replaced && filename === "trace.txt" && existsSync(outputPath)) {
+        replaced = true
+        renameSync(outputPath, displacedPath)
+        writeFileSync(outputPath, "concurrent replacement")
+      }
+    })
+
+    try {
+      const error = await Effect.runPromise(Effect.flip(runEffect(
+        ["attachments", "download", "--id", "attachment-1", "--output", outputPath],
+        detail({ size: bytes.length }),
+        { fetcher: async () => new Response(bytes) }
+      )))
+      expect(replaced).toBe(true)
+      expect(error.message).toContain("destination changed")
+      expect(readFileSync(displacedPath)).toEqual(Buffer.from(bytes))
+      expect(readFileSync(outputPath, "utf8")).toBe("concurrent replacement")
+    } finally {
+      watcher.close()
+    }
+  })
+
+  test("download binds installation to the file descriptor that received the bytes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
+    roots.push(root)
+    const outputPath = join(root, "trace.txt")
+    const displacedPath = join(root, "displaced.partial")
+    const bytes = new TextEncoder().encode("hello world\n")
+    let replaced = false
+
+    const error = await Effect.runPromise(Effect.flip(runEffect(
+      ["attachments", "download", "--id", "attachment-1", "--output", outputPath],
+      detail({ size: bytes.length }),
+      {
+        fetcher: async () => new Response(new ReadableStream({
+          async pull(controller) {
+            while (!replaced) {
+              const temporary = readdirSync(root).find((name) => name.endsWith(".partial"))
+              if (temporary) {
+                const temporaryPath = join(root, temporary)
+                renameSync(temporaryPath, displacedPath)
+                writeFileSync(temporaryPath, "concurrent replacement")
+                replaced = true
+                break
+              }
+              await Bun.sleep(1)
+            }
+            controller.enqueue(bytes)
+            controller.close()
+          }
+        }))
+      }
+    )))
+    expect(replaced).toBe(true)
+    expect(error.message).toContain("destination changed")
+    expect(readFileSync(displacedPath)).toEqual(Buffer.from(bytes))
+    expect(readFileSync(outputPath, "utf8")).toBe("concurrent replacement")
+  })
+
   test("download removes partial data on checksum mismatch and rejects non-HTTPS redirects", async () => {
     const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
     roots.push(root)
