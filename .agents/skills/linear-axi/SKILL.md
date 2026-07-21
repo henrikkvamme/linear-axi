@@ -168,4 +168,5 @@ Conditional official command contracts:
 - Use `$effect-v4` for Effect code changes.
 - Add regression tests for new commands, especially unknown flags, missing required flags, truncation, and live-mutation guards.
 - Run `bun run skill:generate` after changing command specs or help.
+- To refresh the frozen official inventory, authenticate locally and run `bun run parity:capture --date YYYY-MM-DD`, then update the manifest observation date, hash, mappings, and rationales. Never hand-edit the generated inventory.
 - Verify with `bun run check`.

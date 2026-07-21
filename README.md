@@ -96,11 +96,13 @@ linear-axi wayfinder frontier --map <map-issue> --first 20
 linear-axi <command> --help
 ```
 
+See the bundled [command reference](.agents/skills/linear-axi/COMMANDS.md) for the complete generated reference for flags, usage, examples, and command-specific safety guidance.
+
 ### Official MCP parity
 
 The frozen authenticated inventory contains 47 official tools observed on 2026-07-20. The checked [parity manifest](docs/linear-mcp-parity.json) maps every tool exactly once, and [the captured schemas](docs/official-linear-mcp-tools.json) preserve the names, descriptions, and input schemas used for this release. `official` mappings call the hosted tool, `native` mappings use the SDK equivalent, `native+official` combines both routes, and the two decision statuses record intentionally unavailable operations or safe partial coverage with a rationale. `bun run parity:check` fails when the inventory, manifest, implemented command surface, or generated skill reference drifts.
 
-Official-backed commands initialize `https://mcp.linear.app/mcp` with the one credential selected by the Login precedence rules above and close the session when the command finishes. They need no separate MCP server configuration or second credential.
+Official-backed commands initialize `https://mcp.linear.app/mcp` with the one credential selected by the Login precedence rules above and close the session when the command finishes. They need no separate MCP server configuration or second credential. The MCP transport sends the credential in the Bearer authorization header and redacts its exact value from translated transport and tool errors.
 
 The practical object surface includes projects, documents, cycles, milestones, project labels, releases, release notes, release pipelines, users, agent skills, diffs, status updates, and documentation search. Read commands use `list`, `view`, `search`, or `inspect`; safe updates use `update`. Default list output is minimal and paginated. `--full` disables local projection and text truncation, but associations still require their explicit inclusion flags.
 
@@ -171,5 +173,7 @@ Only `linear-axi` is intended to be installable from this repo.
 ```sh
 bun run check
 ```
+
+After changing command specs or help, run `bun run skill:generate` to refresh the bundled command reference. To refresh the frozen official inventory, authenticate locally and run `bun run parity:capture --date YYYY-MM-DD`, then update the parity manifest's observation date, inventory hash, mappings, and rationales. Do not hand-edit the generated inventory. `bun run parity:check` verifies the inventory, manifest, command capabilities, and generated reference agree.
 
 Effect source is vendored under `repos/effect` as read-only reference material. Application code imports package dependencies, not the vendored source.
