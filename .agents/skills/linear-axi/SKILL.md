@@ -1,6 +1,6 @@
 ---
 name: linear-axi
-description: Linear AXI CLI workflow. Use when agents need to inspect or mutate Linear teams, issues, labels, relations, or comments, or project a Wayfinder frontier through the standalone `linear-axi` CLI.
+description: Linear AXI CLI workflow. Use when agents need to inspect or safely mutate Linear issues, projects, documents, releases, milestones, status updates, labels, relations, comments, teams, or users, or project a Wayfinder frontier.
 ---
 
 # Linear AXI
@@ -99,7 +99,15 @@ Official MCP intent mapping:
 - Inspect comments on any official parent: `comments search`; use `comments list` for the richer native issue view.
 - Discover official guidance: `agent-skills list|view` and `docs search`.
 
-The checked `docs/linear-mcp-parity.json` records all 47 observed official tools and every intentional `needs-decision`. Do not improvise raw GraphQL or retry an unavailable create, delete, or binary operation. Ask for the scoped decision named in that manifest.
+The checked `docs/linear-mcp-parity.json` records all 47 observed official tools and every intentional decision status. `official` commands use the hosted tool, `native` commands use the SDK equivalent, and `native+official` combines both routes. Official-backed commands use the one credential selected by the CLI's documented precedence and need no separate MCP configuration. Do not improvise raw GraphQL or retry an unavailable create, delete, or binary operation. Ask for the scoped decision named in that manifest.
+
+Conditional official command contracts:
+
+- `comments search` requires exactly one parent flag; `--status-update-type` requires `--status-update-id`.
+- `documents update` accepts at most one new parent among project, issue, initiative, and cycle. `--team` may accompany `--cycle` to identify its team; otherwise team participates in the one-parent constraint.
+- `release-notes update --range-from` and `--range-to` must be provided together and cannot combine with `--releases-json`.
+- `status-updates update` accepts at most one of project and initiative, and the parent flag must match `--type`.
+- Every official `update` needs at least one property. Dates, timestamps, numeric ranges, and JSON arrays are validated before dispatch.
 
 ## Rules
 
@@ -116,10 +124,10 @@ The checked `docs/linear-mcp-parity.json` records all 47 observed official tools
    Completion criterion: run any `create`, `update`, `assign`, `unassign`, `state`, `close`, `set`, `clear`, `add`, `remove`, or `replace` command only after explicit user intent identifies the target and desired change. Auth status and `list`, `view`, `inspect`, `search`, `threads`, and Wayfinder frontier commands remain read-only.
 
 5. Interpret state filters and resolve ambiguity explicitly.
-   Completion criterion: treat completed, canceled, and duplicate as the three terminal workflow types. `issues list --state open` excludes all three, while `--state closed` includes all three. Treat missing, archived, and ambiguous identity errors as authoritative. Never pick the first team, issue, label, workflow state, or user candidate. Retry with the intended UUID. Assign only to an active, unarchived, assignable user. Issue summaries retain attached archived label names, so use `labels list --issue <issue> --include-archived --fields id,name,archivedAt` when label status matters.
+   Completion criterion: treat completed, canceled, and duplicate as the three terminal workflow types. `issues list --state open` excludes all three, while `--state closed` includes all three. Treat missing, archived, and ambiguous identity errors as authoritative. Never pick the first team, issue, label, workflow state, or user candidate. Retry with the intended UUID. Official details must exactly match the requested immutable ID or documented stable alias. Product updates canonicalize selectors, reject archived targets and additions, and verify scoped ownership; removals may resolve archived associations for cleanup. Assign only to an active, unarchived, assignable user. Issue summaries retain attached archived label names, so use `labels list --issue <issue> --include-archived --fields id,name,parentId,archivedAt` when label status or group matters.
 
 6. Read TOON stdout directly.
-   Completion criterion: do not rerun only to confirm an empty state or error; structured output is authoritative unless the command exits non-zero.
+   Completion criterion: do not rerun only to confirm an empty state or error; structured output is authoritative unless the command exits non-zero. `--full` disables local projection and text truncation, but associations still require explicit inclusion flags. Before replacing rich text, follow the exact full-view command emitted for every truncated body, content, description, instructions, or text field.
 
 7. Let usage errors self-correct.
    Completion criterion: after exit `2`, use the `help` field from stdout to repair the command in one step.
@@ -140,10 +148,10 @@ The checked `docs/linear-mcp-parity.json` records all 47 observed official tools
     Completion criterion: fetch the full object, merge locally, then pass the exact canonical `updatedAt` emitted by the CLI to the update command's `--if-updated-at`. This applies to issue descriptions, document and release-note content, project, release, and milestone descriptions, status-update bodies, and their clear flags. On conflict, refetch and merge again. Linear has no atomic compare-and-swap, so do not claim that the final read/write race is eliminated.
 
 13. Reuse caller-retained mutation UUIDs safely.
-    Completion criterion: pass a UUID v4 with `--id` when issue, label, relation, or comment creation must be retryable. Reuse it only for the same intended content and scope. Rich-text comparisons tolerate normalized newlines and Linear's angle-bracket form for HTTP(S) Markdown links. Treat `changed: false` as a successful no-op and any UUID/content conflict as a stop condition.
+    Completion criterion: pass a UUID v4 with `--id` when issue, label, relation, or comment creation must be retryable. Reuse it only for the same intended content and scope. Rich-text comparisons tolerate normalized newlines and Linear's angle-bracket form for HTTP(S) Markdown links. Treat `changed: false` as a successful no-op and any UUID/content conflict as a stop condition. Issue state, parent, label add/remove/replace, and relation removal mutations read back the requested state; if reconciliation remains indeterminate, run the exact read-only inspection command and do not repeat the mutation.
 
 14. Use explicit set and clear semantics.
-    Completion criterion: never encode clearing as an empty selector or empty value. Use the matching `--clear-*` flag and never combine it with its set flag. Product rich-text clears still require the latest `--if-updated-at`. Use `labels add` or `labels remove` when unrelated labels must survive; `labels replace` deliberately removes labels omitted from its JSON array.
+    Completion criterion: never encode clearing as an empty selector or empty value. Use the matching `--clear-*` flag and never combine it with its set flag. Product rich-text clears still require the latest `--if-updated-at`. The same canonical team, initiative, release, or issue relation cannot appear in both add and remove sets. Use `labels add` or `labels remove` when unrelated labels must survive; `labels replace` deliberately removes labels omitted from its JSON array, and `[]` clears all labels. Issue label selections accept ordinary labels only and at most one child from each label group. Create a top-level group with `labels create --group`, or an ordinary child under a same-scope top-level group with `--parent`; never combine those flags.
 
 15. Follow every list cursor exactly.
     Completion criterion: for issue, label, relation, and comment lists, replay the same filters with the returned `page.endCursor` as `--after`. For Wayfinder frontier, use `pageInfo.endCursor`. Never construct or edit a cursor. Relation pages and issue-scoped exact-name label pages are current-state projections, so restart without `--after` when current membership matters.
