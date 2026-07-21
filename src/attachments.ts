@@ -9,6 +9,20 @@ import { readLimitFlag, readStringFlag } from "./args"
 import { LinearApiError, LinearDomainError, UsageError, type CliError } from "./errors"
 import type { LinearGateway } from "./linear"
 import type { OutputValue } from "./output"
+import {
+  decodeAttachmentCursor,
+  decodeAttachmentWire,
+  decodeFinalizedUpload,
+  decodeHeadersWire,
+  decodeIssueAttachments,
+  decodePreparedUploadWire,
+  decodeUploadRecovery,
+  type AttachmentWire,
+  type FinalizedUploadWire,
+  type HeadersWire,
+  type IssueAttachments,
+  type PreparedUploadWire
+} from "./attachment-schema"
 
 interface AttachmentSummary {
   readonly id: string
@@ -186,16 +200,20 @@ const readAttachment = Effect.fn("Attachments.read")(function*(
   }
   const response = yield* fetchContent(attachment, runtime)
   const read = yield* readBoundedResponse(response, limit, attachment.size, runtime.requestTimeoutMs)
-  let text: string
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(read.bytes)
-  } catch {
+  if (full && read.truncated) {
+    return yield* domain(
+      `Attachment ${attachment.id} exceeds the ${MAX_READ_BYTES}-byte full-text safety ceiling`,
+      `Run \`linear-axi attachments download --id ${attachment.id} --output <path>\` instead.`
+    )
+  }
+  const decoded = decodeUtf8(read.bytes, read.truncated)
+  if (!decoded) {
     return yield* domain(
       `Attachment ${attachment.id} is not valid UTF-8 text`,
       `Run \`linear-axi attachments download --id ${attachment.id} --output <path>\` to preserve the original bytes.`
     )
   }
-  const safeText = makeTerminalSafe(text)
+  const safeText = makeTerminalSafe(decoded.text)
   const truncated = read.truncated || (attachment.size !== null && attachment.size > read.bytes.byteLength)
   return {
     attachment: {
@@ -205,7 +223,7 @@ const readAttachment = Effect.fn("Attachments.read")(function*(
       size: attachment.size
     },
     text: safeText,
-    bytesRead: read.bytes.byteLength,
+    bytesRead: decoded.bytesRead,
     truncated,
     help: truncated && !full ? [`Run \`linear-axi attachments read --id ${attachment.id} --full\` for allowed text up to ${MAX_READ_BYTES} bytes.`] : []
   }
@@ -255,27 +273,16 @@ const listAttachments = Effect.fn("Attachments.list")(function*(parsed: ParsedAr
   const selector = readStringFlag(parsed.flags, "issue")!
   const limit = readLimitFlag(parsed.flags, 100)
   const offset = yield* decodeCursor(readStringFlag(parsed.flags, "after"), selector)
-  const issue = yield* gateway.callOfficialTool("get_issue", { id: selector })
-  if (!Predicate.isObject(issue) || !nonEmptyString(issue.id) || !matchesIssue(issue, selector)) {
+  const issueRaw = yield* gateway.callOfficialTool("get_issue", { id: selector })
+  let issue: IssueAttachments
+  try { issue = decodeIssueAttachments(issueRaw) } catch {
     return yield* Effect.fail(new LinearDomainError({
       message: "Official Linear MCP output shape drifted while resolving the attachment issue",
       help: `Run \`linear-axi issues view --id ${selector}\` to inspect the issue.`
     }))
   }
-  if (!Array.isArray(issue.attachments) || issue.attachments.some((value) => !Predicate.isObject(value))) {
-    return yield* Effect.fail(new LinearDomainError({
-      message: "Official Linear MCP output shape drifted: expected issue attachments",
-      help: `Run \`linear-axi issues view --id ${selector} --full\` to inspect the issue.`
-    }))
-  }
-  const all = issue.attachments.map(toSummary)
-  if (all.some((value) => value === undefined)) {
-    return yield* Effect.fail(new LinearDomainError({
-      message: "Official Linear MCP output shape drifted: an attachment had no immutable id",
-      help: `Run \`linear-axi issues view --id ${selector} --full\` to inspect the issue.`
-    }))
-  }
-  const rows = all as ReadonlyArray<AttachmentSummary>
+  if (!matchesIssue(issue, selector)) return yield* domain("Official Linear MCP returned a different issue", `Run \`linear-axi issues view --id ${selector}\` to inspect it.`)
+  const rows = issue.attachments.map(toSummary)
   if (offset > rows.length) {
     return yield* Effect.fail(new UsageError({
       message: "invalid --after cursor: attachment page is no longer available",
@@ -285,7 +292,7 @@ const listAttachments = Effect.fn("Attachments.list")(function*(parsed: ParsedAr
   const items = rows.slice(offset, offset + limit)
   const nextOffset = offset + items.length
   const hasNext = nextOffset < rows.length
-  const identifier = nonEmptyString(issue.identifier) ? issue.identifier : undefined
+  const identifier = Predicate.isString(issue.identifier) && issue.identifier.length > 0 ? issue.identifier : undefined
   return {
     issue: { id: issue.id, ...(identifier ? { identifier } : {}) },
     count: `${items.length} ${items.length === 1 ? "attachment" : "attachments"} shown`,
@@ -301,8 +308,7 @@ const listAttachments = Effect.fn("Attachments.list")(function*(parsed: ParsedAr
   }
 })
 
-const toSummary = (value: Record<string, unknown>): AttachmentSummary | undefined => {
-  if (!nonEmptyString(value.id)) return undefined
+const toSummary = (value: AttachmentWire): AttachmentSummary => {
   return {
     id: value.id,
     filename: firstString(value.filename, value.name),
@@ -315,32 +321,32 @@ const toSummary = (value: Record<string, unknown>): AttachmentSummary | undefine
 }
 
 const decodeDetail = (value: unknown): AttachmentDetail | undefined => {
-  if (!Predicate.isObject(value)) return undefined
-  const summary = toSummary(value)
-  if (!summary) return undefined
-  const request = Predicate.isObject(value.downloadRequest)
-    ? value.downloadRequest
-    : Predicate.isObject(value.contentRequest)
-      ? value.contentRequest
+  let attachment: AttachmentWire
+  try { attachment = decodeAttachmentWire(value) } catch { return undefined }
+  const summary = toSummary(attachment)
+  const request = attachment.downloadRequest
+    ? attachment.downloadRequest
+    : attachment.contentRequest
+      ? attachment.contentRequest
       : undefined
   const contentUrl = firstString(
     request?.url,
-    value.downloadUrl,
-    value.contentUrl,
-    value.assetUrl,
-    value.url
+    attachment.downloadUrl,
+    attachment.contentUrl,
+    attachment.assetUrl,
+    attachment.url
   )
-  const issue = Predicate.isObject(value.issue) && nonEmptyString(value.issue.id)
-    ? { id: value.issue.id, ...(nonEmptyString(value.issue.identifier) ? { identifier: value.issue.identifier } : {}) }
+  const issue = attachment.issue
+    ? { id: attachment.issue.id, ...(Predicate.isString(attachment.issue.identifier) && attachment.issue.identifier.length > 0 ? { identifier: attachment.issue.identifier } : {}) }
     : null
   return {
     ...summary,
-    subtitle: firstString(value.subtitle),
+    subtitle: firstString(attachment.subtitle),
     issue,
     contentUrl,
-    assetUrl: firstString(value.assetUrl, value.url),
+    assetUrl: firstString(attachment.assetUrl, attachment.url),
     headers: decodeHeaders(request?.headers),
-    sha256: validSha256(firstString(value.sha256, value.checksum))
+    sha256: validSha256(firstString(attachment.sha256, attachment.checksum))
   }
 }
 
@@ -361,15 +367,11 @@ const publicDetail = (attachment: AttachmentDetail) => ({
 })
 
 const decodeHeaders = (value: unknown): Readonly<Record<string, string>> => {
-  if (Predicate.isObject(value)) {
-    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
-  }
-  if (Array.isArray(value)) {
-    return Object.fromEntries(value.flatMap((entry) => Predicate.isObject(entry) && nonEmptyString(entry.key) && typeof entry.value === "string"
-      ? [[entry.key, entry.value] as const]
-      : []))
-  }
-  return {}
+  let headers: HeadersWire
+  try { headers = decodeHeadersWire(value) } catch { return {} }
+  return Array.isArray(headers)
+    ? Object.fromEntries(headers.map((entry) => [entry.key, entry.value]))
+    : headers as Readonly<Record<string, string>>
 }
 
 const validSha256 = (value: string | null): string | null =>
@@ -402,6 +404,17 @@ const makeTerminalSafe = (value: string): string => {
     }
   }
   return output
+}
+
+const decodeUtf8 = (bytes: Uint8Array, truncated: boolean): { readonly text: string; readonly bytesRead: number } | null => {
+  const attempts = truncated ? Math.min(3, bytes.byteLength) : 0
+  for (let removed = 0; removed <= attempts; removed += 1) {
+    const candidate = bytes.subarray(0, bytes.byteLength - removed)
+    try {
+      return { text: new TextDecoder("utf-8", { fatal: true }).decode(candidate), bytesRead: candidate.byteLength }
+    } catch {}
+  }
+  return null
 }
 
 const fetchContent = Effect.fn("Attachments.fetchContent")(function*(attachment: AttachmentDetail, runtime: AttachmentRuntime) {
@@ -447,36 +460,39 @@ const fetchContent = Effect.fn("Attachments.fetchContent")(function*(attachment:
   return yield* domain(`Attachment ${attachment.id} download exceeded the redirect safety limit`, "Retry the command.")
 })
 
-const safeAssetUrl = (raw: string): Effect.Effect<string, LinearDomainError> => Effect.try({
-  try: () => {
-    const url = new URL(raw)
-    if (url.protocol !== "https:" || url.username || url.password || url.hostname !== "uploads.linear.app") throw new Error("unsafe")
-    return url.toString()
-  },
-  catch: () => new LinearDomainError({
-    message: "Linear returned an unsafe attachment content location",
-    help: "Retry the command and do not supply or substitute a download URL."
+const safeAssetUrl = Effect.fn("Attachments.safeAssetUrl")(function*(raw: string) {
+  return yield* Effect.try({
+    try: () => {
+      const url = new URL(raw)
+      if (url.protocol !== "https:" || url.username || url.password || url.hostname !== "uploads.linear.app") throw new Error("unsafe")
+      return url.toString()
+    },
+    catch: () => new LinearDomainError({
+      message: "Linear returned an unsafe attachment content location",
+      help: "Retry the command and do not supply or substitute a download URL."
+    })
   })
 })
 
-const safeRedirectUrl = (raw: string, current: string): Effect.Effect<string, LinearDomainError> => Effect.try({
-  try: () => {
-    const url = new URL(raw, current)
-    if (url.protocol !== "https:" || url.username || url.password) throw new Error("unsafe")
-    return url.toString()
-  },
-  catch: () => new LinearDomainError({
-    message: "Attachment download refused a non-HTTPS redirect",
-    help: "Retry the command to request fresh authenticated content metadata."
+const safeRedirectUrl = Effect.fn("Attachments.safeRedirectUrl")(function*(raw: string, current: string) {
+  return yield* Effect.try({
+    try: () => {
+      const url = new URL(raw, current)
+      if (url.protocol !== "https:" || url.username || url.password) throw new Error("unsafe")
+      return url.toString()
+    },
+    catch: () => new LinearDomainError({
+      message: "Attachment download refused a non-HTTPS redirect",
+      help: "Retry the command to request fresh authenticated content metadata."
+    })
   })
 })
 
-const safeRequestHeaders = (headers: Readonly<Record<string, string>>): Effect.Effect<Record<string, string>, LinearDomainError> => {
+const safeRequestHeaders = Effect.fn("Attachments.safeRequestHeaders")(function*(headers: Readonly<Record<string, string>>) {
   const forbidden = Object.keys(headers).find((key) => ["authorization", "cookie", "proxy-authorization"].includes(key.toLowerCase()))
-  return forbidden
-    ? domain("Linear returned forbidden credentials for the separate attachment host", "Retry the command and do not forward Linear authentication to asset storage.")
-    : Effect.succeed({ ...headers })
-}
+  if (forbidden) return yield* domain("Linear returned forbidden credentials for the separate attachment host", "Retry the command and do not forward Linear authentication to asset storage.")
+  return { ...headers }
+})
 
 const readBoundedResponse = Effect.fn("Attachments.readBounded")(function*(
   response: Response,
@@ -496,6 +512,10 @@ const readBoundedResponse = Effect.fn("Attachments.readBounded")(function*(
         catch: () => new LinearDomainError({ message: "Attachment content stream failed", help: "Retry the same command." })
       })
       if (next.done) break
+      if (expectedSize !== null && total + next.value.byteLength > expectedSize) {
+        void reader.cancel().catch(() => undefined)
+        return yield* domain("Attachment content exceeded its metadata size", "Retry the command to request fresh attachment metadata.")
+      }
       const remaining = limit - total
       if (next.value.byteLength > remaining) {
         if (remaining > 0) chunks.push(next.value.subarray(0, remaining))
@@ -616,11 +636,14 @@ const assertSourceUnchanged = Effect.fn("Attachments.assertSourceUnchanged")(fun
 
 const resolveUploadIssue = Effect.fn("Attachments.resolveUploadIssue")(function*(selector: string, gateway: LinearGateway) {
   const value = yield* gateway.callOfficialTool("get_issue", { id: selector })
-  if (!Predicate.isObject(value) || !nonEmptyString(value.id) || !nonEmptyString(value.identifier) || !matchesIssue(value, selector) ||
-    !Array.isArray(value.attachments) || value.attachments.some((attachment) => !Predicate.isObject(attachment))) {
+  let issue: IssueAttachments
+  try { issue = decodeIssueAttachments(value) } catch {
     return yield* domain("Official Linear MCP output shape drifted while resolving the upload issue", `Run \`linear-axi issues view --id ${selector} --full\` to inspect it.`)
   }
-  return { id: value.id, identifier: value.identifier, attachments: value.attachments as ReadonlyArray<Record<string, unknown>> }
+  if (!Predicate.isString(issue.identifier) || issue.identifier.length === 0 || !matchesIssue(issue, selector)) {
+    return yield* domain("Official Linear MCP returned a different upload issue", `Run \`linear-axi issues view --id ${selector} --full\` to inspect it.`)
+  }
+  return { id: issue.id, identifier: issue.identifier, attachments: issue.attachments }
 })
 
 const uploadRecoveryKey = (
@@ -630,23 +653,23 @@ const uploadRecoveryKey = (
   subtitle: string | null
 ): string => new Bun.CryptoHasher("sha256").update(JSON.stringify({ issueId, sha256: source.sha256, mediaType: source.mediaType, title, subtitle })).digest("hex")
 
-const loadRecovery = (path: string): Effect.Effect<UploadRecovery | null, LinearDomainError> => Effect.tryPromise({
-  try: async () => {
-    try {
-      const metadata = await lstat(path)
-      if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("unsafe recovery file")
-      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
-      let text: string
-      try { text = await handle.readFile("utf8") } finally { await handle.close() }
-      const value = JSON.parse(text) as unknown
-      if (!Predicate.isObject(value) || value.version !== 1 || !["prepared", "transferred", "finalized"].includes(String(value.stage))) throw new Error("shape")
-      return value as unknown as UploadRecovery
-    } catch (cause) {
-      if (Predicate.hasProperty(cause, "code") && cause.code === "ENOENT") return null
-      throw cause
-    }
-  },
-  catch: () => new LinearDomainError({ message: "Private upload recovery metadata is unreadable or invalid", help: "Inspect the recovery directory permissions before retrying." })
+const loadRecovery = Effect.fn("Attachments.loadRecovery")(function*(path: string) {
+  return yield* Effect.tryPromise({
+    try: async () => {
+      try {
+        const metadata = await lstat(path)
+        if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("unsafe recovery file")
+        const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+        let text: string
+        try { text = await handle.readFile("utf8") } finally { await handle.close() }
+        return decodeUploadRecovery(JSON.parse(text)) as UploadRecovery
+      } catch (cause) {
+        if (Predicate.hasProperty(cause, "code") && cause.code === "ENOENT") return null
+        throw cause
+      }
+    },
+    catch: () => new LinearDomainError({ message: "Private upload recovery metadata is unreadable or invalid", help: "Inspect the recovery directory permissions before retrying." })
+  })
 })
 
 const recoveryMatches = (
@@ -698,19 +721,20 @@ interface PreparedUpload {
   readonly headers: Readonly<Record<string, string>>
 }
 
-const decodePreparedUpload = (value: unknown): Effect.Effect<PreparedUpload, LinearDomainError> => {
-  if (!Predicate.isObject(value) || !nonEmptyString(value.assetUrl) || !Predicate.isObject(value.uploadRequest) ||
-    !nonEmptyString(value.uploadRequest.url)) {
-    return domain("Official Linear MCP output shape drifted while preparing the upload", "Retry the upload from the same explicit file intent.")
+const decodePreparedUpload = Effect.fn("Attachments.decodePreparedUpload")(function*(value: unknown) {
+  let prepared: PreparedUploadWire
+  try { prepared = decodePreparedUploadWire(value) } catch {
+    return yield* domain("Official Linear MCP output shape drifted while preparing the upload", "Retry the upload from the same explicit file intent.")
   }
-  const assetUrl = validPrivateAssetUrl(value.assetUrl)
-  const uploadUrl = validUploadUrl(value.uploadRequest.url)
-  const headers = decodeHeaders(value.uploadRequest.headers)
+  const assetUrl = validPrivateAssetUrl(prepared.assetUrl)
+  const uploadUrl = validUploadUrl(prepared.uploadRequest.url)
+  const headers = decodeHeaders(prepared.uploadRequest.headers)
   if (!assetUrl || !uploadUrl || Object.keys(headers).length === 0) {
-    return domain("Linear returned an unsafe or incomplete upload request", "Retry the upload and do not substitute an upload URL or headers.")
+    return yield* domain("Linear returned an unsafe or incomplete upload request", "Retry the upload and do not substitute an upload URL or headers.")
   }
-  return safeRequestHeaders(headers).pipe(Effect.map((safeHeaders) => ({ assetUrl, uploadUrl, headers: safeHeaders })))
-}
+  const safeHeaders = yield* safeRequestHeaders(headers)
+  return { assetUrl, uploadUrl, headers: safeHeaders }
+})
 
 const validPrivateAssetUrl = (raw: string): string | null => {
   try {
@@ -788,11 +812,9 @@ const finalizeUpload = Effect.fn("Attachments.finalizeUpload")(function*(
     message: "Attachment finalize response was lost or failed after dispatch; mutation outcome is unknown",
     help: `Retry \`linear-axi attachments upload --issue ${issue.identifier} --file <same-file>\`; recovery will verify before finalizing again.`
   })))
-  const attachmentId = Predicate.isObject(result) && nonEmptyString(result.id)
-    ? result.id
-    : Predicate.isObject(result) && Predicate.isObject(result.attachment) && nonEmptyString(result.attachment.id)
-      ? result.attachment.id
-      : null
+  let finalized: FinalizedUploadWire | undefined
+  try { finalized = decodeFinalizedUpload(result) } catch {}
+  const attachmentId = finalized && "id" in finalized ? finalized.id : finalized?.attachment.id ?? null
   if (!attachmentId) {
     return yield* domain("Official Linear MCP output shape drifted after attachment finalize", `Retry the same upload command; recovery will inspect ${issue.identifier} before another finalize.`)
   }
@@ -802,16 +824,16 @@ const finalizeUpload = Effect.fn("Attachments.finalizeUpload")(function*(
 })
 
 const findRecoveredAttachment = (
-  attachments: ReadonlyArray<Record<string, unknown>>,
+  attachments: ReadonlyArray<AttachmentWire>,
   assetUrl: string,
   source: UploadSource,
   title: string | null
 ): { readonly id: string } | null => {
-  const match = attachments.find((attachment) => nonEmptyString(attachment.id) &&
+  const match = attachments.find((attachment) =>
     firstString(attachment.assetUrl, attachment.url, attachment.downloadUrl) === assetUrl &&
     (firstString(attachment.filename, attachment.name) === null || firstString(attachment.filename, attachment.name) === source.filename) &&
     (title === null || firstString(attachment.title) === title))
-  return match && nonEmptyString(match.id) ? { id: match.id } : null
+  return match ? { id: match.id } : null
 }
 
 const verifyUploadedAttachment = Effect.fn("Attachments.verifyUploadedAttachment")(function*(
@@ -824,7 +846,7 @@ const verifyUploadedAttachment = Effect.fn("Attachments.verifyUploadedAttachment
 ) {
   const detail = decodeDetail(yield* gateway.callOfficialTool("get_attachment", { id: attachmentId }))
   const sameIssue = detail?.issue?.id === issue.id || detail?.issue?.identifier === issue.identifier
-  const sameFilename = detail?.filename === source.filename || (detail?.filename === null && title !== null && detail?.title === title)
+  const sameFilename = detail?.filename === source.filename
   const sameTitle = title === null || detail?.title === title
   const sameSize = detail?.size === source.size
   const sameType = detail?.mediaType?.split(";", 1)[0]?.trim().toLowerCase() === source.mediaType
@@ -854,36 +876,36 @@ const uploadOutput = (
   help: []
 })
 
-const matchesIssue = (issue: Record<string, unknown>, selector: string): boolean =>
-  [issue.id, issue.identifier].some((value) => typeof value === "string" && value.toLowerCase() === selector.toLowerCase())
+const matchesIssue = (issue: { readonly id: string; readonly identifier?: string | null }, selector: string): boolean =>
+  [issue.id, issue.identifier].some((value) => Predicate.isString(value) && value.toLowerCase() === selector.toLowerCase())
 
 const firstString = (...values: ReadonlyArray<unknown>): string | null =>
-  values.find((value): value is string => typeof value === "string" && value.length > 0) ?? null
+  values.find((value): value is string => Predicate.isString(value) && value.length > 0) ?? null
 
 const firstNumber = (...values: ReadonlyArray<unknown>): number | null =>
-  values.find((value): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0) ?? null
-
-const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0
+  values.find((value): value is number => Predicate.isNumber(value) && Number.isSafeInteger(value) && value >= 0) ?? null
 
 const encodeCursor = (issue: string, offset: number): string =>
   `att1.${Buffer.from(JSON.stringify({ issue, offset }), "utf8").toString("base64url")}`
 
-const decodeCursor = (
+const decodeCursor = Effect.fn("Attachments.decodeCursor")(function*(
   cursor: string | undefined,
   issue: string
-): Effect.Effect<number, UsageError> => Effect.try({
-  try: () => {
-    if (cursor === undefined) return 0
-    if (!cursor.startsWith("att1.")) throw new Error("prefix")
-    const value = JSON.parse(Buffer.from(cursor.slice(5), "base64url").toString("utf8")) as unknown
-    if (!Predicate.isObject(value) || value.issue !== issue || !Number.isSafeInteger(value.offset) || Number(value.offset) < 0) {
-      throw new Error("shape")
-    }
-    return Number(value.offset)
-  },
-  catch: () => new UsageError({
-    message: "invalid --after cursor for attachments list",
-    help: `Run \`linear-axi attachments list --issue ${issue}\` to restart pagination.`
+): Effect.fn.Return<number, UsageError> {
+  return yield* Effect.try({
+    try: () => {
+      if (cursor === undefined) return 0
+      if (!cursor.startsWith("att1.")) throw new Error("prefix")
+      const value = decodeAttachmentCursor(JSON.parse(Buffer.from(cursor.slice(5), "base64url").toString("utf8")))
+      if (value.issue !== issue || !Number.isSafeInteger(value.offset) || value.offset < 0) {
+        throw new Error("shape")
+      }
+      return value.offset
+    },
+    catch: () => new UsageError({
+      message: "invalid --after cursor for attachments list",
+      help: `Run \`linear-axi attachments list --issue ${issue}\` to restart pagination.`
+    })
   })
 })
 
@@ -927,7 +949,30 @@ const writeAtomicDownload = Effect.fn("Attachments.writeAtomicDownload")(functio
   maxBytes: number,
   timeoutMs: number
 ) {
-  const temp = resolve(target.parent, `.${basename(target.path)}.${randomUUID()}.partial`)
+  const acquireParent = Effect.tryPromise({
+    try: () => open(target.parent, constants.O_RDONLY | constants.O_NOFOLLOW),
+    catch: () => new LinearDomainError({ message: "Could not pin the destination directory", help: "Inspect the destination path and retry." })
+  })
+  return yield* Effect.acquireUseRelease(
+    acquireParent,
+    (parentHandle) => Effect.gen(function*() {
+      const pinnedParent = yield* pinnedDirectory(parentHandle.fd, target.parent)
+      return yield* writeAtomicDownloadPinned(response, target, attachment, maxBytes, timeoutMs, pinnedParent, parentHandle)
+    }),
+    (parentHandle) => Effect.promise(() => parentHandle.close().catch(() => undefined))
+  )
+})
+
+const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinned")(function*(
+  response: Response,
+  target: DownloadTarget,
+  attachment: AttachmentDetail,
+  maxBytes: number,
+  timeoutMs: number,
+  pinnedParent: string,
+  parentHandle: Awaited<ReturnType<typeof open>>
+) {
+  const temp = resolve(pinnedParent, `.${basename(target.path)}.${randomUUID()}.partial`)
   const acquire = Effect.tryPromise({
     try: () => open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600),
     catch: () => new LinearDomainError({ message: "Could not create a private temporary download file", help: "Check destination directory permissions and retry." })
@@ -970,12 +1015,15 @@ const writeAtomicDownload = Effect.fn("Attachments.writeAtomicDownload")(functio
       try: () => handle.sync(),
       catch: () => new LinearDomainError({ message: "Could not fsync the downloaded attachment", help: "Check the destination filesystem and retry." })
     })
-    yield* verifyTargetUnchanged(target)
+    yield* verifyTargetUnchanged(target, pinnedParent)
     yield* Effect.tryPromise({
-      try: () => rename(temp, target.path),
+      try: () => rename(temp, resolve(pinnedParent, basename(target.path))),
       catch: () => new LinearDomainError({ message: "Could not atomically install the downloaded attachment", help: "Check destination permissions and retry." })
     })
-    yield* syncDirectory(target.parent)
+    yield* Effect.tryPromise({
+      try: () => parentHandle.sync(),
+      catch: () => new LinearDomainError({ message: "Could not fsync the destination directory", help: "Check the destination filesystem and retry." })
+    })
     return { bytes, sha256 }
   }), (handle) => Effect.promise(async () => {
     await handle.close().catch(() => undefined)
@@ -983,12 +1031,12 @@ const writeAtomicDownload = Effect.fn("Attachments.writeAtomicDownload")(functio
   }))
 })
 
-const verifyTargetUnchanged = Effect.fn("Attachments.verifyTargetUnchanged")(function*(target: DownloadTarget) {
+const verifyTargetUnchanged = Effect.fn("Attachments.verifyTargetUnchanged")(function*(target: DownloadTarget, pinnedParent: string) {
   const currentParent = yield* Effect.promise(() => realpath(dirname(target.path)).catch(() => undefined))
   if (currentParent !== target.parent) {
     return yield* domain("Destination directory changed during download; refusing unsafe install", "Inspect the destination path and retry explicitly.")
   }
-  const current = yield* Effect.promise(() => lstat(target.path).catch(() => undefined))
+  const current = yield* Effect.promise(() => lstat(resolve(pinnedParent, basename(target.path))).catch(() => undefined))
   if (target.existing === null && current !== undefined) {
     return yield* domain("Destination changed during download; refusing to replace it", "Inspect the destination and retry explicitly.")
   }
@@ -998,32 +1046,46 @@ const verifyTargetUnchanged = Effect.fn("Attachments.verifyTargetUnchanged")(fun
   }
 })
 
-const syncDirectory = (path: string): Effect.Effect<void> => Effect.tryPromise({
-  try: async () => {
-    const handle = await open(path, constants.O_RDONLY)
-    try { await handle.sync() } finally { await handle.close() }
-  },
-  catch: () => undefined
-}).pipe(Effect.catch(() => Effect.void))
+const pinnedDirectory = Effect.fn("Attachments.pinnedDirectory")(function*(fd: number, expected: string) {
+  for (const root of ["/proc/self/fd", "/dev/fd"]) {
+    const candidate = `${root}/${fd}`
+    const resolved = yield* Effect.promise(() => realpath(candidate).catch(() => undefined))
+    if (resolved === expected) return candidate
+  }
+  return yield* domain("This platform cannot pin the destination directory safely", "Use a local filesystem with file-descriptor paths enabled.")
+})
 
-const byteLimit = (
+const syncDirectory = Effect.fn("Attachments.syncDirectory")(function*(path: string) {
+  yield* Effect.tryPromise({
+    try: async () => {
+      const handle = await open(path, constants.O_RDONLY)
+      try { await handle.sync() } finally { await handle.close() }
+    },
+    catch: () => undefined
+  }).pipe(Effect.catch(() => Effect.void))
+})
+
+const byteLimit = Effect.fn("Attachments.byteLimit")(function*(
   parsed: ParsedArgs,
   fallback: number,
   maximum: number
-): Effect.Effect<number, UsageError> => {
+): Effect.fn.Return<number, UsageError> {
   const raw = readStringFlag(parsed.flags, "max-bytes")
-  if (raw === undefined) return Effect.succeed(fallback)
+  if (raw === undefined) return fallback
   const value = Number(raw)
-  return Number.isSafeInteger(value) && value > 0 && value <= maximum
-    ? Effect.succeed(value)
-    : usage(`--max-bytes must be an integer between 1 and ${maximum}`, parsed)
-}
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    return yield* usage(`--max-bytes must be an integer between 1 and ${maximum}`, parsed)
+  }
+  return value
+})
 
-const usage = (message: string, parsed: Pick<ParsedArgs, "command">): Effect.Effect<never, UsageError> =>
-  Effect.fail(new UsageError({ message, help: `Run \`linear-axi ${parsed.command.join(" ")} --help\` for valid options.` }))
+const usage = Effect.fn("Attachments.usage")(function*(message: string, parsed: Pick<ParsedArgs, "command">) {
+  return yield* Effect.fail(new UsageError({ message, help: `Run \`linear-axi ${parsed.command.join(" ")} --help\` for valid options.` }))
+})
 
-const domain = (message: string, help: string): Effect.Effect<never, LinearDomainError> =>
-  Effect.fail(new LinearDomainError({ message, help }))
+const domain = Effect.fn("Attachments.domain")(function*(message: string, help: string) {
+  return yield* Effect.fail(new LinearDomainError({ message, help }))
+})
 
 const abortablePromise = <Value>(promise: Promise<Value>, signal: AbortSignal): Promise<Value> => {
   if (signal.aborted) return Promise.reject(new Error("request timed out"))

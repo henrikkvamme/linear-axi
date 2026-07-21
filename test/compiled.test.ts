@@ -162,3 +162,30 @@ test("standalone binary runs without a source checkout", () => {
     rmSync(root, { recursive: true, force: true })
   }
 }, 15_000)
+
+test("compiled attachment commands render representative successful output", () => {
+  const root = mkdtempSync(join(tmpdir(), "linear-axi-compiled-attachment-"))
+  const binary = join(root, "attachment-fixture")
+  try {
+    const build = Bun.spawnSync({
+      cmd: ["bun", "build", "--compile", "--no-compile-autoload-dotenv", "--outfile", binary, "test/compiled-attachment-fixture.ts"],
+      cwd: repoRoot,
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    expect(build.exitCode).toBe(0)
+    for (const [args, expected] of [
+      [["attachments", "list", "--issue", "ENG-123"], "attachments[1]"],
+      [["attachments", "view", "--id", "attachment-1"], "authenticated-signed-https"]
+    ] as const) {
+      const result = Bun.spawnSync({ cmd: [binary, ...args], cwd: root, stdout: "pipe", stderr: "pipe" })
+      const stdout = new TextDecoder().decode(result.stdout)
+      expect(result.exitCode).toBe(0)
+      expect(new TextDecoder().decode(result.stderr)).toBe("")
+      expect(stdout).toContain(expected)
+      expect(stdout).not.toContain("uploads.linear.app")
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 15_000)

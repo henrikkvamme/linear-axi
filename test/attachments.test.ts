@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
@@ -112,6 +112,31 @@ describe("attachment content boundary", () => {
     expect(error.message).toContain("not valid UTF-8")
   })
 
+  test("read fails closed when content exceeds metadata or the full-text ceiling", async () => {
+    const metadataError = await Effect.runPromise(Effect.flip(runEffect(
+      ["attachments", "read", "--id", "attachment-1"],
+      detail({ size: 2 }),
+      { fetcher: async () => new Response("three", { status: 200 }) }
+    )))
+    expect(metadataError.message).toContain("exceeded its metadata size")
+
+    const oversized = new Uint8Array(1024 * 1024 + 1).fill(97)
+    const ceilingError = await Effect.runPromise(Effect.flip(runEffect(
+      ["attachments", "read", "--id", "attachment-1", "--full"],
+      detail({ size: null }),
+      { fetcher: async () => new Response(oversized, { status: 200 }) }
+    )))
+    expect(ceilingError.message).toContain("full-text safety ceiling")
+  })
+
+  test("bounded read backs up from a split UTF-8 character without misreporting invalid text", async () => {
+    const bytes = new TextEncoder().encode("abc€tail")
+    const output = await run(["attachments", "read", "--id", "attachment-1", "--max-bytes", "5"], detail({ size: bytes.length }), {
+      fetcher: async () => new Response(bytes, { status: 200 })
+    })
+    expect(output).toMatchObject({ text: "abc", bytesRead: 3, truncated: true })
+  })
+
   test("download streams to an atomic file and refuses collisions before fetching", async () => {
     const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
     roots.push(root)
@@ -199,7 +224,7 @@ describe("attachment content boundary", () => {
         }
       }
     )))
-    expect(swapError.message).toContain("directory changed")
+    expect(swapError.message).toMatch(/directory changed|pin the destination directory/)
     expect(existsSync(join(moved, "trace.txt"))).toBe(false)
     expect(readdirSync(moved)).toEqual([])
   })
@@ -231,6 +256,25 @@ describe("resumable attachment upload", () => {
     }, { stateRoot: join(root, "state") })!
     const symlinkError = await Effect.runPromise(Effect.flip(symlinkEffect))
     expect(symlinkError.message).toContain("regular file")
+    expect(calls).toBe(0)
+  })
+
+  test("rejects unknown media and default-oversized files before official calls", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
+    roots.push(root)
+    const unknown = join(root, "payload.unknown")
+    const large = join(root, "large.txt")
+    writeFileSync(unknown, "content")
+    writeFileSync(large, "x")
+    truncateSync(large, 100 * 1024 * 1024 + 1)
+    let calls = 0
+    const linearGateway = { ...gateway({}), callOfficialTool: () => { calls += 1; return Effect.succeed({}) } }
+    for (const file of [unknown, large]) {
+      const parsed = parseArgs(["attachments", "upload", "--issue", "ENG-123", "--file", file], commandSpecs)
+      const effect = runAttachmentCommand(parsed, linearGateway, { stateRoot: join(root, "state") })!
+      const error = await Effect.runPromise(Effect.flip(effect))
+      expect(error.message).toMatch(/media type|outside the allowed upload bound/)
+    }
     expect(calls).toBe(0)
   })
 
@@ -328,9 +372,11 @@ describe("resumable attachment upload", () => {
 
     await expect(runUpload(source, uploadGateway, runtime)).rejects.toThrow("outcome is unknown")
     const output = await runUpload(source, uploadGateway, runtime)
+    const repeated = await runUpload(source, uploadGateway, runtime)
 
     expect(finalizeCalls).toBe(1)
     expect(output).toMatchObject({ attachmentId: "attachment-1", changed: false, recovery: "finalized attachment verified" })
+    expect(repeated).toMatchObject({ attachmentId: "attachment-1", changed: false, recovery: "finalized attachment verified" })
   })
 
   test("a failed byte transfer persists no signed request material and re-prepares on retry", async () => {
@@ -379,6 +425,71 @@ describe("resumable attachment upload", () => {
     await runUpload(source, uploadGateway, runtime)
     expect(prepares).toBe(2)
     expect(puts).toBe(2)
+  })
+
+  test("upload refuses cross-origin redirects before finalize", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
+    roots.push(root)
+    const source = join(root, "trace.txt")
+    writeFileSync(source, "hello world\n")
+    let finalized = false
+    const uploadGateway = {
+      ...gateway({}),
+      callOfficialTool: (name: string) => {
+        if (name === "get_issue") return Effect.succeed({ id: "issue-1", identifier: "ENG-123", attachments: [] })
+        if (name === "prepare_attachment_upload") return Effect.succeed({
+          assetUrl: "https://uploads.linear.app/assets/stable-1",
+          uploadRequest: { url: "https://storage.example.test/put", headers: { "content-type": "text/plain" } }
+        })
+        if (name === "create_attachment_from_upload") finalized = true
+        return Effect.succeed({ id: "attachment-1" })
+      }
+    } as LinearGateway
+    const error = await Effect.runPromise(Effect.flip(runAttachmentCommand(
+      parseArgs(["attachments", "upload", "--issue", "ENG-123", "--file", source], commandSpecs),
+      uploadGateway,
+      { stateRoot: join(root, "state"), fetcher: async () => new Response(null, { status: 307, headers: { location: "https://evil.example/put" } }) }
+    )!))
+    expect(error.message).toContain("cross-origin redirect")
+    expect(finalized).toBe(false)
+  })
+
+  test("prepare response loss leaves no recovery and a stalled PUT times out cleanly", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
+    roots.push(root)
+    const source = join(root, "trace.txt")
+    writeFileSync(source, "hello world\n")
+    let prepares = 0
+    const uploadGateway = {
+      ...gateway({}),
+      callOfficialTool: (name: string) => {
+        if (name === "get_issue") return Effect.succeed({ id: "issue-1", identifier: "ENG-123", attachments: [] })
+        if (name === "prepare_attachment_upload") {
+          prepares += 1
+          if (prepares === 1) return Effect.fail(new LinearApiError({ message: "prepare response lost", help: "retry" }))
+          return Effect.succeed({
+            assetUrl: "https://uploads.linear.app/assets/stable-2",
+            uploadRequest: { url: "https://storage.example.test/put", headers: { "content-type": "text/plain" } }
+          })
+        }
+        return Effect.die(`unexpected ${name}`)
+      }
+    } as LinearGateway
+    const stateRoot = join(root, "state")
+    await expect(runUpload(source, uploadGateway, { stateRoot })).rejects.toThrow("prepare response lost")
+    expect(existsSync(stateRoot)).toBe(false)
+
+    const parsed = parseArgs(["attachments", "upload", "--issue", "ENG-123", "--file", source], commandSpecs)
+    const timeoutError = await Effect.runPromise(Effect.flip(runAttachmentCommand(parsed, uploadGateway, {
+      stateRoot,
+      requestTimeoutMs: 10,
+      fetcher: async () => new Promise<Response>(() => undefined)
+    })!))
+    expect(timeoutError.message).toBe("Direct attachment byte transfer failed")
+    expect(prepares).toBe(2)
+    const recovery = readFileSync(join(stateRoot, readdirSync(stateRoot)[0]!), "utf8")
+    expect(recovery).toContain('"stage":"prepared"')
+    expect(recovery).not.toContain("storage.example")
   })
 })
 
