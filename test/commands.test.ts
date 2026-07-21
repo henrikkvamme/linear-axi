@@ -96,6 +96,28 @@ const run = async (argv: ReadonlyArray<string>, gateway = fakeGateway()) => {
 }
 
 describe("runCommand", () => {
+  test("official command help renders precise flag contracts", () => {
+    const projectHelp = commandSpecs.find((spec) => spec.path.join(" ") === "projects update")!.help
+    const projectListHelp = commandSpecs.find((spec) => spec.path.join(" ") === "projects list")!.help
+    const issueHelp = commandSpecs.find((spec) => spec.path.join(" ") === "issues search")!.help
+
+    expect(projectHelp).toContain("Options (single-use unless marked repeatable):")
+    expect(projectHelp).toContain("--id <id> (required)")
+    expect(projectHelp).toContain("--color <#RRGGBB>")
+    expect(projectHelp).toContain("--summary <text:max-255>")
+    expect(projectHelp).toContain("--start-date-resolution <halfYear|month|quarter|year>")
+    expect(projectHelp).toContain("--priority <integer:0..4>")
+    expect(projectHelp).toContain("--teams-json <JSON-string-array>")
+    expect(projectHelp).toContain("conflicts: --add-teams-json, --remove-teams-json")
+    expect(projectHelp).toContain("--clear-summary")
+    expect(projectHelp).toContain("conflicts: --summary")
+    expect(projectHelp).toContain("--if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ>")
+    expect(projectListHelp).toContain("--limit <integer:1..50> (default: 50)")
+    expect(issueHelp).toContain("--limit <integer:1..100> (default: 50)")
+    expect(issueHelp).toContain("--order-by <createdAt|updatedAt> (default: updatedAt)")
+    expect(issueHelp).toContain("--include-archived | --no-include-archived (default: true)")
+  })
+
   test("official list commands pass validated arguments and render a minimal page", async () => {
     let called: { name: string; args: Readonly<Record<string, unknown>> } | undefined
     const output = await run(
@@ -1428,6 +1450,43 @@ describe("runCommand", () => {
     }
   })
 
+  test("parent-only advanced updates canonicalize UUID, key, and name team references", async () => {
+    const references = [
+      { teamId: "team-id" },
+      { team: { key: "ENG" } },
+      { team: { name: "Engineering" } }
+    ] as const
+
+    for (const [index, currentTeam] of references.entries()) {
+      const parentTeam = references[(index + 1) % references.length]!
+      const output = await run(["issues", "update", "--id", "ENG-1", "--parent", "ENG-2"], fakeGateway({
+        callOfficialTool: (name, args) => {
+          if (name === "get_team") {
+            const selector = String(args.query).toLowerCase()
+            if (["team-id", "eng", "engineering"].includes(selector)) {
+              return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering", archivedAt: null })
+            }
+          }
+          if (name === "get_issue" && args.id === "ENG-2") {
+            return Effect.succeed({ id: "parent-id", identifier: "ENG-2", ...parentTeam, archivedAt: null })
+          }
+          if (name === "get_issue" && args.id === "ENG-1") {
+            return Effect.succeed({
+              id: "issue-id",
+              identifier: "ENG-1",
+              ...currentTeam,
+              parentId: "parent-id",
+              archivedAt: null
+            })
+          }
+          throw new Error(`unexpected ${name} ${JSON.stringify(args)}`)
+        }
+      }))
+
+      expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
+    }
+  })
+
   test("advanced issue parent resolution enforces the target team", async () => {
     const cases = [
       ["issues", "create", "--team", "ENG", "--title", "Launch", "--parent", "OPS-1", "--if-absent"],
@@ -1439,7 +1498,11 @@ describe("runCommand", () => {
       const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs(argv, commandSpecs), fakeGateway({
         callOfficialTool: (name, args) => {
           if (name === "save_issue") saves += 1
-          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+          if (name === "get_team") {
+            return Effect.succeed(args.query === "other-team-id"
+              ? { id: "other-team-id", key: "OPS", name: "Operations", archivedAt: null }
+              : { id: "team-id", key: "ENG", name: "Engineering", archivedAt: null })
+          }
           if (name === "get_issue" && args.id === "ENG-1") {
             return Effect.succeed({ id: "issue-id", identifier: "ENG-1", teamId: "team-id" })
           }
@@ -1470,6 +1533,7 @@ describe("runCommand", () => {
       ], commandSpecs), fakeGateway({
         callOfficialTool: (name, args) => {
           if (name === "save_issue") saves += 1
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering", archivedAt: null })
           if (name === "get_issue" && args.id === "ENG-2") {
             return Effect.succeed({
               id: "target-id",
@@ -1607,6 +1671,7 @@ describe("runCommand", () => {
       ], commandSpecs), fakeGateway({
         callOfficialTool: (name) => {
           if (name === "save_issue") saves += 1
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering", archivedAt: null })
           return Effect.succeed({ id: "issue-id", identifier: "ENG-1", teamId: "team-id", relations: { blocks: [], blockedBy: [] } })
         }
       }), "/repo/src/main.ts")))

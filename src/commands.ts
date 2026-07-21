@@ -482,7 +482,7 @@ const updateOfficialIssue = (
   if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialAssignableUserSelector(gateway, input.assignee)
   const teamSelector = officialTeamSelector(before)
   if (!teamSelector) return yield* officialShapeError("get_issue team")
-  const teamIdentity = typeof input.state === "string" || typeof input.cycle === "string"
+  const teamIdentity = typeof input.state === "string" || typeof input.cycle === "string" || typeof input.parentId === "string"
     ? yield* resolveOfficialTeamIdentity(gateway, teamSelector)
     : { id: teamSelector, aliases: [teamSelector] }
   if (typeof input.state === "string") {
@@ -767,7 +767,15 @@ const resolveOfficialParentId = (
     return yield* officialShapeError("get_issue identity")
   }
   yield* requireOfficialEntityActive("issue", selector, issue)
-  yield* requireOfficialOwnership("parent", selector, issue, "team", team)
+  const parentTeamSelector = officialReferenceSelector(officialOwnerReference(issue, "team"))
+  if (!parentTeamSelector) return yield* officialShapeError("parent team ownership")
+  const parentTeam = yield* resolveOfficialTeamIdentity(gateway, parentTeamSelector)
+  if (!officialTextEqual(parentTeam.id, team.id)) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: `parent ${selector} belongs to another team`,
+      help: "Choose a parent from the issue's team."
+    }))
+  }
   return issue.id
 })
 

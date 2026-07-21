@@ -14,6 +14,7 @@ export interface CommandSpec {
   required?: ReadonlySet<string>
   fields?: ReadonlyArray<string>
   officialTools?: ReadonlyArray<string>
+  repeatableFlags?: ReadonlySet<string>
   help: string
 }
 
@@ -29,6 +30,11 @@ const isFlag = (value: string): boolean => value.startsWith("--")
 export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<CommandSpec>): ParsedArgs => {
   const command: Array<string> = []
   const flags = new Map<string, string | boolean>()
+  const duplicates = new Set<string>()
+  const setFlag = (flag: string, value: string | boolean): void => {
+    if (flags.has(flag)) duplicates.add(flag)
+    flags.set(flag, value)
+  }
 
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]
@@ -57,11 +63,11 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
 
     const next = argv[index + 1]
     if (inlineValue !== undefined) {
-      flags.set(flag, inlineValue)
+      setFlag(flag, inlineValue)
     } else if (next === undefined || isFlag(next)) {
-      flags.set(flag, true)
+      setFlag(flag, true)
     } else {
-      flags.set(flag, next)
+      setFlag(flag, next)
       index += 1
     }
   }
@@ -106,6 +112,15 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
     }
     if (flag === "limit" || flag === "first") {
       validatePageSize(flag, value, spec.help)
+    }
+  }
+
+  for (const flag of duplicates) {
+    if (!(spec.repeatableFlags?.has(flag) ?? false)) {
+      throw new UsageError({
+        message: `--${flag} may only be specified once`,
+        help: spec.help
+      })
     }
   }
 

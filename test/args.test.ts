@@ -57,6 +57,12 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["issues", "list", "--stat", "open"], commandSpecs)).toThrow(UsageError)
   })
 
+  test("rejects repeated single-use flags", () => {
+    expect(() => parseArgs([
+      "projects", "update", "--id", "project-id", "--state", "planned", "--state", "started"
+    ], commandSpecs)).toThrow("--state may only be specified once")
+  })
+
   test("rejects missing required flags", () => {
     expect(() => parseArgs(["issues", "view"], commandSpecs)).toThrow(UsageError)
   })

@@ -76,6 +76,17 @@ describe("linear-axi process", () => {
     })
   }
 
+  test("prints precise official command help before authentication", () => {
+    const result = runCli("projects", "update", "--help")
+    const stdout = stdoutText(result)
+
+    expect(result.exitCode).toBe(0)
+    expect(stderrText(result)).toBe("")
+    expect(stdout).toContain("--priority <integer:0..4>")
+    expect(stdout).toContain("--start-date-resolution <halfYear|month|quarter|year>")
+    expect(stdout).toContain("conflicts: --add-teams-json, --remove-teams-json")
+  })
+
   test("prints OAuth setup guidance without credentials", () => {
     const result = runCli("auth", "oauth", "setup")
     const stdout = stdoutText(result)

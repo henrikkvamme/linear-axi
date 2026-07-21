@@ -464,19 +464,19 @@ Example:
 
 ```text
 Usage: linear-axi comments search
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --issue-id <value>
-  --project-id <value>
-  --initiative-id <value>
-  --document-id <value>
-  --milestone-id <value>
-  --status-update-id <value>
-  --status-update-type <value>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --issue-id <id> - Issue identifier or ID.
+  --project-id <id> - Project ID.
+  --initiative-id <id> - Initiative ID.
+  --document-id <id> - Set or filter by document id.
+  --milestone-id <id> - Set or filter by milestone id.
+  --status-update-id <id> - Set or filter by status update id.
+  --status-update-type <project|initiative> - Set or filter by status update type.
 Example:
   linear-axi comments search --project-id <project-id>
 ```
@@ -485,12 +485,12 @@ Example:
 
 ```text
 Usage: linear-axi agent-skills list
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi agent-skills list --limit 50
 ```
@@ -498,11 +498,11 @@ Example:
 ## agent-skills view
 
 ```text
-Usage: linear-axi agent-skills view --id <value>
-Options:
-  --help
-  --id <value> (required)
-  --full
+Usage: linear-axi agent-skills view --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi agent-skills view --id <skill-id> --full
 ```
@@ -510,12 +510,12 @@ Example:
 ## cycles list
 
 ```text
-Usage: linear-axi cycles list --team-id <value>
-Options:
-  --help
-  --team-id <value> (required)
-  --type <value>
-  --full
+Usage: linear-axi cycles list --team-id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --team-id <id> (required) - Team ID.
+  --type <current|previous|next> - Set or filter by type.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi cycles list --team-id <team-id> --type current
 ```
@@ -524,21 +524,20 @@ Example:
 
 ```text
 Usage: linear-axi documents list
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --query <value>
-  --project-id <value>
-  --initiative-id <value>
-  --team-id <value>
-  --creator-id <value>
-  --created-at <value>
-  --updated-at <value>
-  --include-archived
-  --no-include-archived
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --query <query> - Search text or documented entity selector.
+  --project-id <id> - Project ID.
+  --initiative-id <id> - Initiative ID.
+  --team-id <id> - Team ID.
+  --creator-id <id> - Set or filter by creator id.
+  --created-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --updated-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --include-archived | --no-include-archived (default: false) - Include archived.
 Example:
   linear-axi documents list --query roadmap --limit 20
 ```
@@ -546,11 +545,11 @@ Example:
 ## documents view
 
 ```text
-Usage: linear-axi documents view --id <value>
-Options:
-  --help
-  --id <value> (required)
-  --full
+Usage: linear-axi documents view --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi documents view --id <id-or-slug> --full
 ```
@@ -558,22 +557,22 @@ Example:
 ## documents update
 
 ```text
-Usage: linear-axi documents update --id <value>
-Options:
-  --help
-  --id <value> (required)
-  --title <value>
-  --content <value>
-  --clear-content
-  --if-updated-at <value>
-  --project <value>
-  --issue <value>
-  --initiative <value>
-  --cycle <value>
-  --team <value>
-  --icon <value>
-  --color <value>
-  --full
+Usage: linear-axi documents update --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --title <text> - Literal title.
+  --content <text> - Markdown content.
+  --clear-content (conflicts: --content) - Clear content to an empty string.
+  --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Require the exact updatedAt from the latest full view before replacing rich text.
+  --project <selector> - Project name, slug, or ID.
+  --issue <selector> - Issue identifier or ID.
+  --initiative <selector> - Initiative name or ID.
+  --cycle <selector> - Cycle name, number, or ID.
+  --team <selector> - Team name, key, or ID.
+  --icon <text> - Icon name or emoji code, not raw Unicode.
+  --color <#RRGGBB> - Six-digit hexadecimal color.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -583,17 +582,14 @@ Example:
 ## issues inspect
 
 ```text
-Usage: linear-axi issues inspect --id <value>
-Options:
-  --help
-  --id <value> (required)
-  --relations
-  --no-relations
-  --customer-needs
-  --no-customer-needs
-  --releases
-  --no-releases
-  --full
+Usage: linear-axi issues inspect --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --relations | --no-relations (default: false) - Include relations.
+  --customer-needs | --no-customer-needs (default: false) - Include customer needs.
+  --releases | --no-releases (default: false) - Include releases.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi issues inspect --id ENG-123 --relations --full
 ```
@@ -602,27 +598,26 @@ Example:
 
 ```text
 Usage: linear-axi issues search
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --query <value>
-  --team <value>
-  --state <value>
-  --cycle <value>
-  --label <value>
-  --assignee <value>
-  --delegate <value>
-  --project <value>
-  --release <value>
-  --priority <value>
-  --parent-id <value>
-  --created-at <value>
-  --updated-at <value>
-  --include-archived
-  --no-include-archived
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --query <query> - Search text or documented entity selector.
+  --team <selector> - Team name, key, or ID.
+  --state <selector> - State type, name, or ID.
+  --cycle <selector> - Cycle name, number, or ID.
+  --label <selector> - Label name or ID.
+  --assignee <selector> - User ID, name, email, me, or null where supported.
+  --delegate <selector> - Agent name or ID.
+  --project <selector> - Project name, slug, or ID.
+  --release <selector> - Release ID or slug.
+  --priority <integer:0..4> - Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
+  --parent-id <id> - Parent issue identifier or ID.
+  --created-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --updated-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --include-archived | --no-include-archived (default: true) - Include archived.
 Example:
   linear-axi issues search --team ENG --query auth
 ```
@@ -631,26 +626,23 @@ Example:
 
 ```text
 Usage: linear-axi projects list
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --query <value>
-  --state <value>
-  --initiative <value>
-  --team <value>
-  --member <value>
-  --label <value>
-  --created-at <value>
-  --updated-at <value>
-  --milestones
-  --no-milestones
-  --members
-  --no-members
-  --include-archived
-  --no-include-archived
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..50> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --query <query> - Search text or documented entity selector.
+  --state <selector> - State type, name, or ID.
+  --initiative <selector> - Initiative name or ID.
+  --team <selector> - Team name, key, or ID.
+  --member <selector> - User ID, name, email, or me.
+  --label <selector> - Label name or ID.
+  --created-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --updated-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --milestones | --no-milestones (default: false) - Include milestones.
+  --members | --no-members (default: false) - Include members.
+  --include-archived | --no-include-archived (default: false) - Include archived.
 Example:
   linear-axi projects list --team ENG --limit 20
 ```
@@ -658,17 +650,14 @@ Example:
 ## projects view
 
 ```text
-Usage: linear-axi projects view --query <value>
-Options:
-  --help
-  --query <value> (required)
-  --milestones
-  --no-milestones
-  --members
-  --no-members
-  --resources
-  --no-resources
-  --full
+Usage: linear-axi projects view --query <query>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --query <query> (required) - Search text or documented entity selector.
+  --milestones | --no-milestones (default: false) - Include milestones.
+  --members | --no-members (default: false) - Include members.
+  --resources | --no-resources (default: false) - Include resources.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi projects view --query <id-name-or-slug> --full
 ```
@@ -676,34 +665,34 @@ Example:
 ## projects update
 
 ```text
-Usage: linear-axi projects update --id <value>
-Options:
-  --help
-  --id <value> (required)
-  --name <value>
-  --icon <value>
-  --color <value>
-  --summary <value>
-  --clear-summary
-  --description <value>
-  --clear-description
-  --if-updated-at <value>
-  --state <value>
-  --start-date <value>
-  --start-date-resolution <value>
-  --target-date <value>
-  --target-date-resolution <value>
-  --priority <value>
-  --add-teams-json <value>
-  --remove-teams-json <value>
-  --teams-json <value>
-  --labels-json <value>
-  --lead <value>
-  --clear-lead
-  --add-initiatives-json <value>
-  --remove-initiatives-json <value>
-  --initiatives-json <value>
-  --full
+Usage: linear-axi projects update --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --name <text> - Literal name.
+  --icon <text> - Icon name or emoji code, not raw Unicode.
+  --color <#RRGGBB> - Six-digit hexadecimal color.
+  --summary <text:max-255> - Literal short summary.
+  --clear-summary (conflicts: --summary) - Clear summary to an empty string.
+  --description <text> - Markdown description.
+  --clear-description (conflicts: --description) - Clear description to an empty string.
+  --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Require the exact updatedAt from the latest full view before replacing rich text.
+  --state <selector> - State type, name, or ID.
+  --start-date <YYYY-MM-DD> - Set or filter by start date.
+  --start-date-resolution <halfYear|month|quarter|year> - Set or filter by start date resolution.
+  --target-date <YYYY-MM-DD> - Set or filter by target date.
+  --target-date-resolution <halfYear|month|quarter|year> - Set or filter by target date resolution.
+  --priority <integer:0..4> - Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.
+  --add-teams-json <JSON-string-array> (conflicts: --teams-json) - Add the listed teams.
+  --remove-teams-json <JSON-string-array> (conflicts: --teams-json) - Remove the listed teams.
+  --teams-json <JSON-string-array> (conflicts: --add-teams-json, --remove-teams-json) - Replace the complete teams set.
+  --labels-json <JSON-string-array> - Replace the complete labels set.
+  --lead <selector> - User ID, name, email, or me.
+  --clear-lead (conflicts: --lead) - Clear lead to null.
+  --add-initiatives-json <JSON-string-array> (conflicts: --initiatives-json) - Add the listed initiatives.
+  --remove-initiatives-json <JSON-string-array> (conflicts: --initiatives-json) - Remove the listed initiatives.
+  --initiatives-json <JSON-string-array> (conflicts: --add-initiatives-json, --remove-initiatives-json) - Replace the complete initiatives set.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -714,13 +703,13 @@ Example:
 
 ```text
 Usage: linear-axi project-labels list
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --name <value>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --name <text> - Literal name.
 Example:
   linear-axi project-labels list --name Platform
 ```
@@ -729,25 +718,21 @@ Example:
 
 ```text
 Usage: linear-axi release-pipelines list
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --query <value>
-  --team <value>
-  --type <value>
-  --production
-  --no-production
-  --stages
-  --no-stages
-  --teams
-  --no-teams
-  --created-at <value>
-  --updated-at <value>
-  --include-archived
-  --no-include-archived
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --query <query> - Search text or documented entity selector.
+  --team <selector> - Team name, key, or ID.
+  --type <continuous|scheduled> - Set or filter by type.
+  --production | --no-production - Filter by is production.
+  --stages | --no-stages (default: false) - Include stages.
+  --teams | --no-teams (default: false) - Include teams.
+  --created-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --updated-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --include-archived | --no-include-archived (default: false) - Include archived.
 Example:
   linear-axi release-pipelines list --team ENG
 ```
@@ -756,25 +741,22 @@ Example:
 
 ```text
 Usage: linear-axi releases list
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --query <value>
-  --pipeline <value>
-  --stage <value>
-  --stage-type <value>
-  --version <value>
-  --has-release-notes
-  --no-has-release-notes
-  --release-notes
-  --no-release-notes
-  --created-at <value>
-  --updated-at <value>
-  --include-archived
-  --no-include-archived
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --query <query> - Search text or documented entity selector.
+  --pipeline <selector> - Release pipeline name, slug, or ID.
+  --stage <selector> - Release stage name, type, or ID.
+  --stage-type <planned|started|completed|canceled> - Set or filter by stage type.
+  --version <text> - Set or filter by version.
+  --has-release-notes | --no-has-release-notes - Filter by whether results have release notes.
+  --release-notes | --no-release-notes (default: false) - Include release notes.
+  --created-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --updated-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --include-archived | --no-include-archived (default: false) - Include archived.
 Example:
   linear-axi releases list --pipeline <pipeline> --limit 20
 ```
@@ -782,13 +764,12 @@ Example:
 ## releases view
 
 ```text
-Usage: linear-axi releases view --id <value>
-Options:
-  --help
-  --id <value> (required)
-  --release-notes
-  --no-release-notes
-  --full
+Usage: linear-axi releases view --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --release-notes | --no-release-notes (default: false) - Include release notes.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi releases view --id <id-or-slug> --release-notes
 ```
@@ -796,28 +777,28 @@ Example:
 ## releases update
 
 ```text
-Usage: linear-axi releases update --id <value>
-Options:
-  --help
-  --id <value> (required)
-  --name <value>
-  --description <value>
-  --clear-description
-  --if-updated-at <value>
-  --version <value>
-  --pipeline <value>
-  --stage <value>
-  --start-date <value>
-  --clear-start-date
-  --target-date <value>
-  --clear-target-date
-  --created-at <value>
-  --started-at <value>
-  --clear-started-at
-  --completed-at <value>
-  --clear-completed-at
-  --commit-sha <value>
-  --full
+Usage: linear-axi releases update --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --name <text> - Literal name.
+  --description <text> - Markdown description.
+  --clear-description (conflicts: --description) - Clear description to an empty string.
+  --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Require the exact updatedAt from the latest full view before replacing rich text.
+  --version <text> - Set or filter by version.
+  --pipeline <selector> - Release pipeline name, slug, or ID.
+  --stage <selector> - Release stage name, type, or ID.
+  --start-date <YYYY-MM-DD> - Set or filter by start date.
+  --clear-start-date (conflicts: --start-date) - Clear start date to null.
+  --target-date <YYYY-MM-DD> - Set or filter by target date.
+  --clear-target-date (conflicts: --target-date) - Clear target date to null.
+  --created-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Filter after this ISO-8601 timestamp or duration.
+  --started-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Set or filter by started at.
+  --clear-started-at (conflicts: --started-at) - Clear started at to null.
+  --completed-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Set or filter by completed at.
+  --clear-completed-at (conflicts: --completed-at) - Clear completed at to null.
+  --commit-sha <SHA> - Set or filter by commit sha.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -828,23 +809,20 @@ Example:
 
 ```text
 Usage: linear-axi release-notes list
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --query <value>
-  --pipeline <value>
-  --release <value>
-  --content
-  --no-content
-  --releases
-  --no-releases
-  --created-at <value>
-  --updated-at <value>
-  --include-archived
-  --no-include-archived
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --query <query> - Search text or documented entity selector.
+  --pipeline <selector> - Release pipeline name, slug, or ID.
+  --release <selector> - Release ID or slug.
+  --content | --no-content (default: false) - Include content.
+  --releases | --no-releases (default: false) - Include releases.
+  --created-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --updated-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --include-archived | --no-include-archived (default: false) - Include archived.
 Example:
   linear-axi release-notes list --pipeline <pipeline>
 ```
@@ -852,13 +830,12 @@ Example:
 ## release-notes view
 
 ```text
-Usage: linear-axi release-notes view --id <value>
-Options:
-  --help
-  --id <value> (required)
-  --releases
-  --no-releases
-  --full
+Usage: linear-axi release-notes view --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --releases | --no-releases (default: false) - Include releases.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi release-notes view --id <id-or-slug> --full
 ```
@@ -866,19 +843,19 @@ Example:
 ## release-notes update
 
 ```text
-Usage: linear-axi release-notes update --id <value>
-Options:
-  --help
-  --id <value> (required)
-  --pipeline <value>
-  --title <value>
-  --content <value>
-  --clear-content
-  --if-updated-at <value>
-  --releases-json <value>
-  --range-from <value>
-  --range-to <value>
-  --full
+Usage: linear-axi release-notes update --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --pipeline <selector> - Release pipeline name, slug, or ID.
+  --title <text> - Literal title.
+  --content <text> - Markdown content.
+  --clear-content (conflicts: --content) - Clear content to an empty string.
+  --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Require the exact updatedAt from the latest full view before replacing rich text.
+  --releases-json <JSON-string-array> (conflicts: --range-from, --range-to) - Replace the complete releases set.
+  --range-from <selector> (conflicts: --releases-json) - First release in the note range.
+  --range-to <selector> (conflicts: --releases-json) - Last release in the note range.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -889,16 +866,16 @@ Example:
 
 ```text
 Usage: linear-axi diffs list
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --query <value>
-  --owner <value>
-  --repo <value>
-  --status <value>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --query <query> - Search text or documented entity selector.
+  --owner <selector> - Set or filter by owner.
+  --repo <text> - Set or filter by repo.
+  --status <text> - Set or filter by status.
 Example:
   linear-axi diffs list --repo linear-axi --limit 20
 ```
@@ -906,11 +883,11 @@ Example:
 ## diffs view
 
 ```text
-Usage: linear-axi diffs view --id <value>
-Options:
-  --help
-  --id <value> (required)
-  --full
+Usage: linear-axi diffs view --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi diffs view --id <url-or-id> --full
 ```
@@ -918,15 +895,14 @@ Example:
 ## diffs threads
 
 ```text
-Usage: linear-axi diffs threads --id <value>
-Options:
-  --help
-  --id <value> (required)
-  --thread-id <value>
-  --resolved
-  --no-resolved
-  --order-by <value>
-  --full
+Usage: linear-axi diffs threads --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --thread-id <id> - Set or filter by thread id.
+  --resolved | --no-resolved - Filter by resolved.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort threads by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi diffs threads --id <url-or-id>
 ```
@@ -934,11 +910,11 @@ Example:
 ## milestones list
 
 ```text
-Usage: linear-axi milestones list --project <value>
-Options:
-  --help
-  --project <value> (required)
-  --full
+Usage: linear-axi milestones list --project <selector>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --project <selector> (required) - Project name, slug, or ID.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi milestones list --project <project>
 ```
@@ -946,12 +922,12 @@ Example:
 ## milestones view
 
 ```text
-Usage: linear-axi milestones view --project <value> --query <value>
-Options:
-  --help
-  --project <value> (required)
-  --query <value> (required)
-  --full
+Usage: linear-axi milestones view --project <selector> --query <query>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --project <selector> (required) - Project name, slug, or ID.
+  --query <query> (required) - Search text or documented entity selector.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi milestones view --project <project> --query <id-or-name>
 ```
@@ -959,18 +935,18 @@ Example:
 ## milestones update
 
 ```text
-Usage: linear-axi milestones update --project <value> --id <value>
-Options:
-  --help
-  --project <value> (required)
-  --id <value> (required)
-  --name <value>
-  --description <value>
-  --clear-description
-  --if-updated-at <value>
-  --target-date <value>
-  --clear-target-date
-  --full
+Usage: linear-axi milestones update --project <selector> --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --project <selector> (required) - Project name, slug, or ID.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --name <text> - Literal name.
+  --description <text> - Markdown description.
+  --clear-description (conflicts: --description) - Clear description to an empty string.
+  --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Require the exact updatedAt from the latest full view before replacing rich text.
+  --target-date <YYYY-MM-DD> - Set or filter by target date.
+  --clear-target-date (conflicts: --target-date) - Clear target date to null.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -981,17 +957,16 @@ Example:
 
 ```text
 Usage: linear-axi teams search
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --query <value>
-  --include-archived
-  --no-include-archived
-  --created-at <value>
-  --updated-at <value>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --query <query> - Search text or documented entity selector.
+  --include-archived | --no-include-archived (default: false) - Include archived.
+  --created-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --updated-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
 Example:
   linear-axi teams search --query Engineering
 ```
@@ -999,11 +974,11 @@ Example:
 ## teams view
 
 ```text
-Usage: linear-axi teams view --query <value>
-Options:
-  --help
-  --query <value> (required)
-  --full
+Usage: linear-axi teams view --query <query>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --query <query> (required) - Search text or documented entity selector.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi teams view --query <id-key-or-name>
 ```
@@ -1012,14 +987,14 @@ Example:
 
 ```text
 Usage: linear-axi users list
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --query <value>
-  --team <value>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --query <query> - Search text or documented entity selector.
+  --team <selector> - Team name, key, or ID.
 Example:
   linear-axi users list --query Alice
 ```
@@ -1027,11 +1002,11 @@ Example:
 ## users view
 
 ```text
-Usage: linear-axi users view --query <value>
-Options:
-  --help
-  --query <value> (required)
-  --full
+Usage: linear-axi users view --query <query>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --query <query> (required) - Search text or documented entity selector.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi users view --query <id-name-or-email>
 ```
@@ -1039,11 +1014,11 @@ Example:
 ## docs search
 
 ```text
-Usage: linear-axi docs search --query <value>
-Options:
-  --help
-  --query <value> (required)
-  --page <value>
+Usage: linear-axi docs search --query <query>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --query <query> (required) - Search text or documented entity selector.
+  --page <integer:>=0> (default: 0) - Zero-based documentation result page.
 Example:
   linear-axi docs search --query "project updates"
 ```
@@ -1051,21 +1026,20 @@ Example:
 ## status-updates list
 
 ```text
-Usage: linear-axi status-updates list --type <value>
-Options:
-  --help
-  --limit <value>
-  --after <value>
-  --order-by <value>
-  --full
-  --type <value> (required)
-  --project <value>
-  --initiative <value>
-  --user <value>
-  --created-at <value>
-  --updated-at <value>
-  --include-archived
-  --no-include-archived
+Usage: linear-axi status-updates list --type <project|initiative>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --limit <integer:1..100> (default: 50) - Maximum results to return.
+  --after <cursor> - Continue after this pagination cursor.
+  --order-by <createdAt|updatedAt> (default: updatedAt) - Sort results by this timestamp.
+  --full (default: false) - Return complete fields without concise projection or truncation.
+  --type <project|initiative> (required) - Set or filter by type.
+  --project <selector> - Project name, slug, or ID.
+  --initiative <selector> - Initiative name or ID.
+  --user <selector> - User ID, name, email, or me.
+  --created-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --updated-at <ISO-8601> - Filter after this ISO-8601 timestamp or duration.
+  --include-archived | --no-include-archived (default: false) - Include archived.
 Example:
   linear-axi status-updates list --type project --project <project>
 ```
@@ -1073,12 +1047,12 @@ Example:
 ## status-updates view
 
 ```text
-Usage: linear-axi status-updates view --id <value> --type <value>
-Options:
-  --help
-  --id <value> (required)
-  --type <value> (required)
-  --full
+Usage: linear-axi status-updates view --id <id> --type <project|initiative>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --type <project|initiative> (required) - Set or filter by type.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Example:
   linear-axi status-updates view --id <update-id> --type project
 ```
@@ -1086,18 +1060,18 @@ Example:
 ## status-updates update
 
 ```text
-Usage: linear-axi status-updates update --type <value> --id <value>
-Options:
-  --help
-  --type <value> (required)
-  --id <value> (required)
-  --project <value>
-  --initiative <value>
-  --body <value>
-  --clear-body
-  --if-updated-at <value>
-  --health <value>
-  --full
+Usage: linear-axi status-updates update --type <project|initiative> --id <id>
+Options (single-use unless marked repeatable):
+  --help - Show command help.
+  --type <project|initiative> (required) - Set or filter by type.
+  --id <id> (required) - Entity ID or documented stable selector.
+  --project <selector> - Project name, slug, or ID.
+  --initiative <selector> - Initiative name or ID.
+  --body <text> - Markdown body.
+  --clear-body (conflicts: --body) - Clear body to an empty string.
+  --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ> - Require the exact updatedAt from the latest full view before replacing rich text.
+  --health <onTrack|atRisk|offTrack> - Set or filter by health.
+  --full (default: false) - Return complete fields without concise projection or truncation.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:

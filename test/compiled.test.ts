@@ -78,6 +78,11 @@ test("standalone binary runs without a source checkout", () => {
       if (command.join(" ") === "relations list") {
         expect(helpStdout).toContain("--issue <blocked-issue> --blocked-by")
       }
+      if (command.join(" ") === "projects update") {
+        expect(helpStdout).toContain("--priority <integer:0..4>")
+        expect(helpStdout).toContain("--start-date-resolution <halfYear|month|quarter|year>")
+        expect(helpStdout).toContain("conflicts: --add-teams-json, --remove-teams-json")
+      }
     }
 
     const rejected = Bun.spawnSync({
@@ -90,6 +95,17 @@ test("standalone binary runs without a source checkout", () => {
     expect(rejected.exitCode).toBe(2)
     expect(new TextDecoder().decode(rejected.stderr)).toBe("")
     expect(new TextDecoder().decode(rejected.stdout)).toContain("unknown flag --bogus")
+
+    const repeated = Bun.spawnSync({
+      cmd: [binary, "projects", "update", "--id", "project-id", "--state", "planned", "--state", "started"],
+      cwd: root,
+      env: { HOME: home, PATH: process.env.PATH ?? "" },
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    expect(repeated.exitCode).toBe(2)
+    expect(new TextDecoder().decode(repeated.stderr)).toBe("")
+    expect(new TextDecoder().decode(repeated.stdout)).toContain("--state may only be specified once")
 
     const homeResult = Bun.spawnSync({
       cmd: [binary],

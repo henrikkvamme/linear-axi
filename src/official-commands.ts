@@ -32,6 +32,10 @@ interface OfficialFlag {
   readonly format?: "color" | "date" | "timestamp"
   readonly maxLength?: number
   readonly internal?: boolean
+  readonly defaultValue?: string | number | boolean
+  readonly description?: string
+  readonly conflictsWith?: ReadonlyArray<string>
+  readonly repeatable?: boolean
 }
 
 interface OfficialCommand {
@@ -46,49 +50,92 @@ interface OfficialCommand {
   readonly validate?: (flags: ReadonlyMap<string, string | boolean>) => string | undefined
 }
 
+const OFFICIAL_FLAG_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  id: "Entity ID or documented stable selector.",
+  query: "Search text or documented entity selector.",
+  limit: "Maximum results to return.",
+  after: "Continue after this pagination cursor.",
+  "order-by": "Sort results by this timestamp.",
+  full: "Return complete fields without concise projection or truncation.",
+  team: "Team name, key, or ID.",
+  "team-id": "Team ID.",
+  project: "Project name, slug, or ID.",
+  "project-id": "Project ID.",
+  initiative: "Initiative name or ID.",
+  "initiative-id": "Initiative ID.",
+  issue: "Issue identifier or ID.",
+  "issue-id": "Issue identifier or ID.",
+  cycle: "Cycle name, number, or ID.",
+  state: "State type, name, or ID.",
+  label: "Label name or ID.",
+  assignee: "User ID, name, email, me, or null where supported.",
+  delegate: "Agent name or ID.",
+  release: "Release ID or slug.",
+  pipeline: "Release pipeline name, slug, or ID.",
+  stage: "Release stage name, type, or ID.",
+  lead: "User ID, name, email, or me.",
+  member: "User ID, name, email, or me.",
+  user: "User ID, name, email, or me.",
+  "parent-id": "Parent issue identifier or ID.",
+  "created-at": "Filter after this ISO-8601 timestamp or duration.",
+  "updated-at": "Filter after this ISO-8601 timestamp or duration.",
+  priority: "Priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.",
+  title: "Literal title.",
+  name: "Literal name.",
+  summary: "Literal short summary.",
+  description: "Markdown description.",
+  content: "Markdown content.",
+  body: "Markdown body.",
+  icon: "Icon name or emoji code, not raw Unicode.",
+  color: "Six-digit hexadecimal color.",
+  page: "Zero-based documentation result page.",
+  "range-from": "First release in the note range.",
+  "range-to": "Last release in the note range."
+}
+
 const commonList = {
-  limit: { kind: "number", arg: "limit" },
-  after: { kind: "string", arg: "cursor" },
-  "order-by": { kind: "string", arg: "orderBy", values: ["createdAt", "updatedAt"] },
-  full: { kind: "boolean" }
+  limit: { kind: "number", arg: "limit", integer: true, minimum: 1, maximum: 100, defaultValue: 50, description: "Maximum results to return." },
+  after: { kind: "string", arg: "cursor", description: "Continue after this pagination cursor." },
+  "order-by": { kind: "string", arg: "orderBy", values: ["createdAt", "updatedAt"], defaultValue: "updatedAt", description: "Sort results by this timestamp." },
+  full: { kind: "boolean", defaultValue: false, description: "Return complete fields without concise projection or truncation." }
 } as const
 const decodeStringArray = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)))
 
 const commands: ReadonlyArray<OfficialCommand> = [
   command("comments search", "list_comments", { ...commonList, "issue-id": stringFlag("issueId"), "project-id": stringFlag("projectId"), "initiative-id": stringFlag("initiativeId"), "document-id": stringFlag("documentId"), "milestone-id": stringFlag("milestoneId"), "status-update-id": stringFlag("statusUpdateId"), "status-update-type": stringFlag("statusUpdateType", ["project", "initiative"]) }, "comments", "comments", ["id", "body", "createdAt", "updatedAt"], ["linear-axi comments search --project-id <project-id>"], undefined, commentSearchValidation),
   command("agent-skills list", "list_agent_skills", { ...commonList }, "agentSkills", "agentSkills", ["id", "name", "updatedAt"], ["linear-axi agent-skills list --limit 50"]),
-  command("agent-skills view", "get_agent_skill", { id: requiredString(), full: bool() }, "agentSkill", undefined, undefined, ["linear-axi agent-skills view --id <skill-id> --full"]),
-  command("cycles list", "list_cycles", { "team-id": requiredString("teamId"), type: stringFlag(undefined, ["current", "previous", "next"]), full: bool() }, "cycles", "$", ["id", "number", "name", "startsAt", "endsAt"], ["linear-axi cycles list --team-id <team-id> --type current"]),
-  command("documents list", "list_documents", { ...commonList, query: stringFlag(), "project-id": stringFlag("projectId"), "initiative-id": stringFlag("initiativeId"), "team-id": stringFlag("teamId"), "creator-id": stringFlag("creatorId"), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived") }, "documents", "documents", ["id", "title", "slugId", "updatedAt"], ["linear-axi documents list --query roadmap --limit 20"]),
-  command("documents view", "get_document", { id: requiredString(), full: bool() }, "document", undefined, undefined, ["linear-axi documents view --id <id-or-slug> --full"]),
-  command("documents update", "save_document", { id: requiredString(), title: stringFlag(), content: stringFlag(), "clear-content": emptyStringFlag("content"), "if-updated-at": preconditionFlag(), project: stringFlag(), issue: stringFlag(), initiative: stringFlag(), cycle: stringFlag(), team: stringFlag(), icon: stringFlag(), color: formattedStringFlag("color"), full: bool() }, "document", undefined, undefined, ["linear-axi documents update --id <document-id> --title \"New title\""], undefined, combineValidation(documentUpdateValidation, mutuallyExclusivePairs([["content", "clear-content"]]))),
-  command("issues inspect", "get_issue", { id: requiredString(), relations: bool("includeRelations"), "customer-needs": bool("includeCustomerNeeds"), releases: bool("includeReleases"), full: bool() }, "issue", undefined, undefined, ["linear-axi issues inspect --id ENG-123 --relations --full"]),
-  command("issues search", "list_issues", { ...commonList, query: stringFlag(), team: stringFlag(), state: stringFlag(), cycle: stringFlag(), label: stringFlag(), assignee: stringFlag(), delegate: stringFlag(), project: stringFlag(), release: stringFlag(), priority: constrainedNumber({ integer: true, minimum: 0, maximum: 4 }), "parent-id": stringFlag("parentId"), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived") }, "issues", "issues", ["id", "title", "status", "team"], ["linear-axi issues search --team ENG --query auth"]),
-  command("projects list", "list_projects", { ...commonList, query: stringFlag(), state: stringFlag(), initiative: stringFlag(), team: stringFlag(), member: stringFlag(), label: stringFlag(), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), milestones: bool("includeMilestones"), members: bool("includeMembers"), "include-archived": bool("includeArchived") }, "projects", "projects", ["id", "name", "slugId", "state", "updatedAt"], ["linear-axi projects list --team ENG --limit 20"], undefined, maxLimit(50)),
-  command("projects view", "get_project", { query: requiredString(), milestones: bool("includeMilestones"), members: bool("includeMembers"), resources: bool("includeResources"), full: bool() }, "project", undefined, undefined, ["linear-axi projects view --query <id-name-or-slug> --full"]),
-  command("projects update", "save_project", { id: requiredString(), name: stringFlag(), icon: stringFlag(), color: formattedStringFlag("color"), summary: limitedStringFlag(255), "clear-summary": emptyStringFlag("summary"), description: stringFlag(), "clear-description": emptyStringFlag("description"), "if-updated-at": preconditionFlag(), state: stringFlag(), "start-date": formattedStringFlag("date", "startDate"), "start-date-resolution": stringFlag("startDateResolution", ["halfYear", "month", "quarter", "year"]), "target-date": formattedStringFlag("date", "targetDate"), "target-date-resolution": stringFlag("targetDateResolution", ["halfYear", "month", "quarter", "year"]), priority: constrainedNumber({ integer: true, minimum: 0, maximum: 4 }), "add-teams-json": arrayFlag("addTeams"), "remove-teams-json": arrayFlag("removeTeams"), "teams-json": arrayFlag("setTeams"), "labels-json": arrayFlag("labels"), lead: stringFlag(), "clear-lead": nullFlag("lead"), "add-initiatives-json": arrayFlag("addInitiatives"), "remove-initiatives-json": arrayFlag("removeInitiatives"), "initiatives-json": arrayFlag("setInitiatives"), full: bool() }, "project", undefined, undefined, ["linear-axi projects update --id <project-id> --state started"], undefined, combineValidation(mutuallyExclusivePairs([["summary", "clear-summary"], ["description", "clear-description"], ["lead", "clear-lead"]]), replacementValidation("teams-json", ["add-teams-json", "remove-teams-json"]), replacementValidation("initiatives-json", ["add-initiatives-json", "remove-initiatives-json"]))),
+  command("agent-skills view", "get_agent_skill", { id: requiredString(), full: fullFlag() }, "agentSkill", undefined, undefined, ["linear-axi agent-skills view --id <skill-id> --full"]),
+  command("cycles list", "list_cycles", { "team-id": requiredString("teamId"), type: stringFlag(undefined, ["current", "previous", "next"]), full: fullFlag() }, "cycles", "$", ["id", "number", "name", "startsAt", "endsAt"], ["linear-axi cycles list --team-id <team-id> --type current"]),
+  command("documents list", "list_documents", { ...commonList, query: stringFlag(), "project-id": stringFlag("projectId"), "initiative-id": stringFlag("initiativeId"), "team-id": stringFlag("teamId"), "creator-id": stringFlag("creatorId"), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived", false) }, "documents", "documents", ["id", "title", "slugId", "updatedAt"], ["linear-axi documents list --query roadmap --limit 20"]),
+  command("documents view", "get_document", { id: requiredString(), full: fullFlag() }, "document", undefined, undefined, ["linear-axi documents view --id <id-or-slug> --full"]),
+  command("documents update", "save_document", { id: requiredString(), title: stringFlag(), content: stringFlag(), "clear-content": emptyStringFlag("content", ["content"]), "if-updated-at": preconditionFlag(), project: stringFlag(), issue: stringFlag(), initiative: stringFlag(), cycle: stringFlag(), team: stringFlag(), icon: stringFlag(), color: formattedStringFlag("color"), full: fullFlag() }, "document", undefined, undefined, ["linear-axi documents update --id <document-id> --title \"New title\""], undefined, combineValidation(documentUpdateValidation, mutuallyExclusivePairs([["content", "clear-content"]]))),
+  command("issues inspect", "get_issue", { id: requiredString(), relations: bool("includeRelations", false), "customer-needs": bool("includeCustomerNeeds", false), releases: bool("includeReleases", false), full: fullFlag() }, "issue", undefined, undefined, ["linear-axi issues inspect --id ENG-123 --relations --full"]),
+  command("issues search", "list_issues", { ...commonList, query: stringFlag(), team: stringFlag(), state: stringFlag(), cycle: stringFlag(), label: stringFlag(), assignee: stringFlag(), delegate: stringFlag(), project: stringFlag(), release: stringFlag(), priority: constrainedNumber({ integer: true, minimum: 0, maximum: 4 }), "parent-id": stringFlag("parentId"), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived", true) }, "issues", "issues", ["id", "title", "status", "team"], ["linear-axi issues search --team ENG --query auth"]),
+  command("projects list", "list_projects", { ...commonList, limit: { ...commonList.limit, maximum: 50 }, query: stringFlag(), state: stringFlag(), initiative: stringFlag(), team: stringFlag(), member: stringFlag(), label: stringFlag(), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), milestones: bool("includeMilestones", false), members: bool("includeMembers", false), "include-archived": bool("includeArchived", false) }, "projects", "projects", ["id", "name", "slugId", "state", "updatedAt"], ["linear-axi projects list --team ENG --limit 20"], undefined, maxLimit(50)),
+  command("projects view", "get_project", { query: requiredString(), milestones: bool("includeMilestones", false), members: bool("includeMembers", false), resources: bool("includeResources", false), full: fullFlag() }, "project", undefined, undefined, ["linear-axi projects view --query <id-name-or-slug> --full"]),
+  command("projects update", "save_project", { id: requiredString(), name: stringFlag(), icon: stringFlag(), color: formattedStringFlag("color"), summary: limitedStringFlag(255), "clear-summary": emptyStringFlag("summary", ["summary"]), description: stringFlag(), "clear-description": emptyStringFlag("description", ["description"]), "if-updated-at": preconditionFlag(), state: stringFlag(), "start-date": formattedStringFlag("date", "startDate"), "start-date-resolution": stringFlag("startDateResolution", ["halfYear", "month", "quarter", "year"]), "target-date": formattedStringFlag("date", "targetDate"), "target-date-resolution": stringFlag("targetDateResolution", ["halfYear", "month", "quarter", "year"]), priority: constrainedNumber({ integer: true, minimum: 0, maximum: 4 }), "add-teams-json": arrayFlag("addTeams", ["teams-json"]), "remove-teams-json": arrayFlag("removeTeams", ["teams-json"]), "teams-json": arrayFlag("setTeams", ["add-teams-json", "remove-teams-json"]), "labels-json": arrayFlag("labels"), lead: stringFlag(), "clear-lead": nullFlag("lead", ["lead"]), "add-initiatives-json": arrayFlag("addInitiatives", ["initiatives-json"]), "remove-initiatives-json": arrayFlag("removeInitiatives", ["initiatives-json"]), "initiatives-json": arrayFlag("setInitiatives", ["add-initiatives-json", "remove-initiatives-json"]), full: fullFlag() }, "project", undefined, undefined, ["linear-axi projects update --id <project-id> --state started"], undefined, combineValidation(mutuallyExclusivePairs([["summary", "clear-summary"], ["description", "clear-description"], ["lead", "clear-lead"]]), replacementValidation("teams-json", ["add-teams-json", "remove-teams-json"]), replacementValidation("initiatives-json", ["add-initiatives-json", "remove-initiatives-json"]))),
   command("project-labels list", "list_project_labels", { ...commonList, name: stringFlag() }, "projectLabels", "labels", ["id", "name", "color"], ["linear-axi project-labels list --name Platform"]),
-  command("release-pipelines list", "list_release_pipelines", { ...commonList, query: stringFlag(), team: stringFlag(), type: stringFlag(undefined, ["continuous", "scheduled"]), production: bool("isProduction"), stages: bool("includeStages"), teams: bool("includeTeams"), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived") }, "releasePipelines", "releasePipelines", ["id", "name", "slugId", "type", "isProduction"], ["linear-axi release-pipelines list --team ENG"]),
-  command("releases list", "list_releases", { ...commonList, query: stringFlag(), pipeline: stringFlag(), stage: stringFlag(), "stage-type": stringFlag("stageType", ["planned", "started", "completed", "canceled"]), version: stringFlag(), "has-release-notes": bool("hasReleaseNotes"), "release-notes": bool("includeReleaseNotes"), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived") }, "releases", "releases", ["id", "name", "version", "stage", "updatedAt"], ["linear-axi releases list --pipeline <pipeline> --limit 20"]),
-  command("releases view", "get_release", { id: requiredString(), "release-notes": bool("includeReleaseNotes"), full: bool() }, "release", undefined, undefined, ["linear-axi releases view --id <id-or-slug> --release-notes"]),
-  command("releases update", "save_release", { id: requiredString(), name: stringFlag(), description: stringFlag(), "clear-description": emptyStringFlag("description"), "if-updated-at": preconditionFlag(), version: stringFlag(), pipeline: stringFlag(), stage: stringFlag(), "start-date": formattedStringFlag("date", "startDate"), "clear-start-date": nullFlag("startDate"), "target-date": formattedStringFlag("date", "targetDate"), "clear-target-date": nullFlag("targetDate"), "created-at": formattedStringFlag("timestamp", "createdAt"), "started-at": formattedStringFlag("timestamp", "startedAt"), "clear-started-at": nullFlag("startedAt"), "completed-at": formattedStringFlag("timestamp", "completedAt"), "clear-completed-at": nullFlag("completedAt"), "commit-sha": stringFlag("commitSha"), full: bool() }, "release", undefined, undefined, ["linear-axi releases update --id <release-id> --stage shipped"], undefined, mutuallyExclusivePairs([["description", "clear-description"], ["start-date", "clear-start-date"], ["target-date", "clear-target-date"], ["started-at", "clear-started-at"], ["completed-at", "clear-completed-at"]])),
-  command("release-notes list", "list_release_notes", { ...commonList, query: stringFlag(), pipeline: stringFlag(), release: stringFlag(), content: bool("includeContent"), releases: bool("includeReleases"), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived") }, "releaseNotes", "releaseNotes", ["id", "title", "slugId", "updatedAt"], ["linear-axi release-notes list --pipeline <pipeline>"]),
-  command("release-notes view", "get_release_note", { id: requiredString(), releases: bool("includeReleases"), full: bool() }, "releaseNote", undefined, undefined, ["linear-axi release-notes view --id <id-or-slug> --full"]),
-  command("release-notes update", "save_release_note", { id: requiredString(), pipeline: stringFlag(), title: stringFlag(), content: stringFlag(), "clear-content": emptyStringFlag("content"), "if-updated-at": preconditionFlag(), "releases-json": arrayFlag("releases"), "range-from": stringFlag("rangeFromRelease"), "range-to": stringFlag("rangeToRelease"), full: bool() }, "releaseNote", undefined, undefined, ["linear-axi release-notes update --id <note-id> --title \"v2 notes\""], undefined, combineValidation(releaseRangeValidation, mutuallyExclusivePairs([["content", "clear-content"]]))),
+  command("release-pipelines list", "list_release_pipelines", { ...commonList, query: stringFlag(), team: stringFlag(), type: stringFlag(undefined, ["continuous", "scheduled"]), production: bool("isProduction"), stages: bool("includeStages", false), teams: bool("includeTeams", false), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived", false) }, "releasePipelines", "releasePipelines", ["id", "name", "slugId", "type", "isProduction"], ["linear-axi release-pipelines list --team ENG"]),
+  command("releases list", "list_releases", { ...commonList, query: stringFlag(), pipeline: stringFlag(), stage: stringFlag(), "stage-type": stringFlag("stageType", ["planned", "started", "completed", "canceled"]), version: stringFlag(), "has-release-notes": bool("hasReleaseNotes"), "release-notes": bool("includeReleaseNotes", false), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived", false) }, "releases", "releases", ["id", "name", "version", "stage", "updatedAt"], ["linear-axi releases list --pipeline <pipeline> --limit 20"]),
+  command("releases view", "get_release", { id: requiredString(), "release-notes": bool("includeReleaseNotes", false), full: fullFlag() }, "release", undefined, undefined, ["linear-axi releases view --id <id-or-slug> --release-notes"]),
+  command("releases update", "save_release", { id: requiredString(), name: stringFlag(), description: stringFlag(), "clear-description": emptyStringFlag("description", ["description"]), "if-updated-at": preconditionFlag(), version: stringFlag(), pipeline: stringFlag(), stage: stringFlag(), "start-date": formattedStringFlag("date", "startDate"), "clear-start-date": nullFlag("startDate", ["start-date"]), "target-date": formattedStringFlag("date", "targetDate"), "clear-target-date": nullFlag("targetDate", ["target-date"]), "created-at": formattedStringFlag("timestamp", "createdAt"), "started-at": formattedStringFlag("timestamp", "startedAt"), "clear-started-at": nullFlag("startedAt", ["started-at"]), "completed-at": formattedStringFlag("timestamp", "completedAt"), "clear-completed-at": nullFlag("completedAt", ["completed-at"]), "commit-sha": stringFlag("commitSha"), full: fullFlag() }, "release", undefined, undefined, ["linear-axi releases update --id <release-id> --stage shipped"], undefined, mutuallyExclusivePairs([["description", "clear-description"], ["start-date", "clear-start-date"], ["target-date", "clear-target-date"], ["started-at", "clear-started-at"], ["completed-at", "clear-completed-at"]])),
+  command("release-notes list", "list_release_notes", { ...commonList, query: stringFlag(), pipeline: stringFlag(), release: stringFlag(), content: bool("includeContent", false), releases: bool("includeReleases", false), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived", false) }, "releaseNotes", "releaseNotes", ["id", "title", "slugId", "updatedAt"], ["linear-axi release-notes list --pipeline <pipeline>"]),
+  command("release-notes view", "get_release_note", { id: requiredString(), releases: bool("includeReleases", false), full: fullFlag() }, "releaseNote", undefined, undefined, ["linear-axi release-notes view --id <id-or-slug> --full"]),
+  command("release-notes update", "save_release_note", { id: requiredString(), pipeline: stringFlag(), title: stringFlag(), content: stringFlag(), "clear-content": emptyStringFlag("content", ["content"]), "if-updated-at": preconditionFlag(), "releases-json": arrayFlag("releases", ["range-from", "range-to"]), "range-from": stringFlag("rangeFromRelease", undefined, ["releases-json"]), "range-to": stringFlag("rangeToRelease", undefined, ["releases-json"]), full: fullFlag() }, "releaseNote", undefined, undefined, ["linear-axi release-notes update --id <note-id> --title \"v2 notes\""], undefined, combineValidation(releaseRangeValidation, mutuallyExclusivePairs([["content", "clear-content"]]))),
   command("diffs list", "list_diffs", { ...commonList, query: stringFlag(), owner: stringFlag(), repo: stringFlag(), status: stringFlag() }, "diffs", "diffs", ["id", "identifier", "title", "status", "updatedAt"], ["linear-axi diffs list --repo linear-axi --limit 20"]),
-  command("diffs view", "get_diff", { id: requiredString("urlOrId"), full: bool() }, "diff", undefined, undefined, ["linear-axi diffs view --id <url-or-id> --full"]),
-  command("diffs threads", "get_diff_threads", { id: requiredString("urlOrId"), "thread-id": stringFlag("threadId"), resolved: bool(), "order-by": stringFlag("orderBy", ["createdAt", "updatedAt"]), full: bool() }, "threads", "$", ["id", "resolved", "createdAt", "updatedAt"], ["linear-axi diffs threads --id <url-or-id>"]),
-  command("milestones list", "list_milestones", { project: requiredString(), full: bool() }, "milestones", "$", ["id", "name", "targetDate"], ["linear-axi milestones list --project <project>"]),
-  command("milestones view", "get_milestone", { project: requiredString(), query: requiredString(), full: bool() }, "milestone", undefined, undefined, ["linear-axi milestones view --project <project> --query <id-or-name>"]),
-  command("milestones update", "save_milestone", { project: requiredString(), id: requiredString(), name: stringFlag(), description: stringFlag(), "clear-description": emptyStringFlag("description"), "if-updated-at": preconditionFlag(), "target-date": formattedStringFlag("date", "targetDate"), "clear-target-date": nullFlag("targetDate"), full: bool() }, "milestone", undefined, undefined, ["linear-axi milestones update --project Roadmap --id <milestone-id> --target-date 2026-09-01"], undefined, mutuallyExclusivePairs([["description", "clear-description"], ["target-date", "clear-target-date"]])),
-  command("teams search", "list_teams", { ...commonList, query: stringFlag(), "include-archived": bool("includeArchived"), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt") }, "teams", "teams", ["id", "key", "name", "updatedAt"], ["linear-axi teams search --query Engineering"]),
-  command("teams view", "get_team", { query: requiredString(), full: bool() }, "team", undefined, undefined, ["linear-axi teams view --query <id-key-or-name>"]),
+  command("diffs view", "get_diff", { id: requiredString("urlOrId"), full: fullFlag() }, "diff", undefined, undefined, ["linear-axi diffs view --id <url-or-id> --full"]),
+  command("diffs threads", "get_diff_threads", { id: requiredString("urlOrId"), "thread-id": stringFlag("threadId"), resolved: bool(), "order-by": { kind: "string", arg: "orderBy", values: ["createdAt", "updatedAt"], defaultValue: "updatedAt", description: "Sort threads by this timestamp." }, full: fullFlag() }, "threads", "$", ["id", "resolved", "createdAt", "updatedAt"], ["linear-axi diffs threads --id <url-or-id>"]),
+  command("milestones list", "list_milestones", { project: requiredString(), full: fullFlag() }, "milestones", "$", ["id", "name", "targetDate"], ["linear-axi milestones list --project <project>"]),
+  command("milestones view", "get_milestone", { project: requiredString(), query: requiredString(), full: fullFlag() }, "milestone", undefined, undefined, ["linear-axi milestones view --project <project> --query <id-or-name>"]),
+  command("milestones update", "save_milestone", { project: requiredString(), id: requiredString(), name: stringFlag(), description: stringFlag(), "clear-description": emptyStringFlag("description", ["description"]), "if-updated-at": preconditionFlag(), "target-date": formattedStringFlag("date", "targetDate"), "clear-target-date": nullFlag("targetDate", ["target-date"]), full: fullFlag() }, "milestone", undefined, undefined, ["linear-axi milestones update --project Roadmap --id <milestone-id> --target-date 2026-09-01"], undefined, mutuallyExclusivePairs([["description", "clear-description"], ["target-date", "clear-target-date"]])),
+  command("teams search", "list_teams", { ...commonList, query: stringFlag(), "include-archived": bool("includeArchived", false), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt") }, "teams", "teams", ["id", "key", "name", "updatedAt"], ["linear-axi teams search --query Engineering"]),
+  command("teams view", "get_team", { query: requiredString(), full: fullFlag() }, "team", undefined, undefined, ["linear-axi teams view --query <id-key-or-name>"]),
   command("users list", "list_users", { ...commonList, query: stringFlag(), team: stringFlag() }, "users", "users", ["id", "name", "email", "active"], ["linear-axi users list --query Alice"]),
-  command("users view", "get_user", { query: requiredString(), full: bool() }, "user", undefined, undefined, ["linear-axi users view --query <id-name-or-email>"]),
-  command("docs search", "search_documentation", { query: requiredString(), page: numberFlag() }, "documentation", "$", ["title", "url", "snippet"], ["linear-axi docs search --query \"project updates\""]),
-  command("status-updates list", "get_status_updates", { ...commonList, type: requiredStringEnum(["project", "initiative"]), project: stringFlag(), initiative: stringFlag(), user: stringFlag(), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived") }, "statusUpdates", "statusUpdates", ["id", "type", "health", "createdAt", "updatedAt"], ["linear-axi status-updates list --type project --project <project>"]),
-  command("status-updates view", "get_status_updates", { id: requiredString(), type: requiredStringEnum(["project", "initiative"]), full: bool() }, "statusUpdates", "statusUpdates", ["id", "type", "health", "body"], ["linear-axi status-updates view --id <update-id> --type project"]),
-  command("status-updates update", "save_status_update", { type: requiredStringEnum(["project", "initiative"]), id: requiredString(), project: stringFlag(), initiative: stringFlag(), body: stringFlag(), "clear-body": emptyStringFlag("body"), "if-updated-at": preconditionFlag(), health: stringFlag(undefined, ["onTrack", "atRisk", "offTrack"]), full: bool() }, "statusUpdate", undefined, undefined, ["linear-axi status-updates update --type project --id <update-id> --health onTrack"], undefined, combineValidation(statusUpdateValidation, mutuallyExclusivePairs([["body", "clear-body"]])))
+  command("users view", "get_user", { query: requiredString(), full: fullFlag() }, "user", undefined, undefined, ["linear-axi users view --query <id-name-or-email>"]),
+  command("docs search", "search_documentation", { query: requiredString(), page: constrainedNumber({ integer: true, minimum: 0, defaultValue: 0 }) }, "documentation", "$", ["title", "url", "snippet"], ["linear-axi docs search --query \"project updates\""]),
+  command("status-updates list", "get_status_updates", { ...commonList, type: requiredStringEnum(["project", "initiative"]), project: stringFlag(), initiative: stringFlag(), user: stringFlag(), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived", false) }, "statusUpdates", "statusUpdates", ["id", "type", "health", "createdAt", "updatedAt"], ["linear-axi status-updates list --type project --project <project>"]),
+  command("status-updates view", "get_status_updates", { id: requiredString(), type: requiredStringEnum(["project", "initiative"]), full: fullFlag() }, "statusUpdates", "statusUpdates", ["id", "type", "health", "body"], ["linear-axi status-updates view --id <update-id> --type project"]),
+  command("status-updates update", "save_status_update", { type: requiredStringEnum(["project", "initiative"]), id: requiredString(), project: stringFlag(), initiative: stringFlag(), body: stringFlag(), "clear-body": emptyStringFlag("body", ["body"]), "if-updated-at": preconditionFlag(), health: stringFlag(undefined, ["onTrack", "atRisk", "offTrack"]), full: fullFlag() }, "statusUpdate", undefined, undefined, ["linear-axi status-updates update --type project --id <update-id> --health onTrack"], undefined, combineValidation(statusUpdateValidation, mutuallyExclusivePairs([["body", "clear-body"]])))
 ]
 
 export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((entry) => {
@@ -97,8 +144,15 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
   const flags = new Set(["help", ...flagNames])
   const valueFlags = new Set(Object.entries(entry.flags).filter(([, flag]) => !["boolean", "null", "empty-string"].includes(flag.kind)).map(([name]) => name))
   const required = new Set(Object.entries(entry.flags).filter(([, flag]) => flag.required).map(([name]) => name))
-  const usage = `Usage: linear-axi ${entry.path.join(" ")} ${[...required].map((flag) => `--${flag} <value>`).join(" ")}`.trimEnd()
-  const options = [...flags].map((flag) => `  --${flag}${valueFlags.has(flag) ? " <value>" : ""}${required.has(flag) ? " (required)" : ""}`)
+  const repeatableFlags = new Set(Object.entries(entry.flags).filter(([, flag]) => flag.repeatable).map(([name]) => name))
+  const usage = `Usage: linear-axi ${entry.path.join(" ")} ${Object.entries(entry.flags)
+    .filter(([, flag]) => flag.required)
+    .map(([name, flag]) => `--${name} ${officialFlagValue(name, flag)}`)
+    .join(" ")}`.trimEnd()
+  const options = [
+    "  --help - Show command help.",
+    ...Object.entries(entry.flags).map(([name, flag]) => renderOfficialFlag(name, flag))
+  ]
   const safety = mutationRichTextKeys(entry.tool).length === 0
     ? []
     : ["Safety:", "  Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains."]
@@ -107,8 +161,9 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
     flags,
     valueFlags,
     required,
+    repeatableFlags,
     officialTools: [entry.tool],
-    help: [usage, "Options:", ...options, ...safety, "Example:", ...entry.examples.map((example) => `  ${example}`)].join("\n")
+    help: [usage, "Options (single-use unless marked repeatable):", ...options, ...safety, "Example:", ...entry.examples.map((example) => `  ${example}`)].join("\n")
   }
 })
 
@@ -623,8 +678,8 @@ function command(
   return { path: path.split(" "), tool, flags, outputKey, listKey, defaultFields, examples, fixedArgs, validate }
 }
 
-function stringFlag(arg?: string, values?: ReadonlyArray<string>): OfficialFlag {
-  return { kind: "string", arg, values }
+function stringFlag(arg?: string, values?: ReadonlyArray<string>, conflictsWith?: ReadonlyArray<string>): OfficialFlag {
+  return { kind: "string", arg, values, conflictsWith }
 }
 function formattedStringFlag(format: "color" | "date" | "timestamp", arg?: string): OfficialFlag {
   return { kind: "string", arg, format }
@@ -638,26 +693,106 @@ function requiredString(arg?: string): OfficialFlag {
 function requiredStringEnum(values: ReadonlyArray<string>, arg?: string): OfficialFlag {
   return { kind: "string", arg, required: true, values }
 }
-function numberFlag(arg?: string): OfficialFlag {
-  return { kind: "number", arg }
-}
-function constrainedNumber(options: Pick<OfficialFlag, "integer" | "minimum" | "maximum">, arg?: string): OfficialFlag {
+function constrainedNumber(
+  options: Pick<OfficialFlag, "integer" | "minimum" | "maximum" | "defaultValue">,
+  arg?: string
+): OfficialFlag {
   return { kind: "number", arg, ...options }
 }
-function bool(arg?: string): OfficialFlag {
-  return { kind: "boolean", arg }
+function bool(arg?: string, defaultValue?: boolean): OfficialFlag {
+  return { kind: "boolean", arg, defaultValue }
 }
-function nullFlag(arg: string): OfficialFlag {
-  return { kind: "null", arg }
+function fullFlag(): OfficialFlag {
+  return { kind: "boolean", defaultValue: false, description: "Return complete fields without concise projection or truncation." }
 }
-function emptyStringFlag(arg: string): OfficialFlag {
-  return { kind: "empty-string", arg }
+function nullFlag(arg: string, conflictsWith: ReadonlyArray<string>): OfficialFlag {
+  return { kind: "null", arg, conflictsWith }
+}
+function emptyStringFlag(arg: string, conflictsWith: ReadonlyArray<string>): OfficialFlag {
+  return { kind: "empty-string", arg, conflictsWith }
 }
 function preconditionFlag(): OfficialFlag {
-  return { kind: "string", format: "timestamp", internal: true }
+  return {
+    kind: "string",
+    format: "timestamp",
+    internal: true,
+    description: "Require the exact updatedAt from the latest full view before replacing rich text."
+  }
 }
-function arrayFlag(arg?: string): OfficialFlag {
-  return { kind: "string-array", arg }
+function arrayFlag(arg?: string, conflictsWith?: ReadonlyArray<string>): OfficialFlag {
+  return { kind: "string-array", arg, conflictsWith }
+}
+
+function renderOfficialFlag(name: string, flag: OfficialFlag): string {
+  const aliases = flag.kind === "boolean" && name !== "full"
+    ? `--${name} | --no-${name}`
+    : `--${name}`
+  const value = ["boolean", "null", "empty-string"].includes(flag.kind) ? "" : ` ${officialFlagValue(name, flag)}`
+  const details = [
+    flag.required ? "required" : undefined,
+    flag.defaultValue !== undefined ? `default: ${String(flag.defaultValue)}` : undefined,
+    flag.repeatable ? "repeatable" : undefined,
+    flag.conflictsWith && flag.conflictsWith.length > 0
+      ? `conflicts: ${flag.conflictsWith.map((conflict) => `--${conflict}`).join(", ")}`
+      : undefined
+  ].filter((detail): detail is string => detail !== undefined)
+  const qualifiers = details.length > 0 ? ` (${details.join("; ")})` : ""
+  return `  ${aliases}${value}${qualifiers} - ${flag.description ?? officialFlagDescription(name, flag)}`
+}
+
+function officialFlagValue(name: string, flag: OfficialFlag): string {
+  if (flag.values && flag.values.length > 0) return `<${flag.values.join("|")}>`
+  if (flag.format === "color") return "<#RRGGBB>"
+  if (flag.format === "date") return "<YYYY-MM-DD>"
+  if (flag.format === "timestamp") return "<YYYY-MM-DDTHH:mm:ss.sssZ>"
+  if (flag.kind === "string-array") return "<JSON-string-array>"
+  if (flag.kind === "number") {
+    const type = flag.integer ? "integer" : "number"
+    if (flag.minimum !== undefined && flag.maximum !== undefined) return `<${type}:${flag.minimum}..${flag.maximum}>`
+    if (flag.minimum !== undefined) return `<${type}:>=${flag.minimum}>`
+    if (flag.maximum !== undefined) return `<${type}:<=${flag.maximum}>`
+    return `<${type}>`
+  }
+  if (flag.maxLength !== undefined) return `<text:max-${flag.maxLength}>`
+  if (name === "query") return "<query>"
+  if (name === "after") return "<cursor>"
+  if (name === "created-at" || name === "updated-at") return "<ISO-8601>"
+  if (name === "commit-sha") return "<SHA>"
+  if (name === "id" || name.endsWith("-id") || name === "thread-id") return "<id>"
+  if (["team", "project", "initiative", "issue", "cycle", "state", "label", "assignee", "delegate", "release", "pipeline", "stage", "lead", "member", "user", "owner", "parent-id", "range-from", "range-to"].includes(name)) return "<selector>"
+  return "<text>"
+}
+
+function officialFlagDescription(name: string, flag: OfficialFlag): string {
+  const field = humanizeOfficialFlag(flag.arg ?? name)
+  if (flag.kind === "boolean") {
+    if (name.startsWith("include-")) return `Include ${humanizeOfficialFlag(name.slice("include-".length))}.`
+    if (name.startsWith("has-")) return `Filter by whether results have ${humanizeOfficialFlag(name.slice("has-".length))}.`
+    if (["content", "customer-needs", "members", "milestones", "relations", "release-notes", "releases", "resources", "stages", "teams"].includes(name)) {
+      return `Include ${humanizeOfficialFlag(name)}.`
+    }
+    return `Filter by ${field}.`
+  }
+  const explicit = OFFICIAL_FLAG_DESCRIPTIONS[name]
+  if (explicit) return explicit
+  if (flag.kind === "null") return `Clear ${field} to null.`
+  if (flag.kind === "empty-string") return `Clear ${field} to an empty string.`
+  if (flag.kind === "string-array") {
+    const noun = humanizeOfficialFlag(name.replace(/^(add|remove)-/, "").replace(/-json$/, ""))
+    if (name.startsWith("add-")) return `Add the listed ${noun}.`
+    if (name.startsWith("remove-")) return `Remove the listed ${noun}.`
+    return `Replace the complete ${noun} set.`
+  }
+  return `Set or filter by ${field}.`
+}
+
+function humanizeOfficialFlag(value: string): string {
+  return value
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replaceAll("-", " ")
+    .replace(/json$/i, "")
+    .trim()
+    .toLowerCase()
 }
 function selected(flags: ReadonlyMap<string, string | boolean>, names: ReadonlyArray<string>): ReadonlyArray<string> {
   return names.filter((name) => flags.has(name))
