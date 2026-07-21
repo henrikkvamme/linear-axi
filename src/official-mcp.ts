@@ -476,6 +476,12 @@ const ambiguousMutationFailure = (
     error.operation !== "tools/call" || !error.outcomeUnknown || error.phase === "before-dispatch") {
     return error
   }
+  if (tool === "prepare_attachment_upload") {
+    return new LinearApiError({
+      message: `Official Linear MCP ${tool} failed after dispatch during ${error.phase}; preparation outcome is unknown`,
+      help: "Retry the same attachment upload command to explicitly prepare a replacement; do not reuse an upload request whose response was lost."
+    })
+  }
   const inspectionHelp = officialMutationInspectionHelp(tool, args)
   const createWarning = tool === "save_issue" && !(typeof args.id === "string" && args.id.length > 0)
     ? " A missing result does not prove creation failed; do not repeat the mutation automatically."
@@ -487,7 +493,7 @@ const ambiguousMutationFailure = (
 }
 
 const isNonRetryableMutationTool = (name: string): boolean =>
-  name.startsWith("save_") || name === "create_attachment_from_upload"
+  name.startsWith("save_") || name === "prepare_attachment_upload" || name === "create_attachment_from_upload"
 
 const isNonRetryableMutationToolCall = (method: string, params: Readonly<Record<string, unknown>>): boolean =>
   method === "tools/call" && typeof params.name === "string" && isNonRetryableMutationTool(params.name)

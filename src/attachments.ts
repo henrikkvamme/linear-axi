@@ -245,7 +245,7 @@ const readAttachment = Effect.fn("Attachments.read")(function*(
   return {
     attachment: {
       id: attachment.id,
-      filename: attachment.filename,
+      filename: terminalSafeMetadata(attachment.filename),
       mediaType: attachment.mediaType,
       size: attachment.size
     },
@@ -315,7 +315,7 @@ const listAttachments = Effect.fn("Attachments.list")(function*(parsed: ParsedAr
     }))
   }
   if (!matchesIssue(issue, selector)) return yield* domain("Official Linear MCP returned a different issue", `Run \`linear-axi issues view --id=${shellQuote(selector)}\` to inspect it.`)
-  const rows = issue.attachments.map(toSummary)
+  const rows = issue.attachments.map((attachment) => publicSummary(toSummary(attachment)))
   if (offset > rows.length) {
     return yield* Effect.fail(new UsageError({
       message: "invalid --after cursor: attachment page is no longer available",
@@ -383,13 +383,19 @@ const decodeDetail = (value: unknown): AttachmentDetail | undefined => {
   }
 }
 
+const publicSummary = (attachment: AttachmentSummary): AttachmentSummary => ({
+  ...attachment,
+  filename: terminalSafeMetadata(attachment.filename),
+  title: terminalSafeMetadata(attachment.title)
+})
+
 const publicDetail = (attachment: AttachmentDetail) => {
   const contentAvailable = isLinearDownloadUrl(attachment.contentUrl)
   return {
     id: attachment.id,
-    filename: attachment.filename,
-    title: attachment.title,
-    subtitle: attachment.subtitle,
+    filename: terminalSafeMetadata(attachment.filename),
+    title: terminalSafeMetadata(attachment.title),
+    subtitle: terminalSafeMetadata(attachment.subtitle),
     mediaType: attachment.mediaType,
     size: attachment.size,
     createdAt: attachment.createdAt,
@@ -449,6 +455,8 @@ const makeTerminalSafe = (value: string): string => {
   }
   return output
 }
+
+const terminalSafeMetadata = (value: string | null): string | null => value === null ? null : makeTerminalSafe(value)
 
 const digestSha256 = (bytes: Uint8Array): string => new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
 
@@ -1038,7 +1046,7 @@ const uploadOutput = (
 ) => ({
   attachmentId: attachment.id,
   issue: { id: issue.id, identifier: issue.identifier },
-  filename: source.filename,
+  filename: makeTerminalSafe(source.filename),
   bytes: source.size,
   mediaType: source.mediaType,
   sha256: source.sha256,

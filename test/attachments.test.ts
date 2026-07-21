@@ -78,6 +78,35 @@ describe("attachment content boundary", () => {
     })
   })
 
+  test("list, view, and read make terminal controls in attachment metadata explicit", async () => {
+    const unsafe = {
+      filename: "trace\u009b31m\u202e.txt",
+      title: "Trace\u0085\u2066",
+      subtitle: "Details\u009f\u2069"
+    }
+    const expected = {
+      filename: "trace\\u009b31m\\u202e.txt",
+      title: "Trace\\u0085\\u2066",
+      subtitle: "Details\\u009f\\u2069"
+    }
+    const attachment = detail(unsafe)
+
+    const listed = await run(["attachments", "list", "--issue", "ENG-123"], {
+      id: "issue-1",
+      identifier: "ENG-123",
+      attachments: [attachment]
+    })
+    expect(listed).toMatchObject({ attachments: [{ filename: expected.filename, title: expected.title }] })
+
+    const viewed = await run(["attachments", "view", "--id", "attachment-1"], attachment)
+    expect(viewed).toMatchObject({ attachment: expected })
+
+    const read = await run(["attachments", "read", "--id", "attachment-1"], attachment, {
+      fetcher: async () => new Response("hello world\n", { status: 200 })
+    })
+    expect(read).toMatchObject({ attachment: { filename: expected.filename } })
+  })
+
   test("read emits bounded UTF-8 text and makes terminal controls explicit", async () => {
     const bytes = new TextEncoder().encode("hello\u001b[31mred\u0007\u009b31m\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\n")
     const output = await run(["attachments", "read", "--id", "attachment-1", "--max-bytes", "64"], detail({ size: bytes.length }), {

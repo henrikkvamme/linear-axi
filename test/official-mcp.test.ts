@@ -364,6 +364,36 @@ describe("official Linear MCP tool boundary", () => {
     expect(JSON.stringify(error)).not.toContain("assets/private")
   })
 
+  test("attachment upload preparation is not replayed after an expired-session response", async () => {
+    let initializations = 0
+    let preparations = 0
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const request = JSON.parse(String(init?.body)) as Record<string, unknown>
+      if (request.method === "initialize") {
+        initializations += 1
+        return Response.json({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2025-03-26", capabilities: {} } }, {
+          headers: { "mcp-session-id": `session-${initializations}` }
+        })
+      }
+      if (request.method === "notifications/initialized") return new Response(null, { status: 202 })
+      preparations += 1
+      return new Response(null, { status: 404 })
+    }
+    const call = makeOfficialMcpToolCaller({ kind: "apiKey", value: "secret-value" }, { fetcher })
+
+    const error = await Effect.runPromise(Effect.flip(call("prepare_attachment_upload", {
+      issue: "issue-id",
+      filename: "trace.txt",
+      contentType: "text/plain",
+      size: 12
+    })))
+
+    expect(initializations).toBe(1)
+    expect(preparations).toBe(1)
+    expect(error.message).toContain("preparation outcome is unknown")
+    expect(error.help).toContain("explicitly prepare a replacement")
+  })
+
   test("malformed save tool payloads have ambiguous outcomes", async () => {
     const transport = initializedFetcher((request) => Response.json({
       jsonrpc: "2.0",
