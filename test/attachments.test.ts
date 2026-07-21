@@ -3,10 +3,10 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHash } from "node:crypto"
-import { open } from "node:fs/promises"
 import { Effect } from "effect"
 import { commandSpecs, parseArgs } from "../src/args"
 import { runAttachmentCommand, type AttachmentRuntime } from "../src/attachments"
+import { writeFileDescriptor } from "../src/native-files"
 import { LinearApiError } from "../src/errors"
 import type { LinearGateway } from "../src/linear"
 
@@ -139,6 +139,15 @@ describe("attachment content boundary", () => {
     expect(output).toMatchObject({ text: "abc", bytesRead: 3, truncated: true })
   })
 
+  test("full read accepts unknown-size text exactly at the safety ceiling", async () => {
+    const bytes = new Uint8Array(1024 * 1024).fill(97)
+    const output = await run(["attachments", "read", "--id", "attachment-1", "--full"], detail({ size: null }), {
+      fetcher: async () => new Response(bytes, { status: 200 })
+    })
+
+    expect(output).toMatchObject({ bytesRead: bytes.byteLength, truncated: false })
+  })
+
   test("download streams to an atomic file and refuses collisions before fetching", async () => {
     const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
     roots.push(root)
@@ -172,31 +181,44 @@ describe("attachment content boundary", () => {
     expect(existsSync(`${outputPath}.partial`)).toBe(false)
   })
 
-  test("download completes every short file write before publishing", async () => {
+  test("download writer completes every short file write", () => {
+    const bytes = new TextEncoder().encode("a complete streamed download")
+    const output: Array<number> = []
+    writeFileDescriptor(-1, bytes, (_fd, remaining, length) => {
+      const written = Math.max(1, Math.floor(length / 2))
+      output.push(...remaining.subarray(0, written))
+      return written
+    })
+
+    expect(Uint8Array.from(output)).toEqual(bytes)
+  })
+
+  test("overwrite preserves a concurrent replacement instead of publishing", async () => {
     const root = mkdtempSync(join(tmpdir(), "linear-axi-attachment-"))
     roots.push(root)
     const outputPath = join(root, "trace.txt")
-    const probe = await open(join(root, "probe"), "w")
-    const prototype = Object.getPrototypeOf(probe) as { write: typeof probe.write }
-    const originalWrite = prototype.write
-    await probe.close()
-    rmSync(join(root, "probe"))
-    prototype.write = async function(this: typeof probe, buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset, position: number | null = null) {
-      return Reflect.apply(originalWrite, this, [buffer, offset, Math.max(1, Math.floor(length / 2)), position])
-    } as typeof probe.write
+    const previousPath = join(root, "previous.txt")
+    writeFileSync(outputPath, "original")
+    const bytes = new TextEncoder().encode("downloaded")
+    const error = await Effect.runPromise(Effect.flip(runEffect(
+      ["attachments", "download", "--id", "attachment-1", "--output", outputPath, "--overwrite"],
+      detail({ size: bytes.length }),
+      {
+        fetcher: async () => new Response(new ReadableStream({
+          pull(controller) {
+            renameSync(outputPath, previousPath)
+            writeFileSync(outputPath, "concurrent")
+            controller.enqueue(bytes)
+            controller.close()
+          }
+        }, { highWaterMark: 0 }), { status: 200 })
+      }
+    )))
 
-    const bytes = new TextEncoder().encode("a complete streamed download")
-    try {
-      const output = await run(["attachments", "download", "--id", "attachment-1", "--output", outputPath], detail({
-        size: bytes.length,
-        sha256: createHash("sha256").update(bytes).digest("hex")
-      }), { fetcher: async () => new Response(bytes, { status: 200 }) })
-
-      expect(output).toMatchObject({ bytes: bytes.length })
-      expect(readFileSync(outputPath)).toEqual(Buffer.from(bytes))
-    } finally {
-      prototype.write = originalWrite
-    }
+    expect(error.message).toContain("Destination changed")
+    expect(readFileSync(outputPath, "utf8")).toBe("concurrent")
+    expect(readFileSync(previousPath, "utf8")).toBe("original")
+    expect(readdirSync(root).every((name) => !name.endsWith(".partial"))).toBe(true)
   })
 
   test("download removes partial data on checksum mismatch and rejects non-HTTPS redirects", async () => {
@@ -360,7 +382,7 @@ describe("resumable attachment upload", () => {
       mediaType: "text/plain",
       sha256: "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
     })
-    const recoveryPath = join(root, "state", readdirSync(join(root, "state"))[0]!)
+    const recoveryPath = join(root, "state", readdirSync(join(root, "state")).find((name) => name.endsWith(".json"))!)
     const recovery = readFileSync(recoveryPath, "utf8")
     expect(recovery).not.toContain(source)
     expect(recovery).not.toMatch(/signature=secret|header-secret|authorization|bearer/i)
@@ -515,11 +537,11 @@ describe("resumable attachment upload", () => {
     }
 
     const recoveryPath = join(root, "state", readdirSync(join(root, "state")).find((name) => name.endsWith(".json"))!)
-    writeFileSync(`${recoveryPath}.lock`, JSON.stringify({ version: 1, owner: "stale-owner", pid: 2147483647 }))
+    writeFileSync(`${recoveryPath}.lock`, JSON.stringify({ version: 1, owner: "stale-owner", pid: process.pid }))
     const recovered = await runUpload(source, uploadGateway, runtime)
 
     expect(recovered).toMatchObject({ changed: false, recovery: "finalized attachment verified" })
-    expect(existsSync(`${recoveryPath}.lock`)).toBe(false)
+    expect(existsSync(`${recoveryPath}.lock`)).toBe(true)
     expect(prepares).toBe(1)
     expect(finalizes).toBe(1)
   })
@@ -583,7 +605,7 @@ describe("resumable attachment upload", () => {
     const failedEffect = runAttachmentCommand(failedParsed, uploadGateway, runtime)!
     const error = await Effect.runPromise(Effect.flip(failedEffect))
     expect(error.message).toBe("Direct attachment byte transfer failed")
-    const recoveryPath = join(root, "state", readdirSync(join(root, "state"))[0]!)
+    const recoveryPath = join(root, "state", readdirSync(join(root, "state")).find((name) => name.endsWith(".json"))!)
     expect(readFileSync(recoveryPath, "utf8")).not.toMatch(/secret=1|header-1|storage\.example/)
 
     await runUpload(source, uploadGateway, runtime)
@@ -641,7 +663,7 @@ describe("resumable attachment upload", () => {
     } as LinearGateway
     const stateRoot = join(root, "state")
     await expect(runUpload(source, uploadGateway, { stateRoot })).rejects.toThrow("prepare response lost")
-    expect(existsSync(stateRoot)).toBe(false)
+    expect(readdirSync(stateRoot).some((name) => name.endsWith(".json"))).toBe(false)
 
     const parsed = parseArgs(["attachments", "upload", "--issue", "ENG-123", "--file", source], commandSpecs)
     let uploadAborted = false
@@ -657,7 +679,7 @@ describe("resumable attachment upload", () => {
     expect(timeoutError.message).toBe("Direct attachment byte transfer failed")
     expect(uploadAborted).toBe(true)
     expect(prepares).toBe(2)
-    const recovery = readFileSync(join(stateRoot, readdirSync(stateRoot)[0]!), "utf8")
+    const recovery = readFileSync(join(stateRoot, readdirSync(stateRoot).find((name) => name.endsWith(".json"))!), "utf8")
     expect(recovery).toContain('"stage":"prepared"')
     expect(recovery).not.toContain("storage.example")
   })

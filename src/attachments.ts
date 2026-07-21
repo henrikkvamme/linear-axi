@@ -1,5 +1,5 @@
 import { constants, createReadStream } from "node:fs"
-import { chmod, link, lstat, mkdir, open, realpath, rename, rmdir, unlink } from "node:fs/promises"
+import { chmod, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises"
 import { basename, dirname, resolve } from "node:path"
 import { randomUUID } from "node:crypto"
 import { Readable } from "node:stream"
@@ -9,6 +9,18 @@ import { readLimitFlag, readStringFlag } from "./args"
 import { LinearApiError, LinearDomainError, UsageError, type CliError } from "./errors"
 import type { LinearGateway } from "./linear"
 import type { OutputValue } from "./output"
+import {
+  closeFileDescriptor,
+  createPrivateFileAt,
+  statFileAt,
+  syncFileDescriptor,
+  tryExchangeFilesAt,
+  tryLinkFileAt,
+  tryLockFileDescriptor,
+  tryUnlinkFileAt,
+  unlockFileDescriptor,
+  writeFileDescriptor
+} from "./native-files"
 import {
   decodeAttachmentCursor,
   decodeAttachmentWire,
@@ -527,7 +539,7 @@ const readBoundedResponse = Effect.fn("Attachments.readBounded")(function*(
       }
       chunks.push(next.value)
       total += next.value.byteLength
-      if (total === limit && (expectedSize === null || expectedSize > total)) {
+      if (total === limit && expectedSize !== null && expectedSize > total) {
         truncated = true
         void reader.cancel().catch(() => undefined)
         break
@@ -684,8 +696,7 @@ const recoveryMatches = (
   recovery.sha256 === source.sha256 && recovery.title === title && recovery.subtitle === subtitle
 
 interface UploadIntentLock {
-  readonly path: string
-  readonly owner: string
+  readonly handle: Awaited<ReturnType<typeof open>>
 }
 
 const ensureRecoveryDirectory = Effect.fn("Attachments.ensureRecoveryDirectory")(function*(parent: string) {
@@ -702,104 +713,35 @@ const ensureRecoveryDirectory = Effect.fn("Attachments.ensureRecoveryDirectory")
 const acquireUploadIntentLock = Effect.fn("Attachments.acquireUploadIntentLock")(function*(recoveryPath: string) {
   const parent = dirname(recoveryPath)
   const path = `${recoveryPath}.lock`
-  const owner = randomUUID()
   yield* ensureRecoveryDirectory(parent)
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const temp = resolve(parent, `.${basename(path)}.${owner}.tmp`)
-    const installed = yield* Effect.tryPromise({
-      try: async () => {
-        const handle = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
-        try {
-          await handle.writeFile(JSON.stringify({ version: 1, owner, pid: process.pid }), "utf8")
-          await handle.sync()
-        } finally {
-          await handle.close()
-        }
-        try {
-          await link(temp, path)
-          return true
-        } catch (cause) {
-          if (Predicate.hasProperty(cause, "code") && cause.code === "EEXIST") return false
-          throw cause
-        } finally {
-          await unlink(temp).catch(() => undefined)
-        }
-      },
-      catch: () => new LinearDomainError({ message: "Could not acquire private upload recovery ownership", help: "Check state-directory permissions and retry." })
-    })
-    if (installed) {
-      yield* syncDirectory(parent)
-      return { path, owner } satisfies UploadIntentLock
-    }
-    const reclaimed = yield* reclaimDeadUploadIntentLock(path)
-    if (!reclaimed) {
-      return yield* domain("An identical attachment upload is already in progress", "Wait for the active upload to finish, then retry the same command.")
-    }
-  }
-  return yield* domain("Could not acquire attachment upload recovery ownership", "Retry after the other upload command exits.")
-})
-
-const reclaimDeadUploadIntentLock = Effect.fn("Attachments.reclaimDeadUploadIntentLock")(function*(path: string) {
-  const lock = yield* Effect.tryPromise({
-    try: async () => {
-      try {
-        const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
-        try {
-          const value: unknown = JSON.parse(await handle.readFile("utf8"))
-          if (!Predicate.isObject(value) || value.version !== 1 || !Predicate.isString(value.owner) ||
-            !Predicate.isNumber(value.pid) || !Number.isSafeInteger(value.pid) || value.pid <= 0) throw new Error("invalid lock")
-          return { owner: value.owner, pid: value.pid }
-        } finally {
-          await handle.close()
-        }
-      } catch (cause) {
-        if (Predicate.hasProperty(cause, "code") && cause.code === "ENOENT") return null
-        throw cause
-      }
-    },
-    catch: () => new LinearDomainError({ message: "Private upload recovery ownership is unreadable or invalid", help: "Inspect the private recovery directory before retrying." })
+  const handle = yield* Effect.tryPromise({
+    try: () => open(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600),
+    catch: () => new LinearDomainError({ message: "Could not open private upload recovery ownership", help: "Check state-directory permissions and retry." })
   })
-  if (lock === null) return true
-  const alive = yield* Effect.sync(() => {
+  const safe = yield* Effect.promise(async () => {
     try {
-      process.kill(lock.pid, 0)
-      return true
-    } catch (cause) {
-      return !(Predicate.hasProperty(cause, "code") && cause.code === "ESRCH")
+      const [opened, current] = await Promise.all([handle.stat(), lstat(path)])
+      return opened.isFile() && !current.isSymbolicLink() && Number(opened.dev) === Number(current.dev) && Number(opened.ino) === Number(current.ino)
+    } catch {
+      return false
     }
   })
-  if (alive) return false
-  return yield* Effect.tryPromise({
-    try: async () => {
-      try {
-        const value: unknown = JSON.parse(await Bun.file(path).text())
-        if (!Predicate.isObject(value) || value.owner !== lock.owner) return false
-        await unlink(path)
-        return true
-      } catch (cause) {
-        if (Predicate.hasProperty(cause, "code") && cause.code === "ENOENT") return true
-        throw cause
-      }
-    },
-    catch: () => new LinearDomainError({ message: "Could not reclaim stale upload recovery ownership", help: "Inspect the private recovery directory before retrying." })
-  })
+  if (!safe) {
+    yield* Effect.promise(() => handle.close().catch(() => undefined))
+    return yield* domain("Private upload recovery ownership changed while opening", "Inspect the private recovery directory before retrying.")
+  }
+  if (!tryLockFileDescriptor(handle.fd)) {
+    yield* Effect.promise(() => handle.close().catch(() => undefined))
+    return yield* domain("An identical attachment upload is already in progress", "Wait for the active upload to finish, then retry the same command.")
+  }
+  return { handle } satisfies UploadIntentLock
 })
 
 const releaseUploadIntentLock = Effect.fn("Attachments.releaseUploadIntentLock")(function*(lock: UploadIntentLock) {
-  yield* Effect.tryPromise({
-    try: async () => {
-      try {
-        const value: unknown = JSON.parse(await Bun.file(lock.path).text())
-        if (Predicate.isObject(value) && value.owner === lock.owner) {
-          await unlink(lock.path)
-          await rmdir(dirname(lock.path)).catch(() => undefined)
-        }
-      } catch (cause) {
-        if (!(Predicate.hasProperty(cause, "code") && cause.code === "ENOENT")) throw cause
-      }
-    },
-    catch: () => undefined
-  }).pipe(Effect.catch(() => Effect.void))
+  yield* Effect.sync(() => {
+    try { unlockFileDescriptor(lock.handle.fd) } catch {}
+  })
+  yield* Effect.promise(() => lock.handle.close().catch(() => undefined))
 })
 
 const persistRecovery = Effect.fn("Attachments.persistRecovery")(function*(path: string, recovery: UploadRecovery) {
@@ -1019,6 +961,7 @@ const decodeCursor = Effect.fn("Attachments.decodeCursor")(function*(
 interface DownloadTarget {
   readonly path: string
   readonly parent: string
+  readonly parentIdentity: { readonly dev: number; readonly ino: number }
   readonly existing: { readonly dev: number; readonly ino: number } | null
 }
 
@@ -1035,6 +978,13 @@ const validateDownloadTarget = Effect.fn("Attachments.validateDownloadTarget")(f
       command: ["attachments", "download"]
     })
   }
+  const parentMetadata = yield* Effect.tryPromise({
+    try: () => lstat(parent),
+    catch: () => new UsageError({ message: "--output parent directory became unavailable", help: "Choose a stable destination directory." })
+  })
+  if (!parentMetadata.isDirectory() || parentMetadata.isSymbolicLink()) {
+    return yield* usage("--output parent must be a local directory", { command: ["attachments", "download"] })
+  }
   const existing = yield* Effect.promise(() => lstat(path).catch(() => undefined))
   if (existing && !overwrite) {
     return yield* usage("destination already exists; pass --overwrite to replace this exact regular file", {
@@ -1046,7 +996,12 @@ const validateDownloadTarget = Effect.fn("Attachments.validateDownloadTarget")(f
       command: ["attachments", "download"]
     })
   }
-  return { path, parent, existing: existing ? { dev: Number(existing.dev), ino: Number(existing.ino) } : null } satisfies DownloadTarget
+  return {
+    path,
+    parent,
+    parentIdentity: { dev: Number(parentMetadata.dev), ino: Number(parentMetadata.ino) },
+    existing: existing ? { dev: Number(existing.dev), ino: Number(existing.ino) } : null
+  } satisfies DownloadTarget
 })
 
 const writeAtomicDownload = Effect.fn("Attachments.writeAtomicDownload")(function*(
@@ -1063,8 +1018,14 @@ const writeAtomicDownload = Effect.fn("Attachments.writeAtomicDownload")(functio
   return yield* Effect.acquireUseRelease(
     acquireParent,
     (parentHandle) => Effect.gen(function*() {
-      const pinnedParent = yield* pinnedDirectory(parentHandle.fd, target.parent)
-      return yield* writeAtomicDownloadPinned(response, target, attachment, maxBytes, timeoutMs, pinnedParent, parentHandle)
+      const opened = yield* Effect.tryPromise({
+        try: () => parentHandle.stat(),
+        catch: () => new LinearDomainError({ message: "Could not inspect the pinned destination directory", help: "Inspect the destination path and retry." })
+      })
+      if (!opened.isDirectory() || Number(opened.dev) !== target.parentIdentity.dev || Number(opened.ino) !== target.parentIdentity.ino) {
+        return yield* domain("Destination directory changed before download; refusing unsafe install", "Inspect the destination path and retry explicitly.")
+      }
+      return yield* writeAtomicDownloadPinned(response, target, attachment, maxBytes, timeoutMs, parentHandle)
     }),
     (parentHandle) => Effect.promise(() => parentHandle.close().catch(() => undefined))
   )
@@ -1076,15 +1037,20 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
   attachment: AttachmentDetail,
   maxBytes: number,
   timeoutMs: number,
-  pinnedParent: string,
   parentHandle: Awaited<ReturnType<typeof open>>
 ) {
-  const temp = resolve(pinnedParent, `.${basename(target.path)}.${randomUUID()}.partial`)
-  const acquire = Effect.tryPromise({
-    try: () => open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600),
+  const destination = basename(target.path)
+  const temp = `.${destination}.${randomUUID()}.partial`
+  const acquire = Effect.try({
+    try: () => {
+      const opened = createPrivateFileAt(parentHandle.fd, temp)
+      if (opened < 0) throw new Error("openat failed")
+      return opened
+    },
     catch: () => new LinearDomainError({ message: "Could not create a private temporary download file", help: "Check destination directory permissions and retry." })
   })
-  return yield* Effect.acquireUseRelease(acquire, (handle) => Effect.gen(function*() {
+  let installed = false
+  return yield* Effect.acquireUseRelease(acquire, (fd) => Effect.gen(function*() {
     const reader = response.body?.getReader()
     const hasher = new Bun.CryptoHasher("sha256")
     let bytes = 0
@@ -1102,17 +1068,10 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
             return yield* domain("Attachment download exceeded its declared safety bound", "Retry with fresh metadata or a larger explicit --max-bytes value.")
           }
           hasher.update(next.value)
-          let written = 0
-          while (written < next.value.byteLength) {
-            const result = yield* Effect.tryPromise({
-              try: () => handle.write(next.value, written, next.value.byteLength - written),
-              catch: () => new LinearDomainError({ message: "Writing the attachment destination failed", help: "Check available disk space and retry." })
-            })
-            if (result.bytesWritten <= 0) {
-              return yield* domain("Writing the attachment destination made no progress", "Check available disk space and retry.")
-            }
-            written += result.bytesWritten
-          }
+          yield* Effect.try({
+            try: () => writeFileDescriptor(fd, next.value),
+            catch: () => new LinearDomainError({ message: "Writing the attachment destination failed", help: "Check available disk space and retry." })
+          })
         }
       } finally {
         try { reader.releaseLock() } catch {}
@@ -1125,64 +1084,64 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
     if (attachment.sha256 !== null && sha256 !== attachment.sha256) {
       return yield* domain("Attachment checksum verification failed", "Do not use the partial content; retry the download.")
     }
-    yield* Effect.tryPromise({
-      try: () => handle.sync(),
-      catch: () => new LinearDomainError({ message: "Could not fsync the downloaded attachment", help: "Check the destination filesystem and retry." })
-    })
-    yield* verifyTargetUnchanged(target, pinnedParent)
-    yield* installAtomicDownload(temp, resolve(pinnedParent, basename(target.path)), target.existing === null)
-    yield* Effect.tryPromise({
-      try: () => parentHandle.sync(),
-      catch: () => new LinearDomainError({ message: "Could not fsync the destination directory", help: "Check the destination filesystem and retry." })
-    })
+    if (!syncFileDescriptor(fd)) {
+      return yield* domain("Could not fsync the downloaded attachment", "Check the destination filesystem and retry.")
+    }
+    yield* verifyDownloadParentUnchanged(target)
+    yield* installAtomicDownload(parentHandle.fd, temp, destination, target.existing)
+    installed = true
+    if (!syncFileDescriptor(parentHandle.fd)) {
+      return yield* domain("Could not fsync the destination directory", "Check the destination filesystem and retry.")
+    }
     return { bytes, sha256 }
-  }), (handle) => Effect.promise(async () => {
-    await handle.close().catch(() => undefined)
-    await unlink(temp).catch(() => undefined)
+  }), (fd) => Effect.sync(() => {
+    try { closeFileDescriptor(fd) } catch {}
+    if (!installed) tryUnlinkFileAt(parentHandle.fd, temp)
   }))
 })
 
-const installAtomicDownload = Effect.fn("Attachments.installAtomicDownload")(function*(temp: string, destination: string, noReplace: boolean) {
-  if (!noReplace) {
-    yield* Effect.tryPromise({
-      try: () => rename(temp, destination),
-      catch: () => new LinearDomainError({ message: "Could not atomically install the downloaded attachment", help: "Check destination permissions and retry." })
-    })
+const installAtomicDownload = Effect.fn("Attachments.installAtomicDownload")(function*(
+  directoryFd: number,
+  temp: string,
+  destination: string,
+  expected: DownloadTarget["existing"]
+) {
+  if (expected === null) {
+    if (!tryLinkFileAt(directoryFd, temp, destination)) {
+      if (statFileAt(directoryFd, destination) !== null) {
+        return yield* domain("Destination changed during download; refusing to replace it", "Inspect the destination and retry explicitly.")
+      }
+      return yield* domain("Could not atomically install the downloaded attachment without replacement", "Check destination filesystem support and permissions, then retry.")
+    }
+    if (!tryUnlinkFileAt(directoryFd, temp)) {
+      return yield* domain("Could not remove the private download staging name", "Inspect the destination directory before retrying.")
+    }
     return
   }
-  yield* Effect.tryPromise({
-    try: async () => {
-      await link(temp, destination)
-      await unlink(temp)
-    },
-    catch: (cause) => Predicate.hasProperty(cause, "code") && cause.code === "EEXIST"
-      ? new LinearDomainError({ message: "Destination changed during download; refusing to replace it", help: "Inspect the destination and retry explicitly." })
-      : new LinearDomainError({ message: "Could not atomically install the downloaded attachment without replacement", help: "Check destination filesystem support and permissions, then retry." })
-  })
+  if (!tryExchangeFilesAt(directoryFd, temp, destination)) {
+    const current = statFileAt(directoryFd, destination)
+    if (current === null || current.dev !== expected.dev || current.ino !== expected.ino) {
+      return yield* domain("Destination changed during download; refusing unsafe overwrite", "Inspect the destination and retry explicitly.")
+    }
+    return yield* domain("Destination filesystem does not support atomic verified overwrite", "Choose a local filesystem that supports atomic file exchange.")
+  }
+  const replaced = statFileAt(directoryFd, temp)
+  if (replaced === null || replaced.dev !== expected.dev || replaced.ino !== expected.ino) {
+    if (!tryExchangeFilesAt(directoryFd, temp, destination)) {
+      return yield* domain("Destination changed and atomic overwrite rollback failed", "Stop and inspect both the destination and its directory before retrying.")
+    }
+    return yield* domain("Destination changed during download; refusing unsafe overwrite", "Inspect the destination and retry explicitly.")
+  }
+  if (!tryUnlinkFileAt(directoryFd, temp)) {
+    return yield* domain("Could not remove the replaced destination after atomic overwrite", "Inspect the destination directory before retrying.")
+  }
 })
 
-const verifyTargetUnchanged = Effect.fn("Attachments.verifyTargetUnchanged")(function*(target: DownloadTarget, pinnedParent: string) {
+const verifyDownloadParentUnchanged = Effect.fn("Attachments.verifyDownloadParentUnchanged")(function*(target: DownloadTarget) {
   const currentParent = yield* Effect.promise(() => realpath(dirname(target.path)).catch(() => undefined))
   if (currentParent !== target.parent) {
     return yield* domain("Destination directory changed during download; refusing unsafe install", "Inspect the destination path and retry explicitly.")
   }
-  const current = yield* Effect.promise(() => lstat(resolve(pinnedParent, basename(target.path))).catch(() => undefined))
-  if (target.existing === null && current !== undefined) {
-    return yield* domain("Destination changed during download; refusing to replace it", "Inspect the destination and retry explicitly.")
-  }
-  if (target.existing !== null && (!current || !current.isFile() || current.isSymbolicLink() ||
-    current.dev !== target.existing.dev || current.ino !== target.existing.ino)) {
-    return yield* domain("Destination changed during download; refusing unsafe overwrite", "Inspect the destination and retry explicitly.")
-  }
-})
-
-const pinnedDirectory = Effect.fn("Attachments.pinnedDirectory")(function*(fd: number, expected: string) {
-  for (const root of ["/proc/self/fd", "/dev/fd"]) {
-    const candidate = `${root}/${fd}`
-    const resolved = yield* Effect.promise(() => realpath(candidate).catch(() => undefined))
-    if (resolved === expected) return candidate
-  }
-  return yield* domain("This platform cannot pin the destination directory safely", "Use a local filesystem with file-descriptor paths enabled.")
 })
 
 const syncDirectory = Effect.fn("Attachments.syncDirectory")(function*(path: string) {
