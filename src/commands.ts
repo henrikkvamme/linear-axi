@@ -638,7 +638,9 @@ const resolveOfficialProjectIdentity = (
     return yield* officialShapeError("get_project identity")
   }
   const identity = officialEntityIdentity(project, ["name", "slugId"])
-  return identity ?? (yield* officialShapeError("get_project identity"))
+  if (!identity) return yield* officialShapeError("get_project identity")
+  yield* requireOfficialEntityActive("project", selector, project)
+  return identity
 })
 
 const resolveOfficialIssueSelectors = (

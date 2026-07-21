@@ -530,17 +530,26 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
       const pipeline = yield* resolveReleasePipeline(gateway, pipelineSelector, false)
       if (typeof args.pipeline === "string") canonical.pipeline = pipeline.id
       if (releaseSelectors.length > 0 || rangeSelectors.length > 0) {
-        const releases = yield* fetchOfficialRows(gateway, "list_releases", {
-          limit: 250,
-          pipeline: pipeline.id,
-          includeArchived: true
-        }, "releases")
         const pipelineIdentity = officialEntityIdentity(pipeline, ["name", "slugId"])
         if (!pipelineIdentity) return yield* mutationShapeDrift(tool)
+        const resolvedReleases = new Map<string, string>()
         const resolveRelease = Effect.fn("resolveReleaseNoteRelease")(function*(selector: string) {
+          const cacheKey = selector.toLowerCase()
+          const cached = resolvedReleases.get(cacheKey)
+          if (cached) return cached
+          const releases = isUuid(selector)
+            ? [yield* gateway.callOfficialTool("get_release", { id: selector })].filter(Predicate.isObject)
+            : yield* fetchOfficialRows(gateway, "list_releases", {
+                query: selector,
+                limit: 250,
+                pipeline: pipeline.id,
+                includeArchived: true
+              }, "releases", (rows) => rows.some((row) => nonEmptyString(row.id) && referenceTextEqual(row.id, selector)))
           const release = yield* resolveExactOfficialEntity("release", selector, releases, ["id", "slugId"])
           yield* requireAssociationOwnership("release", selector, release, "pipeline", pipelineIdentity, tool)
-          return release.id as string
+          const releaseId = release.id as string
+          resolvedReleases.set(cacheKey, releaseId)
+          return releaseId
         })
         if (Array.isArray(args.releases)) {
           canonical.releases = uniqueStrings(yield* Effect.forEach(releaseSelectors, resolveRelease))
@@ -774,6 +783,7 @@ const userEntityMatches = (entity: Readonly<Record<string, unknown>>, selector: 
     .some((reference) => typeof reference === "string" && referenceTextEqual(reference, selector))
 const referenceTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
 const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0
+const isUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value)
 const uniqueStrings = (values: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(values)]
 const lowerFirst = (value: string): string => `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`
 

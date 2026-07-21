@@ -8,7 +8,8 @@ export const fetchOfficialRows = Effect.fn("fetchOfficialRows")(function*(
   gateway: LinearGateway,
   tool: string,
   args: Readonly<Record<string, unknown>>,
-  key: string
+  key: string,
+  stopWhen?: (rows: ReadonlyArray<Record<string, unknown>>) => boolean
 ): Effect.fn.Return<ReadonlyArray<Record<string, unknown>>, CliError> {
   const rows: Array<Record<string, unknown>> = []
   const seenCursors = new Set<string>()
@@ -24,7 +25,7 @@ export const fetchOfficialRows = Effect.fn("fetchOfficialRows")(function*(
     if (typeof page.hasNextPage !== "boolean") {
       return yield* officialPaginationShapeDrift(tool, "pagination metadata")
     }
-    if (!page.hasNextPage) return rows
+    if (!page.hasNextPage || stopWhen?.(rows) === true) return rows
     if (pages >= MAX_OFFICIAL_PAGES) {
       return yield* Effect.fail(new LinearDomainError({
         message: `Official Linear MCP ${tool} pagination exceeded the ${MAX_OFFICIAL_PAGES}-page safety limit`,

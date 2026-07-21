@@ -822,6 +822,98 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: true })
   })
 
+  test("release-note selectors use cached targeted pagination and direct immutable reads", async () => {
+    const releaseQueries: Array<Readonly<Record<string, unknown>>> = []
+    const releaseReads: Array<Readonly<Record<string, unknown>>> = []
+    const saves: Array<Readonly<Record<string, unknown>>> = []
+    const stableReleaseId = "22222222-2222-4222-8222-222222222222"
+    let verificationReads = 0
+    const output = await run([
+      "release-notes", "update", "--id", "note-id", "--pipeline", "Delivery",
+      "--releases-json", `["v1","V1","${stableReleaseId}"]`
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "list_release_pipelines") {
+          return Effect.succeed({ releasePipelines: [{ id: "pipeline-id", name: "Delivery" }], hasNextPage: false })
+        }
+        if (name === "get_release") {
+          releaseReads.push(args)
+          return Effect.succeed({ id: stableReleaseId, slugId: "v2", pipeline: { id: "pipeline-id" } })
+        }
+        if (name === "list_releases") {
+          releaseQueries.push(args)
+          return Effect.succeed(args.cursor === undefined
+            ? {
+                releases: [{ id: "release-1", slugId: "v1", pipeline: { id: "pipeline-id" } }],
+                hasNextPage: true,
+                cursor: "next-v1"
+              }
+            : {
+                releases: [{ id: "unrelated-release", slugId: "other", pipeline: { id: "pipeline-id" } }],
+                hasNextPage: false
+              })
+        }
+        if (name === "get_release_note") {
+          return Effect.succeed({
+            id: "note-id",
+            pipeline: { id: "pipeline-id" },
+            releases: verificationReads++ === 0 ? [] : [{ id: "release-1" }, { id: stableReleaseId }]
+          })
+        }
+        if (name === "save_release_note") {
+          saves.push(args)
+          return Effect.succeed({ id: "note-id" })
+        }
+        throw new Error(`unexpected tool ${name}`)
+      }
+    }))
+
+    expect(releaseQueries).toEqual([
+      { query: "v1", limit: 250, pipeline: "pipeline-id", includeArchived: true },
+      { query: "v1", limit: 250, pipeline: "pipeline-id", includeArchived: true, cursor: "next-v1" }
+    ])
+    expect(releaseReads).toEqual([{ id: stableReleaseId }])
+    expect(saves).toEqual([{ id: "note-id", pipeline: "pipeline-id", releases: ["release-1", stableReleaseId] }])
+    expect(output).toMatchObject({ changed: true })
+  })
+
+  test("release-note alias resolution detects ambiguity across targeted pages", async () => {
+    let saves = 0
+    const releaseQueries: Array<Readonly<Record<string, unknown>>> = []
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "release-notes", "update", "--id", "note-id", "--pipeline", "Delivery", "--releases-json", "[\"v1\"]"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "list_release_pipelines") {
+          return Effect.succeed({ releasePipelines: [{ id: "pipeline-id", name: "Delivery" }], hasNextPage: false })
+        }
+        if (name === "list_releases") {
+          releaseQueries.push(args)
+          return Effect.succeed(args.cursor === undefined
+            ? {
+                releases: [{ id: "release-a", slugId: "v1", pipeline: { id: "pipeline-id" } }],
+                hasNextPage: true,
+                cursor: "next"
+              }
+            : {
+                releases: [{ id: "release-b", slugId: "v1", pipeline: { id: "pipeline-id" } }],
+                hasNextPage: false
+              })
+        }
+        if (name === "save_release_note") saves += 1
+        return Effect.succeed({ id: "note-id" })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(error.message).toContain("Ambiguous release selector v1")
+    expect(error.help).toContain("release-a, release-b")
+    expect(releaseQueries).toEqual([
+      { query: "v1", limit: 250, pipeline: "pipeline-id", includeArchived: true },
+      { query: "v1", limit: 250, pipeline: "pipeline-id", includeArchived: true, cursor: "next" }
+    ])
+    expect(saves).toBe(0)
+  })
+
   test("project labels and status-update parents canonicalize to immutable ids", async () => {
     let projectReads = 0
     let statusReads = 0
@@ -858,7 +950,12 @@ describe("runCommand", () => {
     const cases = [
       { rows: [], message: "No project label exactly matched Platform", candidates: "none" },
       { rows: [{ name: "Platform" }], message: "project label selector Platform matched an entity without an immutable id", candidates: "missing-id" },
-      { rows: [{ id: "label-a", name: "Platform" }, { id: "label-b", name: "Platform" }], message: "Ambiguous project label selector Platform", candidates: "label-a, label-b" }
+      { rows: [{ id: "label-a", name: "Platform" }, { id: "label-b", name: "Platform" }], message: "Ambiguous project label selector Platform", candidates: "label-a, label-b" },
+      {
+        rows: Array.from({ length: 15 }, (_, index) => ({ id: `label-${String(index + 1).padStart(2, "0")}`, name: "Platform" })),
+        message: "Ambiguous project label selector Platform",
+        candidates: "showing 10 of 15"
+      }
     ] as const
 
     for (const entry of cases) {
@@ -876,6 +973,8 @@ describe("runCommand", () => {
 
       expect(error.message).toContain(entry.message)
       expect(error.help).toContain(entry.candidates)
+      expect(error.help).toContain("Narrow with an immutable id or a more specific selector")
+      if (entry.rows.length > 10) expect(error.help).not.toContain("label-11")
       expect(saves).toBe(0)
     }
   })
@@ -1116,7 +1215,7 @@ describe("runCommand", () => {
     expect(calls).toEqual([
       { name: "get_release_note", args: { id: "note-id" } },
       { name: "list_release_pipelines", args: { limit: 250, includeArchived: false } },
-      { name: "list_releases", args: { limit: 250, pipeline: "pipeline-id", includeArchived: true } },
+      { name: "list_releases", args: { query: "release-1", limit: 250, pipeline: "pipeline-id", includeArchived: true } },
       { name: "get_release_note", args: { id: "note-id", includeReleases: true } },
       { name: "save_release_note", args: { id: "note-id", releases: ["release-1"] } },
       { name: "get_release_note", args: { id: "note-id", includeReleases: true } }
@@ -1636,6 +1735,29 @@ describe("runCommand", () => {
 
       expect(error._tag).toBe("LinearDomainError")
       expect(calls).toContain(entry.archivedTool)
+      expect(saves).toBe(0)
+    }
+  })
+
+  test("advanced issue mutations reject archived projects by id or name", async () => {
+    const projectId = "66666666-6666-4666-8666-666666666666"
+    for (const selector of [projectId, "Roadmap"]) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "create", "--team", "ENG", "--title", "Launch", "--project", selector, "--if-absent"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering", archivedAt: null })
+          if (name === "get_project") {
+            return Effect.succeed({ id: projectId, name: "Roadmap", slugId: "roadmap", archivedAt: "2026-07-01T00:00:00.000Z" })
+          }
+          if (name === "save_issue") saves += 1
+          return Effect.succeed({ issues: [], hasNextPage: false })
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain(`project ${selector} is archived`)
       expect(saves).toBe(0)
     }
   })
