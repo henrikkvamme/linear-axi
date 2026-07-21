@@ -193,6 +193,24 @@ describe("runCommand", () => {
     expect(JSON.stringify(output)).not.toContain("uploads.linear.app")
   })
 
+  test("attachments list shell-quotes replayed issue selectors", async () => {
+    const selector = "ENG-123'; echo injected; '"
+    const output = await run(["attachments", "list", "--issue", selector, "--limit", "1"], fakeGateway({
+      callOfficialTool: () => Effect.succeed({
+        id: selector,
+        identifier: "ENG-123",
+        attachments: [
+          { id: "attachment-1", filename: "one.txt" },
+          { id: "attachment-2", filename: "two.txt" }
+        ]
+      })
+    }))
+
+    expect(output.help).toEqual([
+      "Run `linear-axi attachments list --issue='ENG-123'\"'\"'; echo injected; '\"'\"'' --after='att1.eyJpc3N1ZSI6IkVORy0xMjMnOyBlY2hvIGluamVjdGVkOyAnIiwib2Zmc2V0IjoxfQ' --limit 1` for the next page."
+    ])
+  })
+
   test("attachments list has a definitive empty state", async () => {
     const output = await run(["attachments", "list", "--issue", "ENG-123"], fakeGateway({
       callOfficialTool: () => Effect.succeed({ id: baseIssue.id, identifier: baseIssue.identifier, attachments: [] })

@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { createHash } from "node:crypto"
 import { Effect } from "effect"
 import { commandSpecs, parseArgs } from "../src/args"
-import { runAttachmentCommand, type AttachmentRuntime } from "../src/attachments"
+import { runAttachmentCommand, syncDirectory, type AttachmentRuntime } from "../src/attachments"
 import { statFileAt, writeFileDescriptor } from "../src/native-files"
 import { LinearApiError } from "../src/errors"
 import type { LinearGateway } from "../src/linear"
@@ -459,6 +459,15 @@ describe("attachment content boundary", () => {
 })
 
 describe("resumable attachment upload", () => {
+  test("recovery persistence propagates directory synchronization failures", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
+    roots.push(root)
+
+    const error = await Effect.runPromise(Effect.flip(syncDirectory(join(root, "missing"))))
+
+    expect(error.message).toContain("durably persist upload recovery metadata")
+  })
+
   test("rejects non-regular sources before any official call", async () => {
     const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
     roots.push(root)
@@ -522,7 +531,7 @@ describe("resumable attachment upload", () => {
           assetUrl: "https://uploads.linear.app/assets/stable-1",
           uploadRequest: {
             url: "https://storage.example.test/put?signature=secret",
-            headers: { "content-type": "text/plain", "x-signed-secret": "header-secret" }
+            headers: { "content-type": "text/plain", "content-length": "12", "x-signed-secret": "header-secret" }
           }
         })
         if (name === "create_attachment_from_upload") return Effect.succeed({ id: "attachment-1" })
@@ -538,6 +547,11 @@ describe("resumable attachment upload", () => {
     const output = await runUpload(source, uploadGateway, {
       stateRoot: join(root, "state"),
       fetcher: async (_url, init) => {
+        expect(init?.headers).toEqual({
+          "content-type": "text/plain",
+          "content-length": "12",
+          "x-signed-secret": "header-secret"
+        })
         const headers = new Headers(init?.headers)
         expect(headers.has("authorization")).toBe(false)
         expect(headers.get("content-length")).toBe("12")

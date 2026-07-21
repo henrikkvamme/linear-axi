@@ -215,13 +215,13 @@ const readAttachment = Effect.fn("Attachments.read")(function*(
   if (!isTextMediaType(attachment.mediaType)) {
     return yield* domain(
       `Attachment ${attachment.id} is not an allowed textual media type`,
-      `Run \`linear-axi attachments download --id ${attachment.id} --output <path>\` and inspect it with an appropriate local tool.`
+      `Run \`linear-axi attachments download --id=${shellQuote(attachment.id)} --output <path>\` and inspect it with an appropriate local tool.`
     )
   }
   if (full && attachment.size !== null && attachment.size > MAX_READ_BYTES) {
     return yield* domain(
       `Attachment ${attachment.id} exceeds the ${MAX_READ_BYTES}-byte full-text safety ceiling`,
-      `Run \`linear-axi attachments download --id ${attachment.id} --output <path>\` instead.`
+      `Run \`linear-axi attachments download --id=${shellQuote(attachment.id)} --output <path>\` instead.`
     )
   }
   const response = yield* fetchContent(attachment, runtime)
@@ -229,14 +229,14 @@ const readAttachment = Effect.fn("Attachments.read")(function*(
   if (full && read.truncated) {
     return yield* domain(
       `Attachment ${attachment.id} exceeds the ${MAX_READ_BYTES}-byte full-text safety ceiling`,
-      `Run \`linear-axi attachments download --id ${attachment.id} --output <path>\` instead.`
+      `Run \`linear-axi attachments download --id=${shellQuote(attachment.id)} --output <path>\` instead.`
     )
   }
   const decoded = decodeUtf8(read.bytes, read.truncated)
   if (!decoded) {
     return yield* domain(
       `Attachment ${attachment.id} is not valid UTF-8 text`,
-      `Run \`linear-axi attachments download --id ${attachment.id} --output <path>\` to preserve the original bytes.`
+      `Run \`linear-axi attachments download --id=${shellQuote(attachment.id)} --output <path>\` to preserve the original bytes.`
     )
   }
   const safeText = makeTerminalSafe(decoded.text)
@@ -251,7 +251,7 @@ const readAttachment = Effect.fn("Attachments.read")(function*(
     text: safeText,
     bytesRead: decoded.bytesRead,
     truncated,
-    help: truncated && !full ? [`Run \`linear-axi attachments read --id ${attachment.id} --full\` for allowed text up to ${MAX_READ_BYTES} bytes.`] : []
+    help: truncated && !full ? [`Run \`linear-axi attachments read --id=${shellQuote(attachment.id)} --full\` for allowed text up to ${MAX_READ_BYTES} bytes.`] : []
   }
 })
 
@@ -295,7 +295,7 @@ const getAttachment = Effect.fn("Attachments.get")(function*(parsed: ParsedArgs,
   if (!attachment || attachment.id !== id) {
     return yield* domain(
       "Official Linear MCP output shape drifted while resolving the attachment",
-      `Run \`linear-axi attachments view --id ${id}\` to retry the exact immutable id.`
+      `Run \`linear-axi attachments view --id=${shellQuote(id)}\` to retry the exact immutable id.`
     )
   }
   return attachment
@@ -310,15 +310,15 @@ const listAttachments = Effect.fn("Attachments.list")(function*(parsed: ParsedAr
   try { issue = decodeIssueAttachments(issueRaw) } catch {
     return yield* Effect.fail(new LinearDomainError({
       message: "Official Linear MCP output shape drifted while resolving the attachment issue",
-      help: `Run \`linear-axi issues view --id ${selector}\` to inspect the issue.`
+      help: `Run \`linear-axi issues view --id=${shellQuote(selector)}\` to inspect the issue.`
     }))
   }
-  if (!matchesIssue(issue, selector)) return yield* domain("Official Linear MCP returned a different issue", `Run \`linear-axi issues view --id ${selector}\` to inspect it.`)
+  if (!matchesIssue(issue, selector)) return yield* domain("Official Linear MCP returned a different issue", `Run \`linear-axi issues view --id=${shellQuote(selector)}\` to inspect it.`)
   const rows = issue.attachments.map(toSummary)
   if (offset > rows.length) {
     return yield* Effect.fail(new UsageError({
       message: "invalid --after cursor: attachment page is no longer available",
-      help: `Run \`linear-axi attachments list --issue ${selector}\` to restart pagination.`
+      help: `Run \`linear-axi attachments list --issue=${shellQuote(selector)}\` to restart pagination.`
     }))
   }
   const items = rows.slice(offset, offset + limit)
@@ -333,7 +333,7 @@ const listAttachments = Effect.fn("Attachments.list")(function*(parsed: ParsedAr
       ? { attachments: `0 attachments found for ${selector}` }
       : { attachments: items }),
     help: hasNext
-      ? [`Run \`linear-axi attachments list --issue ${selector} --after ${encodeCursor(selector, nextOffset)} --limit ${limit}\` for the next page.`]
+      ? [`Run \`linear-axi attachments list --issue=${shellQuote(selector)} --after=${shellQuote(encodeCursor(selector, nextOffset))} --limit ${limit}\` for the next page.`]
       : items.length > 0
         ? ["Run `linear-axi attachments view --id <attachment-id>` for metadata and content availability."]
         : []
@@ -702,10 +702,10 @@ const resolveUploadIssue = Effect.fn("Attachments.resolveUploadIssue")(function*
   const value = yield* gateway.callOfficialTool("get_issue", { id: selector })
   let issue: IssueAttachments
   try { issue = decodeIssueAttachments(value) } catch {
-    return yield* domain("Official Linear MCP output shape drifted while resolving the upload issue", `Run \`linear-axi issues view --id ${selector} --full\` to inspect it.`)
+    return yield* domain("Official Linear MCP output shape drifted while resolving the upload issue", `Run \`linear-axi issues view --id=${shellQuote(selector)} --full\` to inspect it.`)
   }
   if (!Predicate.isString(issue.identifier) || issue.identifier.length === 0 || !matchesIssue(issue, selector)) {
-    return yield* domain("Official Linear MCP returned a different upload issue", `Run \`linear-axi issues view --id ${selector} --full\` to inspect it.`)
+    return yield* domain("Official Linear MCP returned a different upload issue", `Run \`linear-axi issues view --id=${shellQuote(selector)} --full\` to inspect it.`)
   }
   return { id: issue.id, identifier: issue.identifier, attachments: issue.attachments }
 })
@@ -899,10 +899,7 @@ const uploadRequestHeaders = Effect.fn("Attachments.uploadRequestHeaders")(funct
   if (contentLengths.some(([, value]) => value !== expected)) {
     return yield* domain("Linear returned an upload request with an invalid content length", "Retry the same upload command to prepare a fresh signed request.")
   }
-  return {
-    ...Object.fromEntries(Object.entries(headers).filter(([key]) => key.toLowerCase() !== "content-length")),
-    "Content-Length": expected
-  }
+  return contentLengths.length > 0 ? headers : { ...headers, "Content-Length": expected }
 })
 
 const finalizeUpload = Effect.fn("Attachments.finalizeUpload")(function*(
@@ -920,7 +917,7 @@ const finalizeUpload = Effect.fn("Attachments.finalizeUpload")(function*(
     ...(recovery.subtitle === null ? {} : { subtitle: recovery.subtitle })
   }).pipe(Effect.mapError(() => new LinearApiError({
     message: "Attachment finalize response was lost or failed after dispatch; mutation outcome is unknown",
-    help: `Retry \`linear-axi attachments upload --issue ${issue.identifier} --file <same-file>\`; recovery will verify before finalizing again.`
+    help: `Retry \`linear-axi attachments upload --issue=${shellQuote(issue.identifier)} --file <same-file>\`; recovery will verify before finalizing again.`
   })))
   let finalized: FinalizedUploadWire | undefined
   try { finalized = decodeFinalizedUpload(result) } catch {}
@@ -969,7 +966,7 @@ const verifyUploadedAttachment = Effect.fn("Attachments.verifyUploadedAttachment
   const sameChecksum = detail?.sha256 === null || detail?.sha256 === source.sha256
   const sameAsset = assetUrl === null || detail?.assetUrl === assetUrl
   if (!detail || detail.id !== attachmentId || !sameIssue || !sameFilename || !sameTitle || !sameSubtitle || !sameSize || !sameType || !sameChecksum || !sameAsset) {
-    return yield* domain("Finalized attachment verification did not match the upload intent", `Run \`linear-axi attachments view --id ${attachmentId}\` and do not repeat finalize blindly.`)
+    return yield* domain("Finalized attachment verification did not match the upload intent", `Run \`linear-axi attachments view --id=${shellQuote(attachmentId)}\` and do not repeat finalize blindly.`)
   }
   return detail
 })
@@ -1001,6 +998,8 @@ const firstString = (...values: ReadonlyArray<unknown>): string | null =>
 const firstNumber = (...values: ReadonlyArray<unknown>): number | null =>
   values.find((value): value is number => Predicate.isNumber(value) && Number.isSafeInteger(value) && value >= 0) ?? null
 
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
+
 const encodeCursor = (issue: string, offset: number): string =>
   `att1.${Buffer.from(JSON.stringify({ issue, offset }), "utf8").toString("base64url")}`
 
@@ -1020,7 +1019,7 @@ const decodeCursor = Effect.fn("Attachments.decodeCursor")(function*(
     },
     catch: () => new UsageError({
       message: "invalid --after cursor for attachments list",
-      help: `Run \`linear-axi attachments list --issue ${issue}\` to restart pagination.`
+      help: `Run \`linear-axi attachments list --issue=${shellQuote(issue)}\` to restart pagination.`
     })
   })
 })
@@ -1233,14 +1232,17 @@ const verifyCompletedDownloadParent = Effect.fn("Attachments.verifyCompletedDown
   }
 })
 
-const syncDirectory = Effect.fn("Attachments.syncDirectory")(function*(path: string) {
+export const syncDirectory = Effect.fn("Attachments.syncDirectory")(function*(path: string) {
   yield* Effect.tryPromise({
     try: async () => {
       const handle = await open(path, constants.O_RDONLY)
       try { await handle.sync() } finally { await handle.close() }
     },
-    catch: () => undefined
-  }).pipe(Effect.catch(() => Effect.void))
+    catch: () => new LinearDomainError({
+      message: "Could not durably persist upload recovery metadata",
+      help: "Check the state filesystem and retry the same upload command."
+    })
+  })
 })
 
 const byteLimit = Effect.fn("Attachments.byteLimit")(function*(
