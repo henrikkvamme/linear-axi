@@ -1,29 +1,45 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
 const repoRoot = process.cwd()
 
-const runCli = (...args: ReadonlyArray<string>) => {
+const runCliInTemporaryDirectory = (...args: ReadonlyArray<string>) => {
   const cwd = mkdtempSync(join(tmpdir(), "linear-axi-cli-test-"))
-  return Bun.spawnSync({
-    cmd: ["bun", join(repoRoot, "src/main.ts"), ...args],
-    cwd,
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: join(cwd, "home"),
-      XDG_CONFIG_HOME: join(cwd, "config")
-    },
-    stdout: "pipe",
-    stderr: "pipe"
-  })
+  try {
+    return {
+      cwd,
+      result: Bun.spawnSync({
+        cmd: ["bun", join(repoRoot, "src/main.ts"), ...args],
+        cwd,
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: join(cwd, "home"),
+          XDG_CONFIG_HOME: join(cwd, "config")
+        },
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
 }
+
+const runCli = (...args: ReadonlyArray<string>) => runCliInTemporaryDirectory(...args).result
 
 const stdoutText = (result: ReturnType<typeof runCli>) => new TextDecoder().decode(result.stdout)
 const stderrText = (result: ReturnType<typeof runCli>) => new TextDecoder().decode(result.stderr)
 
 describe("linear-axi process", () => {
+  test("removes its isolated credential sandbox after each invocation", () => {
+    const { cwd, result } = runCliInTemporaryDirectory("--help")
+
+    expect(result.exitCode).toBe(0)
+    expect(existsSync(cwd)).toBe(false)
+  })
+
   test("prints content-first home output without credentials", () => {
     const result = runCli()
     const stdout = stdoutText(result)
