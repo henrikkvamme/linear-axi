@@ -613,6 +613,28 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(error.help).not.toContain("Retry")
   })
 
+  test("label replacement rejects two labels from the same group before mutation", async () => {
+    const parentId = "77777777-7777-4777-8777-777777777777"
+    const first = issueLabel({ id: "55555555-5555-4555-8555-555555555555", name: "Backend", parentId })
+    const second = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Frontend", parentId })
+    let updates = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([issue()], {
+        issueLabels: async () => page([first, second]),
+        updateIssue: async () => { updates += 1; return { success: true } }
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.replaceLabels({
+      issue: "BEN-1",
+      labels: ["Backend", "Frontend"]
+    })))
+
+    expect(error.message).toContain("same label group")
+    expect(error.help).toContain("at most one label")
+    expect(updates).toBe(0)
+  })
+
   test("successful description update refetches and verifies content and timestamp", async () => {
     const before = issue()
     const after = issue({ description: "replacement", updatedAt: new Date("2026-07-13T12:01:00.000Z") })
@@ -1406,6 +1428,55 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(error.message).toContain("mutation outcome is unknown")
     expect(error.help).toContain(`linear-axi labels list --team 'BEN' --name '${created.name}'`)
     expect(error.help).not.toContain("retry")
+  })
+
+  test("label creation rejects nested parent groups before mutation", async () => {
+    const parent = issueLabel({
+      id: "66666666-6666-4666-8666-666666666666",
+      name: "Engineering",
+      isGroup: true,
+      parentId: "77777777-7777-4777-8777-777777777777"
+    })
+    let creates = 0
+    const client = clientWithIssues([], {
+      teams: async () => page([team]),
+      issueLabels: async () => page([parent]),
+      createIssueLabel: async () => { creates += 1; return { success: true } }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createLabel({
+      name: "Backend",
+      color: "#123456",
+      workspace: false,
+      team: "BEN",
+      ifAbsent: false,
+      parent: "Engineering"
+    })))
+
+    expect(error.message).toContain("nested under another group")
+    expect(creates).toBe(0)
+  })
+
+  test("label creation rejects group children defensively", async () => {
+    let reads = 0
+    const client = clientWithIssues([], {
+      teams: async () => { reads += 1; return page([team]) },
+      issueLabels: async () => { reads += 1; return page([]) },
+      createIssueLabel: async () => { reads += 1; return { success: true } }
+    })
+
+    const error = await Effect.runPromise(Effect.flip(makeLinearGateway({}, { client }).createLabel({
+      name: "Nested group",
+      color: "#123456",
+      workspace: false,
+      team: "BEN",
+      ifAbsent: false,
+      isGroup: true,
+      parent: "Engineering"
+    })))
+
+    expect(error.message).toContain("label group cannot have a parent")
+    expect(reads).toBe(0)
   })
 
   test("label creation resolves a same-scope group and sends group metadata", async () => {

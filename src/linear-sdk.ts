@@ -50,6 +50,7 @@ import type {
   UpdateIssueDescriptionInput
 } from "./linear"
 import { decodeLocalCursorOffset, fetchAllPages, type ConnectionLike, type LocalCursorKind } from "./linear-pagination"
+import { labelGroupSelectionError } from "./label-validation"
 import { makeOfficialMcpToolCaller } from "./official-mcp"
 import { renderCandidateIds } from "./official-selector"
 import { normalizeRichText, richTextEqual } from "./rich-text"
@@ -582,6 +583,12 @@ const createLabel = async (
   client: LinearClient,
   input: CreateLabelInput
 ): Promise<MutationResult<LabelSummary>> => {
+  if (input.isGroup && input.parent) {
+    throw conflict(
+      "a label group cannot have a parent group",
+      "Use --group for a top-level group or --parent for an ordinary child label."
+    )
+  }
   const callerId = input.id ? normalizeUuid(input.id) : undefined
   const team = input.team ? await resolveTeam(client, input.team) : undefined
   const teamId = team?.id ?? null
@@ -600,6 +607,12 @@ const createLabel = async (
     throw conflict(
       `label parent ${input.parent} is not a group in the requested scope`,
       "Choose a group from the same workspace or team scope."
+    )
+  }
+  if (parent && parent.parentId !== undefined && parent.parentId !== null) {
+    throw conflict(
+      `label parent ${input.parent} is nested under another group`,
+      "Choose a top-level label group."
     )
   }
   const summarizeRequestedLabel = async (label: IssueLabel): Promise<{
@@ -778,6 +791,8 @@ const replaceLabels = async (
   const labels = await Promise.all(input.labels.map((selector) =>
     resolveLabelForTeam(client, selector, requireTeamId(issue))))
   labels.forEach(requireOrdinaryLabel)
+  const groupConflict = labelGroupSelectionError(labels)
+  if (groupConflict) throw groupConflict
   const desiredIds = [...new Set(labels.map((label) => normalizeUuid(label.id)))].sort(compareText)
   if (uuidSetEqual(issue.labelIds, desiredIds)) {
     return unchanged(await issueSummary(issue), "labels already match requested replacement (no-op)")

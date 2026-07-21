@@ -50,15 +50,25 @@ const baseRelation = {
   targetId: "target-id"
 }
 
-const normalizeActiveOfficialOutput = (name: string, value: unknown): unknown => {
+const normalizeActiveOfficialOutput = (
+  name: string,
+  value: unknown,
+  args: Readonly<Record<string, unknown>> = {}
+): unknown => {
   const active = (entity: unknown): unknown => entity && typeof entity === "object" && !("archivedAt" in entity)
     ? { ...entity, archivedAt: null }
     : entity
   const ordinaryLabel = (entity: unknown): unknown => {
     const normalized = active(entity)
-    return name === "list_issue_labels" && normalized && typeof normalized === "object" && !("isGroup" in normalized)
-      ? { ...normalized, isGroup: false }
-      : normalized
+    if (name !== "list_issue_labels" || !normalized || typeof normalized !== "object") return normalized
+    return {
+      ...normalized,
+      ...("isGroup" in normalized ? {} : { isGroup: false }),
+      ...("parentId" in normalized ? {} : { parentId: null }),
+      ...("teamId" in normalized || "team" in normalized || "scope" in normalized
+        ? {}
+        : { teamId: typeof args.team === "string" ? args.team : null })
+    }
   }
   if (["get_team", "get_project", "get_issue", "get_milestone", "get_user"].includes(name)) return active(value)
   if (name === "get_status_updates" && value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).statusUpdates)) {
@@ -127,7 +137,7 @@ const fakeGateway = (
   return {
     ...gateway,
     callOfficialTool: (name, args) => overrides.callOfficialTool!(name, args).pipe(
-      Effect.map((value) => normalizeActiveOfficialOutput(name, value))
+      Effect.map((value) => normalizeActiveOfficialOutput(name, value, args))
     )
   }
 }
@@ -2689,6 +2699,153 @@ describe("runCommand", () => {
     }
   })
 
+  test("advanced issue labels require explicit parent-group metadata", async () => {
+    for (const parentId of [undefined, 42] as const) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Bug"]', "--if-absent"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
+          if (name === "list_issue_labels") return Effect.succeed({
+            labels: [{
+              id: "label-id",
+              name: "Bug",
+              archivedAt: null,
+              isGroup: false,
+              teamId: "team-id",
+              ...(parentId === undefined ? {} : { parentId })
+            }],
+            hasNextPage: false
+          })
+          if (name === "save_issue") saves += 1
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }, false), "/repo/src/main.ts")))
+
+      expect(error.message).toContain("label parent group")
+      expect(saves).toBe(0)
+    }
+  })
+
+  test("advanced issue labels reject duplicate parent groups before mutation", async () => {
+    const cases = [
+      ["issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Backend","Frontend"]', "--if-absent"],
+      ["issues", "update", "--id", "ENG-1", "--labels-json", '["Backend","Frontend"]']
+    ] as const
+
+    for (const argv of cases) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs(argv, commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
+          if (name === "list_issue_labels") return Effect.succeed({
+            labels: [
+              { id: "backend-id", name: "Backend", archivedAt: null, isGroup: false, parentId: "platform-id", teamId: "team-id" },
+              { id: "frontend-id", name: "Frontend", archivedAt: null, isGroup: false, parentId: "platform-id", teamId: "team-id" }
+            ],
+            hasNextPage: false
+          })
+          if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+          if (name === "get_issue") return Effect.succeed({ id: "issue-id", identifier: "ENG-1", teamId: "team-id", archivedAt: null, labels: [] })
+          if (name === "save_issue") saves += 1
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }, false), "/repo/src/main.ts")))
+
+      expect(error.message).toContain("same label group")
+      expect(saves).toBe(0)
+    }
+  })
+
+  test("advanced issue labels require explicit compatible scope", async () => {
+    for (const label of [
+      { id: "label-id", name: "Bug", archivedAt: null, isGroup: false, parentId: null },
+      { id: "label-id", name: "Bug", archivedAt: null, isGroup: false, parentId: null, teamId: "other-team" }
+    ]) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Bug"]', "--if-absent"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
+          if (name === "list_issue_labels") return Effect.succeed({ labels: [label], hasNextPage: false })
+          if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+          if (name === "save_issue") saves += 1
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }, false), "/repo/src/main.ts")))
+
+      expect(error.message).toMatch(/output shape drifted|another team/)
+      expect(saves).toBe(0)
+    }
+  })
+
+  test("advanced label-only updates canonicalize the issue team before scope validation", async () => {
+    const calls: string[] = []
+    let reads = 0
+    const output = await run([
+      "issues", "update", "--id", "ENG-1", "--labels-json", '["Bug"]'
+    ], fakeGateway({
+      callOfficialTool: (name) => {
+        calls.push(name)
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering", archivedAt: null })
+        if (name === "list_issue_labels") return Effect.succeed({
+          labels: [{ id: "label-id", name: "Bug", archivedAt: null, isGroup: false, parentId: null, teamId: "team-id" }],
+          hasNextPage: false
+        })
+        if (name === "get_issue") {
+          reads += 1
+          return Effect.succeed({
+            id: "issue-id",
+            identifier: "ENG-1",
+            team: { key: "ENG" },
+            archivedAt: null,
+            labels: reads === 1 ? [] : [{ id: "label-id" }]
+          })
+        }
+        if (name === "save_issue") return Effect.succeed({ id: "issue-id" })
+        throw new Error(`unexpected tool ${name}`)
+      }
+    }, false))
+
+    expect(output).toMatchObject({ changed: true })
+    expect(calls).toEqual(["get_issue", "get_team", "list_issue_labels", "save_issue", "get_issue"])
+  })
+
+  test("advanced issue labels accept explicit workspace and canonical team scope", async () => {
+    for (const scope of [{ teamId: null }, { team: { id: "team-id" } }]) {
+      let saves = 0
+      const output = await run([
+        "issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Bug"]', "--if-absent"
+      ], fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
+          if (name === "list_issue_labels") return Effect.succeed({
+            labels: [{ id: "label-id", name: "Bug", archivedAt: null, isGroup: false, parentId: null, ...scope }],
+            hasNextPage: false
+          })
+          if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+          if (name === "save_issue") {
+            saves += 1
+            return Effect.succeed({ id: "issue-id" })
+          }
+          if (name === "get_issue") return Effect.succeed({
+            id: "issue-id",
+            title: "Launch",
+            teamId: "team-id",
+            archivedAt: null,
+            labels: [{ id: "label-id" }]
+          })
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }, false))
+
+      expect(output).toMatchObject({ changed: true })
+      expect(saves).toBe(1)
+    }
+  })
+
   test("advanced issue labels share one guarded collection scan", async () => {
     let labelPages = 0
     const output = await run([
@@ -2699,8 +2856,8 @@ describe("runCommand", () => {
         if (name === "list_issue_labels") {
           labelPages += 1
           return args.cursor === undefined
-            ? Effect.succeed({ labels: [{ id: "bug-id", name: "Bug", archivedAt: null, isGroup: false }], hasNextPage: true, cursor: "labels-2" })
-            : Effect.succeed({ labels: [{ id: "urgent-id", name: "Urgent", archivedAt: null, isGroup: false }], hasNextPage: false })
+            ? Effect.succeed({ labels: [{ id: "bug-id", name: "Bug", archivedAt: null, isGroup: false, parentId: null, teamId: "team-id" }], hasNextPage: true, cursor: "labels-2" })
+            : Effect.succeed({ labels: [{ id: "urgent-id", name: "Urgent", archivedAt: null, isGroup: false, parentId: null, teamId: "team-id" }], hasNextPage: false })
         }
         if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
         if (name === "save_issue") return Effect.succeed({ id: "issue-id" })
@@ -3545,6 +3702,19 @@ describe("runCommand", () => {
       { id: "ENG-123", parent: "ENG-100" },
       { id: "ENG-123", parent: null }
     ])
+  })
+
+  test("labels create rejects group plus parent before gateway I/O", async () => {
+    let calls = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "labels", "create", "--name", "Nested", "--color", "#123456", "--team", "ENG", "--group", "--parent", "Platform"
+    ], commandSpecs), fakeGateway({
+      createLabel: (input) => { calls += 1; return fakeGateway().createLabel(input) }
+    }), "/repo/src/main.ts")))
+
+    expect(error).toBeInstanceOf(UsageError)
+    expect(error.message).toContain("--group must not combine with --parent")
+    expect(calls).toBe(0)
   })
 
   test("labels commands preserve scope, exact fields, and idempotent status", async () => {

@@ -22,6 +22,7 @@ import type {
   RelationType
 } from "./linear"
 import { DESCRIPTION_CONCURRENCY_WARNING } from "./linear"
+import { labelGroupSelectionError } from "./label-validation"
 import { decodeLocalCursorOffset } from "./linear-pagination"
 import { connectOAuth, setupOAuth } from "./oauth"
 import { truncateDetail, truncateText, type OutputValue } from "./output"
@@ -498,7 +499,9 @@ const updateOfficialIssue = (
   if (typeof input.assignee === "string") input.assignee = yield* resolveOfficialAssignableUserSelector(gateway, input.assignee)
   const teamSelector = officialTeamSelector(before)
   if (!teamSelector) return yield* officialShapeError("get_issue team")
-  const teamIdentity = typeof input.state === "string" || typeof input.cycle === "string" || typeof input.parentId === "string"
+  const needsCanonicalTeam = typeof input.state === "string" || typeof input.cycle === "string" ||
+    typeof input.parentId === "string" || (Array.isArray(input.labels) && input.labels.length > 0)
+  const teamIdentity = needsCanonicalTeam
     ? yield* resolveOfficialTeamIdentity(gateway, teamSelector)
     : { id: teamSelector, aliases: [teamSelector] }
   if (typeof input.state === "string") {
@@ -710,7 +713,7 @@ const resolveOfficialIssueSelectors = (
     yield* requireOfficialOwnership("milestone", selector, milestone, "project", projectIdentity)
     input.milestone = milestone.id
   }
-  if (Array.isArray(input.labels)) input.labels = uniqueStrings(yield* resolveOfficialLabels(gateway, input.labels, team.id))
+  if (Array.isArray(input.labels)) input.labels = uniqueStrings(yield* resolveOfficialLabels(gateway, input.labels, team))
   for (const key of ["setReleases", "addReleases"] as const) {
     if (Array.isArray(input[key])) input[key] = uniqueStrings(yield* resolveOfficialReleases(gateway, input[key], false))
   }
@@ -802,12 +805,12 @@ const resolveOfficialParentId = (
 const resolveOfficialLabels = (
   gateway: LinearGateway,
   selectors: ReadonlyArray<unknown>,
-  team: string
+  team: OfficialEntityIdentity
 ): Effect.Effect<ReadonlyArray<string>, CliError> => Effect.gen(function*() {
   if (selectors.length === 0) return []
-  const rows = yield* fetchOfficialRows(gateway, "list_issue_labels", { team, limit: 250 }, "labels")
+  const rows = yield* fetchOfficialRows(gateway, "list_issue_labels", { team: team.id, limit: 250 }, "labels")
   const activeLabels = yield* filterOfficialActiveEntities("label", rows, "label archived state")
-  return yield* Effect.forEach(selectors, (raw) => Effect.gen(function*() {
+  const labels = yield* Effect.forEach(selectors, (raw) => Effect.gen(function*() {
     const selector = String(raw)
     const id = yield* uniqueOfficialId("label", selector, activeLabels, ["id", "name"])
     const label = activeLabels.find((row) => row.id === id)
@@ -820,9 +823,38 @@ const resolveOfficialLabels = (
         help: "Choose an ordinary issue label."
       }))
     }
-    return id
+    if (!Object.prototype.hasOwnProperty.call(label, "parentId") ||
+      (label.parentId !== null && !nonEmptyString(label.parentId))) {
+      return yield* officialShapeError("label parent group")
+    }
+    yield* requireOfficialLabelScope(selector, label, team)
+    return { id, parentId: label.parentId }
   }))
+  const groupConflict = labelGroupSelectionError(labels)
+  if (groupConflict) return yield* Effect.fail(groupConflict)
+  return labels.map((label) => label.id)
 })
+
+const requireOfficialLabelScope = (
+  selector: string,
+  label: Readonly<Record<string, unknown>>,
+  team: OfficialEntityIdentity
+): Effect.Effect<void, LinearDomainError> => {
+  const hasTeamId = Object.prototype.hasOwnProperty.call(label, "teamId")
+  const hasTeam = Object.prototype.hasOwnProperty.call(label, "team")
+  if (!hasTeamId && !hasTeam) {
+    return label.scope === "workspace" ? Effect.void : officialShapeError("label team scope")
+  }
+  const reference = hasTeamId ? label.teamId : label.team
+  if (reference === null) return Effect.void
+  if (officialReferenceValues(reference).length === 0) return officialShapeError("label team scope")
+  return officialReferenceMatchesIdentity(reference, team)
+    ? Effect.void
+    : Effect.fail(new LinearDomainError({
+        message: `Issue label ${selector} belongs to another team`,
+        help: "Choose a workspace label or a label from the issue's team."
+      }))
+}
 
 const resolveOfficialReleases = (
   gateway: LinearGateway,
@@ -1017,6 +1049,11 @@ const labelsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
   if (id && !isUuidV4(id)) {
     return usage("--id must be a UUID v4", parsed.command)
   }
+  const isGroup = readBooleanFlag(parsed.flags, "group")
+  const parent = readStringFlag(parsed.flags, "parent")
+  if (isGroup && parent) {
+    return usage("--group must not combine with --parent", parsed.command)
+  }
   return gateway.createLabel({
     name: readStringFlag(parsed.flags, "name")!,
     color,
@@ -1025,8 +1062,8 @@ const labelsCreate = (parsed: ParsedArgs, gateway: LinearGateway) => {
     description: readStringFlag(parsed.flags, "description"),
     id,
     ifAbsent: readBooleanFlag(parsed.flags, "if-absent"),
-    ...(readBooleanFlag(parsed.flags, "group") ? { isGroup: true } : {}),
-    ...(readStringFlag(parsed.flags, "parent") ? { parent: readStringFlag(parsed.flags, "parent") } : {})
+    ...(isGroup ? { isGroup: true } : {}),
+    ...(parent ? { parent } : {})
   }).pipe(Effect.map((result) => ({ label: result.value, changed: result.changed, result: result.result })))
 }
 
