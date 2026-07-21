@@ -1,7 +1,37 @@
 import { Schema } from "effect"
 
+const NonNegativeSafeInteger = Schema.Number.check(Schema.makeFilter(
+  (value) => Number.isSafeInteger(value) && value >= 0,
+  { expected: "a non-negative safe integer" }
+))
+const Sha256 = Schema.String.check(Schema.makeFilter(
+  (value) => /^[a-f0-9]{64}$/i.test(value),
+  { expected: "a hexadecimal SHA-256 digest" }
+))
+const MediaType = Schema.String.check(Schema.makeFilter(
+  (value) => /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(value),
+  { expected: "an IANA media type" }
+))
+const HttpsUrl = Schema.String.check(Schema.makeFilter(
+  (value) => {
+    try {
+      const url = new URL(value)
+      return url.protocol === "https:" && !url.username && !url.password
+    } catch { return false }
+  },
+  { expected: "an HTTPS URL without user information" }
+))
+const LinearPrivateAssetUrl = HttpsUrl.check(Schema.makeFilter(
+  (value) => {
+    const url = new URL(value)
+    return url.hostname === "uploads.linear.app" && !url.search && !url.hash
+  },
+  { expected: "a private uploads.linear.app asset URL without query or fragment" }
+))
+
 const OptionalString = Schema.optionalKey(Schema.NullOr(Schema.String))
-const OptionalNumber = Schema.optionalKey(Schema.NullOr(Schema.Number))
+const OptionalNumber = Schema.optionalKey(Schema.NullOr(NonNegativeSafeInteger))
+const OptionalSha256 = Schema.optionalKey(Schema.NullOr(Sha256))
 const HeaderArraySchema = Schema.Array(Schema.Struct({ key: Schema.NonEmptyString, value: Schema.String }))
 const HeadersSchema = Schema.Union([Schema.Record(Schema.String, Schema.String), HeaderArraySchema])
 const ContentRequestSchema = Schema.Struct({ url: Schema.NonEmptyString, headers: Schema.optionalKey(HeadersSchema) })
@@ -23,8 +53,8 @@ const AttachmentWireSchema = Schema.Struct({
   contentUrl: OptionalString,
   assetUrl: OptionalString,
   url: OptionalString,
-  sha256: OptionalString,
-  checksum: OptionalString,
+  sha256: OptionalSha256,
+  checksum: OptionalSha256,
   issue: Schema.optionalKey(Schema.NullOr(IssueIdentitySchema)),
   downloadRequest: Schema.optionalKey(Schema.NullOr(ContentRequestSchema)),
   contentRequest: Schema.optionalKey(Schema.NullOr(ContentRequestSchema))
@@ -34,7 +64,10 @@ const IssueAttachmentsSchema = Schema.Struct({
   identifier: OptionalString,
   attachments: Schema.Array(AttachmentWireSchema)
 })
-const PreparedUploadSchema = Schema.Struct({ assetUrl: Schema.NonEmptyString, uploadRequest: ContentRequestSchema })
+const PreparedUploadSchema = Schema.Struct({
+  assetUrl: LinearPrivateAssetUrl,
+  uploadRequest: Schema.Struct({ url: HttpsUrl, headers: Schema.optionalKey(HeadersSchema) })
+})
 const FinalizedUploadSchema = Schema.Union([
   Schema.Struct({ id: Schema.NonEmptyString }),
   Schema.Struct({ attachment: Schema.Struct({ id: Schema.NonEmptyString }) })
@@ -45,15 +78,15 @@ const UploadRecoverySchema = Schema.Struct({
   issueId: Schema.NonEmptyString,
   issueIdentifier: Schema.NonEmptyString,
   filename: Schema.NonEmptyString,
-  size: Schema.Number,
-  mediaType: Schema.NonEmptyString,
-  sha256: Schema.NonEmptyString,
+  size: NonNegativeSafeInteger,
+  mediaType: MediaType,
+  sha256: Sha256,
   title: Schema.NullOr(Schema.String),
   subtitle: Schema.NullOr(Schema.String),
-  assetUrl: Schema.NullOr(Schema.String),
+  assetUrl: Schema.NullOr(LinearPrivateAssetUrl),
   attachmentId: Schema.NullOr(Schema.String)
 })
-const AttachmentCursorSchema = Schema.Struct({ issue: Schema.NonEmptyString, offset: Schema.Number })
+const AttachmentCursorSchema = Schema.Struct({ issue: Schema.NonEmptyString, offset: NonNegativeSafeInteger })
 
 export type AttachmentWire = Schema.Schema.Type<typeof AttachmentWireSchema>
 export type IssueAttachments = Schema.Schema.Type<typeof IssueAttachmentsSchema>
@@ -68,3 +101,4 @@ export const decodePreparedUploadWire = Schema.decodeUnknownSync(PreparedUploadS
 export const decodeFinalizedUpload = Schema.decodeUnknownSync(FinalizedUploadSchema)
 export const decodeUploadRecovery = Schema.decodeUnknownSync(UploadRecoverySchema)
 export const decodeAttachmentCursor = Schema.decodeUnknownSync(AttachmentCursorSchema)
+export const decodeHttpsUrl = Schema.decodeUnknownSync(HttpsUrl)

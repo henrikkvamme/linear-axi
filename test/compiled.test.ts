@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { chmodSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -166,7 +166,10 @@ test("standalone binary runs without a source checkout", () => {
 test("compiled attachment commands render representative successful output", () => {
   const root = mkdtempSync(join(tmpdir(), "linear-axi-compiled-attachment-"))
   const binary = join(root, "attachment-fixture")
+  const source = join(root, "trace.txt")
+  const destination = join(root, "downloaded.txt")
   try {
+    writeFileSync(source, "hello world\n")
     const build = Bun.spawnSync({
       cmd: ["bun", "build", "--compile", "--no-compile-autoload-dotenv", "--outfile", binary, "test/compiled-attachment-fixture.ts"],
       cwd: repoRoot,
@@ -176,7 +179,10 @@ test("compiled attachment commands render representative successful output", () 
     expect(build.exitCode).toBe(0)
     for (const [args, expected] of [
       [["attachments", "list", "--issue", "ENG-123"], "attachments[1]"],
-      [["attachments", "view", "--id", "attachment-1"], "authenticated-signed-https"]
+      [["attachments", "view", "--id", "attachment-1"], "authenticated-signed-https"],
+      [["attachments", "read", "--id", "attachment-1"], "hello world"],
+      [["attachments", "download", "--id", "attachment-1", "--output", destination], "downloaded.txt"],
+      [["attachments", "upload", "--issue", "ENG-123", "--file", source], "attachment uploaded and verified"]
     ] as const) {
       const result = Bun.spawnSync({ cmd: [binary, ...args], cwd: root, stdout: "pipe", stderr: "pipe" })
       const stdout = new TextDecoder().decode(result.stdout)
@@ -185,6 +191,7 @@ test("compiled attachment commands render representative successful output", () 
       expect(stdout).toContain(expected)
       expect(stdout).not.toContain("uploads.linear.app")
     }
+    expect(readFileSync(destination, "utf8")).toBe("hello world\n")
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

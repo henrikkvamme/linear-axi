@@ -1,4 +1,4 @@
-import { constants } from "node:fs"
+import { constants, createReadStream } from "node:fs"
 import { chmod, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises"
 import { basename, dirname, resolve } from "node:path"
 import { randomUUID } from "node:crypto"
@@ -14,6 +14,7 @@ import {
   decodeAttachmentWire,
   decodeFinalizedUpload,
   decodeHeadersWire,
+  decodeHttpsUrl,
   decodeIssueAttachments,
   decodePreparedUploadWire,
   decodeUploadRecovery,
@@ -346,7 +347,7 @@ const decodeDetail = (value: unknown): AttachmentDetail | undefined => {
     contentUrl,
     assetUrl: firstString(attachment.assetUrl, attachment.url),
     headers: decodeHeaders(request?.headers),
-    sha256: validSha256(firstString(attachment.sha256, attachment.checksum))
+    sha256: firstString(attachment.sha256, attachment.checksum)
   }
 }
 
@@ -373,9 +374,6 @@ const decodeHeaders = (value: unknown): Readonly<Record<string, string>> => {
     ? Object.fromEntries(headers.map((entry) => [entry.key, entry.value]))
     : headers as Readonly<Record<string, string>>
 }
-
-const validSha256 = (value: string | null): string | null =>
-  value !== null && /^[a-f0-9]{64}$/i.test(value) ? value.toLowerCase() : null
 
 const isTextMediaType = (value: string | null): boolean => {
   if (value === null) return false
@@ -726,38 +724,22 @@ const decodePreparedUpload = Effect.fn("Attachments.decodePreparedUpload")(funct
   try { prepared = decodePreparedUploadWire(value) } catch {
     return yield* domain("Official Linear MCP output shape drifted while preparing the upload", "Retry the upload from the same explicit file intent.")
   }
-  const assetUrl = validPrivateAssetUrl(prepared.assetUrl)
-  const uploadUrl = validUploadUrl(prepared.uploadRequest.url)
+  const assetUrl = prepared.assetUrl
+  const uploadUrl = prepared.uploadRequest.url
   const headers = decodeHeaders(prepared.uploadRequest.headers)
-  if (!assetUrl || !uploadUrl || Object.keys(headers).length === 0) {
+  if (Object.keys(headers).length === 0) {
     return yield* domain("Linear returned an unsafe or incomplete upload request", "Retry the upload and do not substitute an upload URL or headers.")
   }
   const safeHeaders = yield* safeRequestHeaders(headers)
   return { assetUrl, uploadUrl, headers: safeHeaders }
 })
 
-const validPrivateAssetUrl = (raw: string): string | null => {
-  try {
-    const url = new URL(raw)
-    return url.protocol === "https:" && url.hostname === "uploads.linear.app" && !url.username && !url.password && !url.search && !url.hash
-      ? url.toString()
-      : null
-  } catch { return null }
-}
-
-const validUploadUrl = (raw: string): string | null => {
-  try {
-    const url = new URL(raw)
-    return url.protocol === "https:" && !url.username && !url.password ? url.toString() : null
-  } catch { return null }
-}
-
 const transferUpload = Effect.fn("Attachments.transferUpload")(function*(prepared: PreparedUpload, source: UploadSource, runtime: AttachmentRuntime) {
   let url = prepared.uploadUrl
   for (let redirects = 0; redirects <= 2; redirects += 1) {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), runtime.requestTimeoutMs)
-    const stream = source.handle.createReadStream({ start: 0, end: source.size - 1, autoClose: false })
+    const stream = createReadStream("", { fd: source.handle.fd, start: 0, end: source.size - 1, autoClose: false })
     const body = Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>
     const response = yield* Effect.tryPromise({
       try: () => abortablePromise(runtime.fetcher(url, {
@@ -772,7 +754,10 @@ const transferUpload = Effect.fn("Attachments.transferUpload")(function*(prepare
         message: "Direct attachment byte transfer failed",
         help: "Retry the same upload command; it will safely prepare a fresh signed request."
       })
-    }).pipe(Effect.ensuring(Effect.sync(() => clearTimeout(timeout))))
+    }).pipe(
+      Effect.onError(() => Effect.sync(() => stream.destroy())),
+      Effect.ensuring(Effect.sync(() => clearTimeout(timeout)))
+    )
     if (![307, 308].includes(response.status)) {
       void response.body?.cancel().catch(() => undefined)
       if (!response.ok) {
@@ -785,8 +770,11 @@ const transferUpload = Effect.fn("Attachments.transferUpload")(function*(prepare
     if (!location || redirects === 2) {
       return yield* domain("Direct attachment upload redirect was invalid or exceeded the safety limit", "Retry the same upload command.")
     }
-    const redirected = validUploadUrl(new URL(location, url).toString())
-    if (!redirected || new URL(redirected).origin !== new URL(url).origin) {
+    let redirected: string
+    try { redirected = decodeHttpsUrl(new URL(location, url).toString()) } catch {
+      return yield* domain("Direct attachment upload refused an unsafe cross-origin redirect", "Retry the same upload command; never substitute an upload URL.")
+    }
+    if (new URL(redirected).origin !== new URL(url).origin) {
       return yield* domain("Direct attachment upload refused an unsafe cross-origin redirect", "Retry the same upload command; never substitute an upload URL.")
     }
     url = redirected
@@ -897,7 +885,7 @@ const decodeCursor = Effect.fn("Attachments.decodeCursor")(function*(
       if (cursor === undefined) return 0
       if (!cursor.startsWith("att1.")) throw new Error("prefix")
       const value = decodeAttachmentCursor(JSON.parse(Buffer.from(cursor.slice(5), "base64url").toString("utf8")))
-      if (value.issue !== issue || !Number.isSafeInteger(value.offset) || value.offset < 0) {
+      if (value.issue !== issue) {
         throw new Error("shape")
       }
       return value.offset

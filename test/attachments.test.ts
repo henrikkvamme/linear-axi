@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { createHash } from "node:crypto"
 import { Effect } from "effect"
 import { commandSpecs, parseArgs } from "../src/args"
 import { runAttachmentCommand, type AttachmentRuntime } from "../src/attachments"
@@ -379,11 +380,13 @@ describe("resumable attachment upload", () => {
     expect(repeated).toMatchObject({ attachmentId: "attachment-1", changed: false, recovery: "finalized attachment verified" })
   })
 
-  test("a failed byte transfer persists no signed request material and re-prepares on retry", async () => {
+  test("a partial streaming transfer persists no signed material and safely re-prepares", async () => {
     const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
     roots.push(root)
     const source = join(root, "trace.txt")
-    writeFileSync(source, "hello world\n")
+    const sourceBytes = Buffer.alloc(256 * 1024, 0x61)
+    writeFileSync(source, sourceBytes)
+    const sourceSha256 = createHash("sha256").update(sourceBytes).digest("hex")
     let prepares = 0
     let puts = 0
     const uploadGateway = {
@@ -399,18 +402,35 @@ describe("resumable attachment upload", () => {
         }
         if (name === "create_attachment_from_upload") return Effect.succeed({ id: "attachment-1" })
         if (name === "get_attachment") return Effect.succeed(detail({
+          size: sourceBytes.byteLength,
           issue: { id: "issue-1", identifier: "ENG-123" },
           assetUrl: "https://uploads.linear.app/assets/stable-2",
-          sha256: "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
+          sha256: sourceSha256
         }))
         return Effect.die(`unexpected ${name}`)
       }
     } as LinearGateway
     const runtime = {
       stateRoot: join(root, "state"),
-      fetcher: async () => {
+      fetcher: async (_url: string | URL | Request, init?: RequestInit) => {
         puts += 1
-        if (puts === 1) throw new Error("contains https://storage.example.test/put?secret=1")
+        const reader = (init?.body as ReadableStream<Uint8Array>).getReader()
+        if (puts === 1) {
+          const first = await reader.read()
+          expect(first.done).toBe(false)
+          await reader.cancel()
+          throw new Error("contains https://storage.example.test/put?secret=1")
+        }
+        let streamed = 0
+        let largestChunk = 0
+        while (true) {
+          const part = await reader.read()
+          if (part.done) break
+          streamed += part.value.byteLength
+          largestChunk = Math.max(largestChunk, part.value.byteLength)
+        }
+        expect(streamed).toBe(sourceBytes.byteLength)
+        expect(largestChunk).toBeLessThan(sourceBytes.byteLength)
         return new Response(null, { status: 200 })
       }
     }
@@ -480,12 +500,18 @@ describe("resumable attachment upload", () => {
     expect(existsSync(stateRoot)).toBe(false)
 
     const parsed = parseArgs(["attachments", "upload", "--issue", "ENG-123", "--file", source], commandSpecs)
+    let uploadAborted = false
     const timeoutError = await Effect.runPromise(Effect.flip(runAttachmentCommand(parsed, uploadGateway, {
       stateRoot,
       requestTimeoutMs: 10,
-      fetcher: async () => new Promise<Response>(() => undefined)
+      fetcher: async (_url, init) => {
+        init?.signal?.addEventListener("abort", () => { uploadAborted = true }, { once: true })
+        return new Promise<Response>(() => undefined)
+      }
     })!))
+    await Bun.sleep(0)
     expect(timeoutError.message).toBe("Direct attachment byte transfer failed")
+    expect(uploadAborted).toBe(true)
     expect(prepares).toBe(2)
     const recovery = readFileSync(join(stateRoot, readdirSync(stateRoot)[0]!), "utf8")
     expect(recovery).toContain('"stage":"prepared"')
