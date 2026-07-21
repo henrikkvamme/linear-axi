@@ -36,7 +36,8 @@ import {
 import {
   filterOfficialActiveEntities,
   hasValidOfficialArchivedState,
-  requireOfficialEntityActive
+  requireOfficialEntityActive,
+  resolveOfficialViewerUser
 } from "./official-active"
 import { runOfficialCommand } from "./official-commands"
 import {
@@ -595,10 +596,12 @@ const resolveOfficialAssignableUserSelector = (
   selector: string
 ): Effect.Effect<string, CliError> => Effect.gen(function*() {
   let user: Record<string, unknown>
-  if (looksLikeUuid(selector) || selector === "me") {
+  if (selector === "me") {
+    user = yield* resolveOfficialViewerUser(gateway)
+  } else if (looksLikeUuid(selector)) {
     const result = yield* gateway.callOfficialTool("get_user", { query: selector })
     if (!Predicate.isObject(result) || !nonEmptyString(result.id) ||
-      (selector !== "me" && !officialEntityMatchesSelector(result, selector, ["id", "email", "name", "displayName"]))) {
+      !officialEntityMatchesSelector(result, selector, ["id", "email", "name", "displayName"])) {
       return yield* officialShapeError("get_user identity")
     }
     user = result

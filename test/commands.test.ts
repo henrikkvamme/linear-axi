@@ -617,23 +617,82 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: true })
   })
 
-  test("official project lead updates canonicalize me before verification", async () => {
+  test("official project lead updates prove me against the active authenticated viewer", async () => {
     const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    let authCalls = 0
     const output = await run(["projects", "update", "--id", "project-id", "--lead", "me"], fakeGateway({
+      authStatus: () => {
+        authCalls += 1
+        return Effect.succeed({ authenticated: true, method: "apiKey", viewer: { id: "user-id", name: "Henrik" } })
+      },
       callOfficialTool: (name, args) => {
         calls.push({ name, args })
-        if (name === "get_user") return Effect.succeed({ id: "user-id", name: "Henrik", email: "henrik@example.com" })
+        if (name === "get_user") return Effect.succeed({ id: "user-id", name: "Henrik", email: "henrik@example.com", active: true, archivedAt: null })
         if (name === "get_project") return Effect.succeed({ id: "project-id", lead: { id: "user-id", name: "Henrik" } })
         throw new Error("must not save an already satisfied lead")
       }
     }))
 
+    expect(authCalls).toBe(1)
     expect(calls).toEqual([
       { name: "get_project", args: { query: "project-id" } },
       { name: "get_user", args: { query: "me" } },
       { name: "get_project", args: { query: "project-id" } }
     ])
     expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
+  })
+
+  test("project lead me fails closed on unproven viewer identity before mutation", async () => {
+    const cases = [
+      {
+        name: "missing viewer",
+        auth: { authenticated: true, method: "apiKey" as const },
+        user: { id: "user-id", active: true, archivedAt: null }
+      },
+      {
+        name: "mismatched viewer",
+        auth: { authenticated: true, method: "apiKey" as const, viewer: { id: "viewer-id", name: "Henrik" } },
+        user: { id: "other-user-id", active: true, archivedAt: null }
+      },
+      {
+        name: "inactive viewer",
+        auth: { authenticated: true, method: "apiKey" as const, viewer: { id: "user-id", name: "Henrik" } },
+        user: { id: "user-id", active: false, archivedAt: null }
+      },
+      {
+        name: "malformed viewer response",
+        auth: { authenticated: true, method: "apiKey" as const, viewer: { id: "user-id", name: "Henrik" } },
+        user: { id: "user-id", archivedAt: null }
+      }
+    ]
+
+    for (const scenario of cases) {
+      let saves = 0
+      let authCalls = 0
+      let userCalls = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "projects", "update", "--id", "project-id", "--lead", "me"
+      ], commandSpecs), fakeGateway({
+        authStatus: () => {
+          authCalls += 1
+          return Effect.succeed(scenario.auth)
+        },
+        callOfficialTool: (name) => {
+          if (name === "get_project") return Effect.succeed({ id: "project-id", lead: null })
+          if (name === "get_user") {
+            userCalls += 1
+            return Effect.succeed(scenario.user)
+          }
+          if (name === "save_project") saves += 1
+          return Effect.succeed({})
+        }
+      }, false), "/repo/src/main.ts")))
+
+      expect(error._tag, scenario.name).toBe("LinearDomainError")
+      expect(authCalls, scenario.name).toBe(1)
+      expect(userCalls, scenario.name).toBe(scenario.name === "missing viewer" ? 0 : 1)
+      expect(saves, scenario.name).toBe(0)
+    }
   })
 
   test("official collection verification accepts documented selectors case-insensitively", async () => {
@@ -3266,9 +3325,14 @@ describe("runCommand", () => {
     expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
   })
 
-  test("issue assignee updates canonicalize me before retry verification", async () => {
+  test("issue assignee updates prove me against the active authenticated viewer", async () => {
     const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    let authCalls = 0
     const output = await run(["issues", "update", "--id", "ENG-123", "--assignee", "me"], fakeGateway({
+      authStatus: () => {
+        authCalls += 1
+        return Effect.succeed({ authenticated: true, method: "apiKey", viewer: { id: "user-id", name: "Henrik" } })
+      },
       callOfficialTool: (name, args) => {
         calls.push({ name, args })
         if (name === "get_issue") return Effect.succeed({ id: "issue-id", identifier: "ENG-123", teamId: "team-id", assignee: { id: "user-id", name: "Henrik" } })
@@ -3277,11 +3341,65 @@ describe("runCommand", () => {
       }
     }))
 
+    expect(authCalls).toBe(1)
     expect(calls).toEqual([
       { name: "get_issue", args: { id: "ENG-123" } },
       { name: "get_user", args: { query: "me" } }
     ])
     expect(output).toMatchObject({ changed: false, result: "requested issue properties already match (no-op)" })
+  })
+
+  test("issue assignee me fails closed on unproven viewer identity before mutation", async () => {
+    const cases = [
+      {
+        name: "missing viewer",
+        auth: { authenticated: true, method: "apiKey" as const },
+        user: { id: "user-id", active: true, isAssignable: true, archivedAt: null }
+      },
+      {
+        name: "mismatched viewer",
+        auth: { authenticated: true, method: "apiKey" as const, viewer: { id: "viewer-id", name: "Henrik" } },
+        user: { id: "other-user-id", active: true, isAssignable: true, archivedAt: null }
+      },
+      {
+        name: "inactive viewer",
+        auth: { authenticated: true, method: "apiKey" as const, viewer: { id: "user-id", name: "Henrik" } },
+        user: { id: "user-id", active: false, isAssignable: true, archivedAt: null }
+      },
+      {
+        name: "malformed viewer response",
+        auth: { authenticated: true, method: "apiKey" as const, viewer: { id: "user-id", name: "Henrik" } },
+        user: { id: "user-id", isAssignable: true, archivedAt: null }
+      }
+    ]
+
+    for (const scenario of cases) {
+      let saves = 0
+      let authCalls = 0
+      let userCalls = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "update", "--id", "ENG-123", "--assignee", "me"
+      ], commandSpecs), fakeGateway({
+        authStatus: () => {
+          authCalls += 1
+          return Effect.succeed(scenario.auth)
+        },
+        callOfficialTool: (name) => {
+          if (name === "get_issue") return Effect.succeed({ id: "issue-id", identifier: "ENG-123", teamId: "team-id", assignee: null, archivedAt: null })
+          if (name === "get_user") {
+            userCalls += 1
+            return Effect.succeed(scenario.user)
+          }
+          if (name === "save_issue") saves += 1
+          return Effect.succeed({})
+        }
+      }, false), "/repo/src/main.ts")))
+
+      expect(error._tag, scenario.name).toBe("LinearDomainError")
+      expect(authCalls, scenario.name).toBe(1)
+      expect(userCalls, scenario.name).toBe(scenario.name === "missing viewer" ? 0 : 1)
+      expect(saves, scenario.name).toBe(0)
+    }
   })
 
   test("clearing an issue project conflicts with setting a milestone before I/O", async () => {

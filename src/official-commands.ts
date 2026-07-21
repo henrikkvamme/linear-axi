@@ -16,7 +16,10 @@ import {
   officialReferenceValues,
   type OfficialEntityIdentity
 } from "./official-identity"
-import { requireOfficialEntityActive } from "./official-active"
+import {
+  requireOfficialEntityActive,
+  resolveOfficialViewerUser
+} from "./official-active"
 import { indeterminateOfficialMutation, officialMutationInspectionCommand, officialReleaseNoteNeedsReleases } from "./official-inspection"
 import { fetchOfficialRows } from "./official-pagination"
 import { resolveExactOfficialEntity, resolveExactOfficialId } from "./official-selector"
@@ -542,11 +545,13 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
     }
     canonical.id = project.id
     if (typeof args.lead === "string") {
-      const user = yield* gateway.callOfficialTool("get_user", { query: args.lead })
+      const user = args.lead === "me"
+        ? yield* resolveOfficialViewerUser(gateway)
+        : yield* gateway.callOfficialTool("get_user", { query: args.lead })
       if (!Predicate.isObject(user) || !nonEmptyString(user.id) || (args.lead !== "me" && !userEntityMatches(user, args.lead))) {
         return yield* mutationShapeDrift(tool)
       }
-      yield* requireOfficialEntityActive("user", args.lead, user, "get_user")
+      if (args.lead !== "me") yield* requireOfficialEntityActive("user", args.lead, user, "get_user")
       canonical.lead = user.id
     }
     if (Array.isArray(args.labels)) {
