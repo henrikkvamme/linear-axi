@@ -449,6 +449,12 @@ const runVerifiedMutation = (
         yield* gateway.callOfficialTool(mutationReadTool(entry.tool), beforeArgs),
         canonicalArgs
       ))
+  yield* requireOfficialEntityActive(
+    mutationTargetNoun(entry.tool),
+    String(args.id),
+    before,
+    mutationReadTool(entry.tool)
+  )
   if (preconditioned) {
     if (typeof before.updatedAt !== "string" || !isCanonicalTimestamp(before.updatedAt)) {
       return yield* mutationShapeDrift(entry.tool)
@@ -825,6 +831,15 @@ const resolveMutationPipeline = Effect.fn("resolveMutationPipeline")(function*(
   }
   return { pipeline, pipelineWasExplicit: explicitSelector !== undefined }
 })
+
+const mutationTargetNoun = (tool: string): string => ({
+  save_document: "document",
+  save_project: "project",
+  save_release: "release",
+  save_release_note: "release note",
+  save_milestone: "milestone",
+  save_status_update: "status update"
+} as Record<string, string>)[tool] ?? "entity"
 
 const mutationReadTool = (tool: string): string => ({
   save_document: "get_document",

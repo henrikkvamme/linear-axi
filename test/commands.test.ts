@@ -70,9 +70,13 @@ const normalizeActiveOfficialOutput = (
         : { teamId: typeof args.team === "string" ? args.team : null })
     }
   }
-  if (["get_team", "get_project", "get_issue", "get_milestone", "get_user"].includes(name)) return active(value)
+  if (["get_team", "get_project", "get_issue", "get_milestone", "get_user", "get_document", "get_release", "get_release_note"].includes(name)) return active(value)
   if (name === "get_status_updates" && value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).statusUpdates)) {
-    return { ...value, hasNextPage: "hasNextPage" in value ? (value as Record<string, unknown>).hasNextPage : false }
+    return {
+      ...value,
+      statusUpdates: ((value as Record<string, unknown>).statusUpdates as ReadonlyArray<unknown>).map(active),
+      hasNextPage: "hasNextPage" in value ? (value as Record<string, unknown>).hasNextPage : false
+    }
   }
   if (["list_issue_statuses", "list_cycles"].includes(name) && Array.isArray(value)) return value.map(active)
   if (value && typeof value === "object") {
@@ -218,7 +222,7 @@ describe("runCommand", () => {
     const output = await run(["status-updates", "view", "--id", "update-id", "--type", "project"], fakeGateway({
       callOfficialTool: () => Effect.succeed({ statusUpdates: [exact], hasNextPage: false })
     }))
-    expect(output.statusUpdates).toEqual(exact)
+    expect(output.statusUpdates).toEqual({ ...exact, archivedAt: null })
 
     const cases = [
       { rows: [], message: "returned no matching update" },
@@ -514,7 +518,7 @@ describe("runCommand", () => {
           if (name === "get_status_updates") {
             reads += 1
             return Effect.succeed(reads === 1
-              ? { statusUpdates: [{ id: "update-id", type: "project", health: "offTrack" }], hasNextPage: false }
+              ? { statusUpdates: [{ id: "update-id", type: "project", health: "offTrack", archivedAt: null }], hasNextPage: false }
               : entry.value)
           }
           if (name === "save_status_update") {
@@ -993,6 +997,78 @@ describe("runCommand", () => {
     expect(error.message).toContain("known-stale")
     expect(error.help).toContain("linear-axi documents view --id 'document-id' --full")
     expect(saves).toBe(0)
+  })
+
+  test("official updates require active targets before no-op or save", async () => {
+    const cases = [
+      {
+        argv: ["documents", "update", "--id", "document-id", "--title", "New"],
+        tool: "save_document",
+        read: "get_document",
+        entity: { id: "document-id", title: "Old" },
+        satisfied: { title: "New" }
+      },
+      {
+        argv: ["projects", "update", "--id", "project-id", "--name", "New"],
+        tool: "save_project",
+        read: "get_project",
+        entity: { id: "project-id", name: "Old" },
+        satisfied: { name: "New" }
+      },
+      {
+        argv: ["releases", "update", "--id", "release-id", "--name", "New"],
+        tool: "save_release",
+        read: "get_release",
+        entity: { id: "release-id", name: "Old" },
+        satisfied: { name: "New" }
+      },
+      {
+        argv: ["release-notes", "update", "--id", "note-id", "--title", "New"],
+        tool: "save_release_note",
+        read: "get_release_note",
+        entity: { id: "note-id", title: "Old" },
+        satisfied: { title: "New" }
+      },
+      {
+        argv: ["status-updates", "update", "--type", "project", "--id", "update-id", "--health", "onTrack"],
+        tool: "save_status_update",
+        read: "get_status_updates",
+        entity: { id: "update-id", type: "project", health: "atRisk" },
+        satisfied: { health: "onTrack" }
+      }
+    ] as const
+
+    for (const entry of cases) {
+      for (const archivedAt of [undefined, "2026-07-01T00:00:00.000Z"] as const) {
+        for (const noOp of [false, true]) {
+          let saves = 0
+          const state = archivedAt === undefined ? {} : { archivedAt }
+          const current = { ...entry.entity, ...(noOp ? entry.satisfied : {}), ...state }
+          const error = await Effect.runPromise(Effect.flip(runCommand(
+            parseArgs(entry.argv, commandSpecs),
+            fakeGateway({
+              callOfficialTool: (name) => {
+                if (name === entry.tool) {
+                  saves += 1
+                  return Effect.succeed({ id: entry.entity.id })
+                }
+                if (name === entry.read) {
+                  return Effect.succeed(entry.tool === "save_status_update"
+                    ? { statusUpdates: [current], hasNextPage: false }
+                    : current)
+                }
+                throw new Error(`unexpected tool ${name}`)
+              }
+            }, false),
+            "/repo/src/main.ts"
+          )))
+
+          expect(error._tag, `${entry.tool} noOp=${noOp} archivedAt=${String(archivedAt)}`).toBe("LinearDomainError")
+          expect(error.message).toContain(archivedAt === undefined ? "output shape drifted" : "archived")
+          expect(saves).toBe(0)
+        }
+      }
+    }
   })
 
   test("official string clear flags send and verify explicit empty strings", async () => {
