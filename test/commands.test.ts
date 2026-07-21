@@ -1281,6 +1281,71 @@ describe("runCommand", () => {
     }
   })
 
+  test("release-note associations require every resolved release to be active", async () => {
+    const cases = [
+      {
+        argv: ["release-notes", "update", "--id", "note-id", "--releases-json", '["v1"]'],
+        invalidSelector: "v1"
+      },
+      {
+        argv: ["release-notes", "update", "--id", "note-id", "--range-from", "v1", "--range-to", "v2"],
+        invalidSelector: "v1"
+      },
+      {
+        argv: ["release-notes", "update", "--id", "note-id", "--range-from", "v1", "--range-to", "v2"],
+        invalidSelector: "v2"
+      }
+    ] as const
+
+    for (const entry of cases) {
+      for (const archivedAt of [undefined, "2026-07-01T00:00:00.000Z"] as const) {
+        let saves = 0
+        const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs(entry.argv, commandSpecs), fakeGateway({
+          callOfficialTool: (name, args) => {
+            if (name === "get_release_note") {
+              return Effect.succeed({
+                id: "note-id",
+                title: "Notes",
+                pipeline: { id: "pipeline-id" },
+                releases: [],
+                archivedAt: null
+              })
+            }
+            if (name === "list_release_pipelines") {
+              return Effect.succeed({
+                releasePipelines: [{ id: "pipeline-id", name: "Delivery", archivedAt: null }],
+                hasNextPage: false
+              })
+            }
+            if (name === "list_releases") {
+              const selector = String(args.query)
+              return Effect.succeed({
+                releases: [{
+                  id: `${selector}-id`,
+                  slugId: selector,
+                  pipeline: { id: "pipeline-id" },
+                  ...(selector === entry.invalidSelector
+                    ? archivedAt === undefined ? {} : { archivedAt }
+                    : { archivedAt: null })
+                }],
+                hasNextPage: false
+              })
+            }
+            if (name === "save_release_note") {
+              saves += 1
+              return Effect.succeed({ id: "note-id" })
+            }
+            throw new Error(`unexpected tool ${name}`)
+          }
+        }, false), "/repo/src/main.ts")))
+
+        expect(error._tag).toBe("LinearDomainError")
+        expect(error.message).toContain(archivedAt === undefined ? "output shape drifted" : "archived")
+        expect(saves).toBe(0)
+      }
+    }
+  })
+
   test("bespoke official associations require explicit active-state metadata", async () => {
     const cases = [
       { argv: ["documents", "update", "--id", "document-id", "--cycle", "Cycle 7", "--team", "Engineering"], associationTool: "list_cycles" },

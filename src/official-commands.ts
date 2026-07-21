@@ -684,6 +684,7 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
                 includeArchived: true
               }, "releases", (rows) => rows.some((row) => nonEmptyString(row.id) && referenceTextEqual(row.id, selector)))
           const release = yield* resolveExactOfficialEntity("release", selector, releases, ["id", "slugId"])
+          yield* requireOfficialEntityActive("release", selector, release, tool)
           yield* requireAssociationOwnership("release", selector, release, "pipeline", pipelineIdentity, tool)
           const releaseId = release.id as string
           resolvedReleases.set(cacheKey, releaseId)

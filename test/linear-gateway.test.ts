@@ -635,6 +635,34 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(updates).toBe(0)
   })
 
+  test("label add rejects a different child from an occupied parent group", async () => {
+    const parentId = "77777777-7777-4777-8777-777777777777"
+    const current = issueLabel({ id: "55555555-5555-4555-8555-555555555555", name: "Backend", parentId })
+    const desired = issueLabel({ id: "66666666-6666-4666-8666-666666666666", name: "Frontend", parentId })
+    let applies = 0
+    const currentIssue = issue({
+      labelIds: [current.id],
+      labels: async () => page([current])
+    })
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([currentIssue], {
+        issueLabels: async () => page([desired]),
+        issueAddLabel: async () => { applies += 1; return { success: true } }
+      })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.applyLabel({
+      issue: "BEN-1",
+      label: "Frontend"
+    })))
+
+    expect(error.message).toContain(current.id)
+    expect(error.message).toContain(desired.id)
+    expect(error.message).toContain(parentId)
+    expect(error.help).toContain("at most one label")
+    expect(applies).toBe(0)
+  })
+
   test("successful description update refetches and verifies content and timestamp", async () => {
     const before = issue()
     const after = issue({ description: "replacement", updatedAt: new Date("2026-07-13T12:01:00.000Z") })

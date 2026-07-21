@@ -745,6 +745,10 @@ const applyLabel = async (
   if (issue.labelIds.some((id) => uuidEqual(id, label.id))) {
     return unchanged(await issueSummary(issue), "label already applied (no-op)")
   }
+  const currentLabels = await loadIssueLabels(issue, true)
+  const groupConflict = labelGroupSelectionError([...currentLabels, label])
+  if (groupConflict) throw groupConflict
+  const currentLabelIds = [...issue.labelIds]
 
   return executeVerifiedIssueMutation(
     client,
@@ -754,7 +758,8 @@ const applyLabel = async (
       const payload = await client.issueAddLabel(issue.id, label.id)
       return mutationAccepted(payload.success, payload.issue)
     },
-    (candidate) => candidate.labelIds.some((id) => uuidEqual(id, label.id)),
+    (candidate) => candidate.labelIds.some((id) => uuidEqual(id, label.id)) &&
+      currentLabelIds.every((currentId) => candidate.labelIds.some((id) => uuidEqual(id, currentId))),
     "label applied"
   )
 }
