@@ -318,7 +318,7 @@ const createOfficialIssue = (
   if (matches.length > 1) {
     return yield* Effect.fail(new LinearDomainError({
       message: `Multiple issues exactly match title ${title} in team ${teamInput}`,
-      help: `Candidate ids: ${matches.map((issue) => String(issue.id)).join(", ")}`
+      help: renderCandidateIds(matches)
     }))
   }
   if (matches.length === 1) {

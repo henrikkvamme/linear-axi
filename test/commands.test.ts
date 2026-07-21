@@ -60,7 +60,10 @@ const normalizeActiveOfficialOutput = (name: string, value: unknown): unknown =>
       ? { ...normalized, isGroup: false }
       : normalized
   }
-  if (["get_team", "get_project", "get_issue", "get_milestone"].includes(name)) return active(value)
+  if (["get_team", "get_project", "get_issue", "get_milestone", "get_user"].includes(name)) return active(value)
+  if (name === "get_status_updates" && value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).statusUpdates)) {
+    return { ...value, hasNextPage: "hasNextPage" in value ? (value as Record<string, unknown>).hasNextPage : false }
+  }
   if (["list_issue_statuses", "list_cycles"].includes(name) && Array.isArray(value)) return value.map(active)
   if (value && typeof value === "object") {
     const key = ({
@@ -340,6 +343,46 @@ describe("runCommand", () => {
     }), "/repo/src/main.ts")))
     expect(statusError._tag).toBe("LinearDomainError")
     expect(statusSaves).toBe(0)
+  })
+
+  test("status-update mutation verification requires one exact unpaginated row", async () => {
+    const exact = { id: "update-id", type: "project", health: "onTrack" }
+    const cases = [
+      { value: { statusUpdates: [exact] }, detail: "missing pagination metadata" },
+      { value: { statusUpdates: [exact], hasNextPage: true, cursor: "next" }, detail: "paginated results" },
+      { value: { statusUpdates: [], hasNextPage: false }, detail: "empty results" },
+      { value: { statusUpdates: [exact, { ...exact, id: "other-id" }], hasNextPage: false }, detail: "multiple results" },
+      { value: { statusUpdates: ["malformed"], hasNextPage: false }, detail: "malformed row" },
+      { value: { statusUpdates: [{ ...exact, id: "other-id" }], hasNextPage: false }, detail: "mismatched identity" }
+    ] as const
+
+    for (const entry of cases) {
+      let reads = 0
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "status-updates", "update", "--type", "project", "--id", "update-id", "--health", "onTrack"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_status_updates") {
+            reads += 1
+            return Effect.succeed(reads === 1
+              ? { statusUpdates: [{ id: "update-id", type: "project", health: "offTrack" }], hasNextPage: false }
+              : entry.value)
+          }
+          if (name === "save_status_update") {
+            saves += 1
+            return Effect.succeed({ id: "update-id" })
+          }
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }, false), "/repo/src/main.ts")))
+
+      expect(error._tag, entry.detail).toBe("LinearApiError")
+      expect(error.message, entry.detail).toContain("could not be verified")
+      expect(error.help, entry.detail).toContain("linear-axi status-updates view --type 'project' --id 'update-id' --full")
+      expect(error.help, entry.detail).not.toContain("retry")
+      expect(saves, entry.detail).toBe(1)
+    }
   })
 
   test("milestone updates canonicalize project and milestone selectors before verification", async () => {
@@ -874,6 +917,61 @@ describe("runCommand", () => {
             }
             if (name.startsWith("save_")) saves += 1
             throw new Error(`unexpected tool ${name} for ${entry.associationTool} archivedAt=${String(archivedAt)}`)
+          }
+        }, false), "/repo/src/main.ts")))
+
+        expect(error._tag).toBe("LinearDomainError")
+        expect(error.message).toContain(archivedAt === undefined ? "output shape drifted" : "archived")
+        expect(saves).toBe(0)
+      }
+    }
+  })
+
+  test("bespoke official associations require explicit active-state metadata", async () => {
+    const cases = [
+      { argv: ["documents", "update", "--id", "document-id", "--cycle", "Cycle 7", "--team", "Engineering"], associationTool: "list_cycles" },
+      { argv: ["projects", "update", "--id", "project-id", "--lead", "me"], associationTool: "get_user" },
+      { argv: ["milestones", "update", "--project", "Roadmap", "--id", "Launch", "--target-date", "2026-09-01"], associationTool: "get_project" },
+      { argv: ["milestones", "update", "--project", "Roadmap", "--id", "Launch", "--target-date", "2026-09-01"], associationTool: "get_milestone" }
+    ] as const
+
+    for (const entry of cases) {
+      for (const archivedAt of [undefined, "2026-07-01T00:00:00.000Z"] as const) {
+        let saves = 0
+        const state = archivedAt === undefined ? {} : { archivedAt }
+        const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs(entry.argv, commandSpecs), fakeGateway({
+          callOfficialTool: (name) => {
+            if (name === "get_document") return Effect.succeed({ id: "document-id", cycle: null })
+            if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering", archivedAt: null })
+            if (name === "list_cycles") return Effect.succeed([{
+              id: "cycle-id",
+              name: "Cycle 7",
+              team: { id: "team-id" },
+              ...(entry.associationTool === name ? state : { archivedAt: null })
+            }])
+            if (name === "get_user") return Effect.succeed({
+              id: "user-id",
+              name: "Henrik",
+              ...(entry.associationTool === name ? state : { archivedAt: null })
+            })
+            if (name === "get_project") return Effect.succeed({
+              id: "project-id",
+              name: "Roadmap",
+              lead: null,
+              ...(entry.associationTool === name ? state : { archivedAt: null })
+            })
+            if (name === "get_milestone") return Effect.succeed({
+              id: "milestone-id",
+              name: "Launch",
+              project: { id: "project-id" },
+              targetDate: "2026-08-01",
+              ...(entry.associationTool === name ? state : { archivedAt: null })
+            })
+            if (name.startsWith("save_")) {
+              saves += 1
+              return Effect.succeed({ id: "saved-id" })
+            }
+            throw new Error(`unexpected tool ${name}`)
           }
         }, false), "/repo/src/main.ts")))
 
@@ -2509,6 +2607,32 @@ describe("runCommand", () => {
 
     expect(calls.find(({ name }) => name === "list_issues")?.args).toEqual({ query: "Launch", team: "team-id", limit: 100, includeArchived: false })
     expect(output).toMatchObject({ changed: true, result: "issue created through official save_issue" })
+  })
+
+  test("advanced issue exact-create ambiguity caps candidate ids", async () => {
+    let saves = 0
+    const candidates = Array.from({ length: 15 }, (_, index) => ({
+      id: `issue-${String(index + 1).padStart(2, "0")}`,
+      title: "Launch",
+      teamId: "team-id",
+      archivedAt: null
+    }))
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--priority", "2", "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
+        if (name === "list_issues") return Effect.succeed({ issues: candidates, hasNextPage: false })
+        if (name === "save_issue") saves += 1
+        throw new Error(`unexpected tool ${name}`)
+      }
+    }, false), "/repo/src/main.ts")))
+
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("Multiple issues exactly match")
+    expect(error.help).toContain("showing 10 of 15")
+    expect(error.help).not.toContain("issue-11")
+    expect(saves).toBe(0)
   })
 
   test("advanced issue create retries as an exact no-op", async () => {

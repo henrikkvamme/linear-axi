@@ -428,6 +428,7 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
       const teamIdentity = officialEntityIdentity(team, ["key", "name"])
       if (!teamIdentity) return yield* mutationShapeDrift(tool)
       const cycle = yield* resolveExactOfficialEntity("cycle", args.cycle, cycles as ReadonlyArray<Record<string, unknown>>, ["id", "name", "number"])
+      yield* requireOfficialEntityActive("cycle", args.cycle, cycle, tool)
       yield* requireAssociationOwnership("cycle", args.cycle, cycle, "team", teamIdentity, tool)
       canonical.cycle = cycle.id
     }
@@ -445,6 +446,7 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
       if (!Predicate.isObject(user) || !nonEmptyString(user.id) || (args.lead !== "me" && !userEntityMatches(user, args.lead))) {
         return yield* mutationShapeDrift(tool)
       }
+      yield* requireOfficialEntityActive("user", args.lead, user, "get_user")
       canonical.lead = user.id
     }
     if (Array.isArray(args.labels)) {
@@ -585,12 +587,14 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
     if (!Predicate.isObject(project) || !nonEmptyString(project.id) || !mutationEntityMatches(project, args.project, "save_project")) {
       return yield* mutationShapeDrift(tool)
     }
+    yield* requireOfficialEntityActive("project", args.project, project, "get_project")
     const projectIdentity = officialEntityIdentity(project, ["name", "slugId"])
     if (!projectIdentity) return yield* mutationShapeDrift(tool)
     const milestone = yield* gateway.callOfficialTool("get_milestone", { project: project.id, query: args.id })
     if (!Predicate.isObject(milestone) || !nonEmptyString(milestone.id) || !mutationEntityMatches(milestone, args.id, "save_milestone")) {
       return yield* mutationShapeDrift(tool)
     }
+    yield* requireOfficialEntityActive("milestone", args.id, milestone, "get_milestone")
     const milestoneProject = officialOwnerReference(milestone, "project")
     if (officialReferenceValues(milestoneProject).length === 0) return yield* mutationShapeDrift(tool)
     if (!officialReferenceMatchesIdentity(milestoneProject, projectIdentity)) {
@@ -722,10 +726,14 @@ const extractMutationObject = (
   args: Readonly<Record<string, unknown>>
 ): Effect.Effect<Record<string, unknown>, LinearDomainError> => {
   if (tool === "save_status_update") {
-    if (!Predicate.isObject(value) || !Array.isArray(value.statusUpdates)) return mutationShapeDrift(tool)
-    const matches = value.statusUpdates.filter(Predicate.isObject).filter((item) =>
-      mutationEntityMatches(item, args.id, tool) && literalEqual(item.type, args.type))
-    return matches.length === 1 ? Effect.succeed(matches[0]!) : mutationShapeDrift(tool)
+    if (!Predicate.isObject(value) || value.hasNextPage !== false || !Array.isArray(value.statusUpdates) || value.statusUpdates.length !== 1) {
+      return mutationShapeDrift(tool)
+    }
+    const statusUpdate = value.statusUpdates[0]
+    if (!Predicate.isObject(statusUpdate) || !mutationEntityMatches(statusUpdate, args.id, tool) || !literalEqual(statusUpdate.type, args.type)) {
+      return mutationShapeDrift(tool)
+    }
+    return Effect.succeed(statusUpdate)
   }
   return Predicate.isObject(value) && Object.keys(value).length > 0 && mutationEntityMatches(value, args.id, tool)
     ? Effect.succeed(value)
