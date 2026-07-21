@@ -16,6 +16,7 @@ import {
   officialReferenceValues,
   type OfficialEntityIdentity
 } from "./official-identity"
+import { requireOfficialEntityActive } from "./official-active"
 import { indeterminateOfficialMutation, officialMutationInspectionCommand, officialReleaseNoteNeedsReleases } from "./official-inspection"
 import { fetchOfficialRows } from "./official-pagination"
 import { resolveExactOfficialEntity, resolveExactOfficialId } from "./official-selector"
@@ -632,12 +633,7 @@ const resolveGetAssociation = Effect.fn("resolveGetAssociation")(function*(
   const result = yield* gateway.callOfficialTool(tool, args)
   if (!Predicate.isObject(result)) return yield* mutationShapeDrift(tool)
   const entity = yield* resolveExactOfficialEntity(noun, selector, [result], keys)
-  if (entity.archivedAt != null) {
-    return yield* Effect.fail(new LinearDomainError({
-      message: `${noun} ${selector} is archived`,
-      help: `Choose an active ${noun}.`
-    }))
-  }
+  yield* requireOfficialEntityActive(noun, selector, entity, tool)
   return entity
 })
 
@@ -684,12 +680,9 @@ const resolveReleasePipeline = Effect.fn("resolveReleasePipeline")(function*(
     includeArchived: false,
     ...(includeStages ? { includeStages: true } : {})
   }, "releasePipelines")
-  return yield* resolveExactOfficialEntity(
-    "release pipeline",
-    selector,
-    rows.filter((row) => row.archivedAt == null),
-    ["id", "name", "slugId"]
-  )
+  const pipeline = yield* resolveExactOfficialEntity("release pipeline", selector, rows, ["id", "name", "slugId"])
+  yield* requireOfficialEntityActive("release pipeline", selector, pipeline, "list_release_pipelines")
+  return pipeline
 })
 
 const mutationReadTool = (tool: string): string => ({

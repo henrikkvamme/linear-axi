@@ -54,6 +54,12 @@ const normalizeActiveOfficialOutput = (name: string, value: unknown): unknown =>
   const active = (entity: unknown): unknown => entity && typeof entity === "object" && !("archivedAt" in entity)
     ? { ...entity, archivedAt: null }
     : entity
+  const ordinaryLabel = (entity: unknown): unknown => {
+    const normalized = active(entity)
+    return name === "list_issue_labels" && normalized && typeof normalized === "object" && !("isGroup" in normalized)
+      ? { ...normalized, isGroup: false }
+      : normalized
+  }
   if (["get_team", "get_project", "get_issue", "get_milestone"].includes(name)) return active(value)
   if (["list_issue_statuses", "list_cycles"].includes(name) && Array.isArray(value)) return value.map(active)
   if (value && typeof value === "object") {
@@ -61,10 +67,11 @@ const normalizeActiveOfficialOutput = (name: string, value: unknown): unknown =>
       list_issue_labels: "labels",
       list_issues: "issues",
       list_releases: "releases",
+      list_release_pipelines: "releasePipelines",
       list_users: "users"
     } as Record<string, string>)[name]
     if (key && Array.isArray((value as Record<string, unknown>)[key])) {
-      return { ...value, [key]: ((value as Record<string, unknown>)[key] as ReadonlyArray<unknown>).map(active) }
+      return { ...value, [key]: ((value as Record<string, unknown>)[key] as ReadonlyArray<unknown>).map(ordinaryLabel) }
     }
   }
   return value
@@ -827,6 +834,56 @@ describe("runCommand", () => {
     }
   })
 
+  test("official mutation associations require explicit active-state metadata", async () => {
+    const cases = [
+      {
+        argv: ["documents", "update", "--id", "document-id", "--project", "Roadmap"],
+        associationTool: "get_project",
+        association: { id: "project-id", name: "Roadmap" }
+      },
+      {
+        argv: ["documents", "update", "--id", "document-id", "--issue", "ENG-123"],
+        associationTool: "get_issue",
+        association: { id: "issue-id", identifier: "ENG-123" }
+      },
+      {
+        argv: ["releases", "update", "--id", "release-id", "--pipeline", "Delivery"],
+        associationTool: "list_release_pipelines",
+        association: { id: "pipeline-id", name: "Delivery" }
+      }
+    ] as const
+
+    for (const entry of cases) {
+      for (const archivedAt of [undefined, "2026-07-01T00:00:00.000Z"] as const) {
+        let saves = 0
+        const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs(entry.argv, commandSpecs), fakeGateway({
+          callOfficialTool: (name) => {
+            if (name === "get_document") return Effect.succeed({ id: "document-id", project: null, issue: null })
+            if (name === "get_release") return Effect.succeed({ id: "release-id", pipeline: null })
+            if (name === "get_project" && entry.associationTool === name) {
+              return Effect.succeed({ ...entry.association, ...(archivedAt === undefined ? {} : { archivedAt }) })
+            }
+            if (name === "get_issue" && entry.associationTool === name) {
+              return Effect.succeed({ ...entry.association, ...(archivedAt === undefined ? {} : { archivedAt }) })
+            }
+            if (name === "list_release_pipelines" && entry.associationTool === name) {
+              return Effect.succeed({
+                releasePipelines: [{ ...entry.association, ...(archivedAt === undefined ? {} : { archivedAt }) }],
+                hasNextPage: false
+              })
+            }
+            if (name.startsWith("save_")) saves += 1
+            throw new Error(`unexpected tool ${name} for ${entry.associationTool} archivedAt=${String(archivedAt)}`)
+          }
+        }, false), "/repo/src/main.ts")))
+
+        expect(error._tag).toBe("LinearDomainError")
+        expect(error.message).toContain(archivedAt === undefined ? "output shape drifted" : "archived")
+        expect(saves).toBe(0)
+      }
+    }
+  })
+
   test("document cycle verification treats team as transport-only", async () => {
     let documentReads = 0
     let saved: Readonly<Record<string, unknown>> | undefined
@@ -867,6 +924,7 @@ describe("runCommand", () => {
               id: "pipeline-id",
               name: "Delivery",
               slugId: "delivery",
+              archivedAt: null,
               stages: [{ id: "stage-id", name: "In progress", type: "started" }]
             }],
             hasNextPage: false
@@ -2312,18 +2370,44 @@ describe("runCommand", () => {
     }
   })
 
+  test("advanced issue labels fail closed when group metadata is omitted or malformed", async () => {
+    for (const isGroup of [undefined, "false"] as const) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Bug"]', "--if-absent"
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
+          if (name === "list_issue_labels") {
+            return Effect.succeed({
+              labels: [{ id: "label-id", name: "Bug", archivedAt: null, ...(isGroup === undefined ? {} : { isGroup }) }],
+              hasNextPage: false
+            })
+          }
+          if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
+          if (name === "save_issue") saves += 1
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }, false), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("output shape drifted")
+      expect(saves).toBe(0)
+    }
+  })
+
   test("advanced issue labels share one guarded collection scan", async () => {
     let labelPages = 0
     const output = await run([
       "issues", "create", "--team", "ENG", "--title", "Launch", "--labels-json", '["Bug","Urgent"]', "--if-absent"
     ], fakeGateway({
       callOfficialTool: (name, args) => {
-        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG" })
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
         if (name === "list_issue_labels") {
           labelPages += 1
           return args.cursor === undefined
-            ? Effect.succeed({ labels: [{ id: "bug-id", name: "Bug" }], hasNextPage: true, cursor: "labels-2" })
-            : Effect.succeed({ labels: [{ id: "urgent-id", name: "Urgent" }], hasNextPage: false })
+            ? Effect.succeed({ labels: [{ id: "bug-id", name: "Bug", archivedAt: null, isGroup: false }], hasNextPage: true, cursor: "labels-2" })
+            : Effect.succeed({ labels: [{ id: "urgent-id", name: "Urgent", archivedAt: null, isGroup: false }], hasNextPage: false })
         }
         if (name === "list_issues") return Effect.succeed({ issues: [], hasNextPage: false })
         if (name === "save_issue") return Effect.succeed({ id: "issue-id" })
@@ -2334,7 +2418,7 @@ describe("runCommand", () => {
           labels: [{ id: "bug-id" }, { id: "urgent-id" }]
         })
       }
-    }))
+    }, false))
 
     expect(labelPages).toBe(2)
     expect(output).toMatchObject({ changed: true })

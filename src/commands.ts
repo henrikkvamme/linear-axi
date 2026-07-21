@@ -33,6 +33,11 @@ import {
   officialCollectionContains as collectionContains,
   officialCollectionEqual as collectionEqual
 } from "./official-collection"
+import {
+  filterOfficialActiveEntities,
+  hasValidOfficialArchivedState,
+  requireOfficialEntityActive
+} from "./official-active"
 import { runOfficialCommand } from "./official-commands"
 import {
   officialEntityIdentity,
@@ -671,7 +676,7 @@ const resolveOfficialIssueSelectors = (
     const selector = input.cycle
     const cycles = yield* gateway.callOfficialTool("list_cycles", { teamId: team.id })
     if (!Array.isArray(cycles) || cycles.some((cycle) => !Predicate.isObject(cycle))) return yield* officialShapeError("list_cycles")
-    const activeCycles = yield* explicitlyActiveOfficialEntities("cycle", cycles as ReadonlyArray<Record<string, unknown>>)
+    const activeCycles = yield* filterOfficialActiveEntities("cycle", cycles as ReadonlyArray<Record<string, unknown>>, "cycle archived state")
     const cycleId = yield* uniqueOfficialId("cycle", selector, activeCycles, ["id", "name", "number"])
     const cycle = activeCycles.find((candidate) => candidate.id === cycleId)!
     yield* requireOfficialOwnership("cycle", selector, cycle, "team", team)
@@ -793,12 +798,15 @@ const resolveOfficialLabels = (
 ): Effect.Effect<ReadonlyArray<string>, CliError> => Effect.gen(function*() {
   if (selectors.length === 0) return []
   const rows = yield* fetchOfficialRows(gateway, "list_issue_labels", { team, limit: 250 }, "labels")
-  const activeLabels = yield* explicitlyActiveOfficialEntities("label", rows)
+  const activeLabels = yield* filterOfficialActiveEntities("label", rows, "label archived state")
   return yield* Effect.forEach(selectors, (raw) => Effect.gen(function*() {
     const selector = String(raw)
     const id = yield* uniqueOfficialId("label", selector, activeLabels, ["id", "name"])
     const label = activeLabels.find((row) => row.id === id)
-    if (label?.isGroup === true) {
+    if (!label || !Object.prototype.hasOwnProperty.call(label, "isGroup") || typeof label.isGroup !== "boolean") {
+      return yield* officialShapeError("label group state")
+    }
+    if (label.isGroup) {
       return yield* Effect.fail(new LinearDomainError({
         message: `Issue label ${selector} is a label group`,
         help: "Choose an ordinary issue label."
@@ -821,42 +829,11 @@ const resolveOfficialReleases = (
       limit: 250,
       ...(includeArchived ? { includeArchived: true } : {})
     }, "releases")
-    const candidates = includeArchived ? rows : yield* explicitlyActiveOfficialEntities("release", rows)
+    const candidates = includeArchived ? rows : yield* filterOfficialActiveEntities("release", rows, "release archived state")
     result.push(yield* uniqueOfficialId("release", selector, candidates, ["id", "name", "version", "slugId"]))
   }
   return result
 })
-
-const requireOfficialEntityActive = (
-  noun: string,
-  selector: string,
-  entity: Readonly<Record<string, unknown>>
-): Effect.Effect<void, LinearDomainError> => {
-  if (!hasValidOfficialArchivedState(entity)) {
-    return officialShapeError(`${noun} archived state`)
-  }
-  return entity.archivedAt === null
-    ? Effect.void
-    : Effect.fail(new LinearDomainError({
-        message: `${noun} ${selector} is archived`,
-        help: `Choose an active ${noun}.`
-      }))
-}
-
-const explicitlyActiveOfficialEntities = (
-  noun: string,
-  entities: ReadonlyArray<Record<string, unknown>>
-): Effect.Effect<ReadonlyArray<Record<string, unknown>>, LinearDomainError> => {
-  if (entities.some((entity) => !hasValidOfficialArchivedState(entity))) {
-    return officialShapeError(`${noun} archived state`)
-  }
-  return Effect.succeed(entities.filter((entity) => entity.archivedAt === null))
-}
-
-const hasValidOfficialArchivedState = (
-  entity: Readonly<Record<string, unknown>>
-): boolean => Object.prototype.hasOwnProperty.call(entity, "archivedAt") &&
-  (entity.archivedAt === null || nonEmptyString(entity.archivedAt))
 
 const requireOfficialOwnership = (
   noun: string,
@@ -888,7 +865,7 @@ const resolveOfficialStateSelector = (
   if (!Array.isArray(result) || result.some((state) => !Predicate.isObject(state))) {
     return yield* officialShapeError("list_issue_statuses")
   }
-  const activeStates = yield* explicitlyActiveOfficialEntities("workflow state", result as ReadonlyArray<Record<string, unknown>>)
+  const activeStates = yield* filterOfficialActiveEntities("workflow state", result as ReadonlyArray<Record<string, unknown>>, "workflow state archived state")
   const stateId = yield* uniqueOfficialId("workflow state", selector, activeStates, ["id", "name"])
   const state = activeStates.find((candidate) => candidate.id === stateId)!
   yield* requireOfficialOwnership("workflow state", selector, state, "team", team)
