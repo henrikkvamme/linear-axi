@@ -92,6 +92,11 @@ linear-axi relations list --issue <issue> --type blocks --direction both
 linear-axi relations remove --issue <blocked> --blocked-by <blocker>
 linear-axi comments list --issue <issue> --limit 50
 linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
+linear-axi attachments list --issue <issue> --limit 100
+linear-axi attachments view --id <attachment-id>
+linear-axi attachments read --id <attachment-id> [--max-bytes <n> | --full]
+linear-axi attachments download --id <attachment-id> --output <path> [--overwrite]
+linear-axi attachments upload --issue <issue> --file <path> [--title <title>] [--subtitle <text>]
 linear-axi wayfinder frontier --map <map-issue> --first 20
 linear-axi <command> --help
 ```
@@ -106,7 +111,15 @@ Official-backed commands initialize `https://mcp.linear.app/mcp` with the one cr
 
 The practical object surface includes projects, documents, cycles, milestones, project labels, releases, release notes, release pipelines, users, agent skills, diffs, status updates, and documentation search. Read commands use `list`, `view`, `search`, or `inspect`; safe updates use `update`. Default list output is minimal and paginated. `--full` disables local projection and text truncation, but associations still require their explicit inclusion flags.
 
-Official create operations without a caller-supplied id, destructive deletes, and binary attachment/image flows are recorded as `needs-decision` or `partial-needs-decision` with a recommended scoped design. They are not silently omitted or exposed as retry-unsafe mutations. Advanced issue creation is the exception: it requires `--if-absent`, performs a team/title exact-match preflight, and uses one `save_issue` mutation. A concurrent creator can still race that preflight, so inspect an ambiguous retry instead of creating again. Product-object updates resolve mutable selectors to immutable IDs before mutation. If an official save fails after dispatch without a definitive response, inspect with the exact read-only command in the error before deciding whether another mutation is safe.
+Official create operations without a caller-supplied id, destructive deletes, and remaining unbounded binary/image operations are recorded as `needs-decision` or `partial-needs-decision` with a recommended scoped design. They are not silently omitted or exposed as retry-unsafe mutations. Advanced issue creation is the exception: it requires `--if-absent`, performs a team/title exact-match preflight, and uses one `save_issue` mutation. Safe file attachment upload is the other scoped exception and uses the official resumable prepare, direct PUT, and finalize flow described below. Product-object updates resolve mutable selectors to immutable IDs before mutation. If an official save fails after dispatch without a definitive response, inspect with the exact read-only command in the error before deciding whether another mutation is safe.
+
+### Attachments
+
+`attachments list` resolves one exact issue and returns selectable attachment metadata without signed URLs. `attachments view` reports metadata and whether authenticated content is available, again without exposing the content URL or headers. `attachments read` renders only conservative UTF-8 textual media types, defaults to 32 KiB, makes terminal control bytes explicit, and requires `--full` for allowed text up to the 1 MiB hard ceiling. Empty text is a successful definitive result. Images and other binary files must be downloaded and inspected with the appropriate local tool, never printed as bytes or base64.
+
+`attachments download` streams to a private temporary file in the destination directory, verifies the expected size and available SHA-256, fsyncs, and atomically renames. It refuses existing destinations by default. `--overwrite` replaces only the unchanged regular file at that exact resolved path. The default download ceiling is 1 GiB; use `--max-bytes <n>` for a smaller or explicitly larger bound below Linear's official 2 GiB limit.
+
+Every live `attachments upload` requires explicit `--issue` and `--file` intent. The source must be a stable, non-empty, non-symlink regular file with a supported deterministic media type. Uploads default to 100 MiB; `--allow-large` is explicit and still cannot reach 2 GiB. The CLI hashes and stats the open file before authentication, resolves the exact issue, prepares one short-lived signed PUT, streams bytes without the Linear bearer token, finalizes by the stable asset URL, and verifies the attachment. Private mode-0600 recovery metadata supports interruption and response-loss recovery without storing the source path, bearer token, signed upload URL, or signed headers. Retrying the same intent reconciles an already-finalized attachment before any mutation. The deprecated base64-heavy `create_attachment` path and destructive attachment deletion remain excluded.
 
 `--description-file -` and `--body-file -` read from stdin. `issues view` truncates descriptions to 1,200 characters by default and reports the original length. Official detail commands apply the same limit to body, content, description, instructions, and text fields, report every truncated field and original length, and provide an exact `--full` command. Pass `--full` before merging or replacing rich text. Data, help, errors, no-ops, and definitive empty states are TOON on stdout. Successful mutations include `changed` and `result`; an already-satisfied mutation is a no-op with exit code `0`.
 

@@ -79,6 +79,11 @@ describe("linear-axi process", () => {
     ["relations", "create"],
     ["comments", "list"],
     ["comments", "create"],
+    ["attachments", "list"],
+    ["attachments", "view"],
+    ["attachments", "download"],
+    ["attachments", "read"],
+    ["attachments", "upload"],
     ["wayfinder", "frontier"]
   ]) {
     test(`prints command help for ${command.join(" ")}`, () => {
@@ -121,6 +126,20 @@ describe("linear-axi process", () => {
     expect(result.exitCode).toBe(2)
     expect(stderrText(result)).toBe("")
     expect(stdoutText(result)).toContain("unknown flag --bogus")
+  })
+
+  test("attachment path and size usage errors happen before authentication", () => {
+    for (const [args, message] of [
+      [["attachments", "upload", "--issue", "ENG-123", "--file", "."], "regular file"],
+      [["attachments", "read", "--id", "attachment-1", "--max-bytes", "0"], "--max-bytes must be an integer"],
+      [["attachments", "download", "--id", "attachment-1", "--output", "."], "destination already exists"]
+    ] as const) {
+      const result = runCli(...args)
+      const stdout = stdoutText(result)
+      expect(result.exitCode).toBe(2)
+      expect(stdout).toContain(message)
+      expect(stdout).not.toContain("Linear credentials are not configured")
+    }
   })
 
   test("relation shorthand usage errors include repaired help before authentication", () => {

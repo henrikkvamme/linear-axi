@@ -152,6 +152,61 @@ const run = async (argv: ReadonlyArray<string>, gateway = fakeGateway()) => {
 }
 
 describe("runCommand", () => {
+  test("attachments list resolves an issue and renders stable selectable metadata", async () => {
+    const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
+    const output = await run(["attachments", "list", "--issue", "ENG-123"], fakeGateway({
+      callOfficialTool: (name, args) => {
+        calls.push({ name, args })
+        return Effect.succeed({
+          id: baseIssue.id,
+          identifier: baseIssue.identifier,
+          attachments: [{
+            id: "attachment-1",
+            filename: "trace.txt",
+            title: "Trace",
+            contentType: "text/plain",
+            size: 12,
+            createdAt: "2026-07-20T10:00:00.000Z",
+            updatedAt: "2026-07-20T11:00:00.000Z",
+            url: "https://uploads.linear.app/private/signed?secret=value"
+          }]
+        })
+      }
+    }))
+
+    expect(calls).toEqual([{ name: "get_issue", args: { id: "ENG-123" } }])
+    expect(output).toEqual({
+      issue: { id: baseIssue.id, identifier: baseIssue.identifier },
+      count: "1 attachment shown",
+      page: { hasNext: false, endCursor: null },
+      attachments: [{
+        id: "attachment-1",
+        filename: "trace.txt",
+        title: "Trace",
+        mediaType: "text/plain",
+        size: 12,
+        createdAt: "2026-07-20T10:00:00.000Z",
+        updatedAt: "2026-07-20T11:00:00.000Z"
+      }],
+      help: ["Run `linear-axi attachments view --id <attachment-id>` for metadata and content availability."]
+    })
+    expect(JSON.stringify(output)).not.toContain("uploads.linear.app")
+  })
+
+  test("attachments list has a definitive empty state", async () => {
+    const output = await run(["attachments", "list", "--issue", "ENG-123"], fakeGateway({
+      callOfficialTool: () => Effect.succeed({ id: baseIssue.id, identifier: baseIssue.identifier, attachments: [] })
+    }))
+
+    expect(output).toEqual({
+      issue: { id: baseIssue.id, identifier: baseIssue.identifier },
+      count: "0 attachments shown",
+      page: { hasNext: false, endCursor: null },
+      attachments: "0 attachments found for ENG-123",
+      help: []
+    })
+  })
+
   test("official command help renders precise flag contracts", () => {
     const projectHelp = commandSpecs.find((spec) => spec.path.join(" ") === "projects update")!.help
     const projectListHelp = commandSpecs.find((spec) => spec.path.join(" ") === "projects list")!.help

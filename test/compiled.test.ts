@@ -54,6 +54,11 @@ test("standalone binary runs without a source checkout", () => {
       ["relations", "remove"],
       ["comments", "list"],
       ["comments", "create"],
+      ["attachments", "list"],
+      ["attachments", "view"],
+      ["attachments", "download"],
+      ["attachments", "read"],
+      ["attachments", "upload"],
       ["projects", "list"],
       ["projects", "update"],
       ["documents", "update"],
@@ -100,6 +105,24 @@ test("standalone binary runs without a source checkout", () => {
     expect(rejected.exitCode).toBe(2)
     expect(new TextDecoder().decode(rejected.stderr)).toBe("")
     expect(new TextDecoder().decode(rejected.stdout)).toContain("unknown flag --bogus")
+
+    for (const [args, message] of [
+      [["attachments", "upload", "--issue", "ENG-123", "--file", root], "regular file"],
+      [["attachments", "read", "--id", "attachment-1", "--max-bytes", "0"], "--max-bytes must be an integer"]
+    ] as const) {
+      const invalidAttachment = Bun.spawnSync({
+        cmd: [binary, ...args],
+        cwd: root,
+        env: { HOME: home, PATH: process.env.PATH ?? "" },
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      const invalidStdout = new TextDecoder().decode(invalidAttachment.stdout)
+      expect(invalidAttachment.exitCode).toBe(2)
+      expect(new TextDecoder().decode(invalidAttachment.stderr)).toBe("")
+      expect(invalidStdout).toContain(message)
+      expect(invalidStdout).not.toContain("Linear credentials are not configured")
+    }
 
     const repeated = Bun.spawnSync({
       cmd: [binary, "projects", "update", "--id", "project-id", "--state", "planned", "--state", "started"],

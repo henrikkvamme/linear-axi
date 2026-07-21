@@ -66,7 +66,8 @@ describe("official Linear MCP parity drift", () => {
     const skill = await Bun.file(".agents/skills/linear-axi/SKILL.md").text()
     const required = [
       "workflow-states list", "issues state", "issues parent set", "issues parent clear",
-      "labels add", "labels remove", "labels replace", "relations remove", "issues update"
+      "labels add", "labels remove", "labels replace", "relations remove", "issues update",
+      "attachments list", "attachments view", "attachments download", "attachments read", "attachments upload"
     ]
     for (const command of required) {
       expect(readme).toContain(`linear-axi ${command}`)
@@ -77,5 +78,8 @@ describe("official Linear MCP parity drift", () => {
     }
     expect(readme).toContain("47 official tools")
     expect(skill).toContain("all 47 observed official tools")
+    expect(readme).toContain("deprecated base64-heavy `create_attachment` path")
+    expect(skill).toContain("Every live attachment upload requires an explicit issue and local file intent")
+    expect(skill).toContain("Download images and other binary files")
   })
 })

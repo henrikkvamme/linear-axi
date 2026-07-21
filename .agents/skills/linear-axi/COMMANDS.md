@@ -65,6 +65,76 @@ Example:
   linear-axi auth oauth connect --client-id lin_oauth_app_123 --write-env
 ```
 
+## attachments list
+
+```text
+Usage: linear-axi attachments list --issue <issue-id-or-key> [--after <cursor>] [--limit 100]
+Options:
+  --help
+  --issue <issue> (required)
+  --after <cursor>
+  --limit <1-100>
+Example:
+  linear-axi attachments list --issue ENG-123
+```
+
+## attachments view
+
+```text
+Usage: linear-axi attachments view --id <attachment-id>
+Options:
+  --help
+  --id <id> (required)
+Example:
+  linear-axi attachments view --id <attachment-id>
+```
+
+## attachments download
+
+```text
+Usage: linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]
+Writes atomically and refuses an existing destination by default.
+Options:
+  --help
+  --id <id> (required)
+  --output <path> (required)
+  --overwrite
+  --max-bytes <bytes>
+Example:
+  linear-axi attachments download --id <attachment-id> --output ./attachment.bin
+```
+
+## attachments read
+
+```text
+Usage: linear-axi attachments read --id <attachment-id> [--max-bytes <n>] [--full]
+Only conservative UTF-8 textual media types are rendered. Binary files must be downloaded for inspection.
+Options:
+  --help
+  --id <id> (required)
+  --max-bytes <bytes>
+  --full
+Example:
+  linear-axi attachments read --id <attachment-id>
+```
+
+## attachments upload
+
+```text
+Usage: linear-axi attachments upload --issue <issue-id-or-key> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large]
+Requires explicit issue and regular-file intent. Uses resumable prepare, direct PUT, and finalize; deprecated base64 creation is excluded.
+Options:
+  --help
+  --issue <issue> (required)
+  --file <path> (required)
+  --title <title>
+  --subtitle <text>
+  --media-type <type>
+  --allow-large
+Example:
+  linear-axi attachments upload --issue ENG-123 --file ./trace.txt
+```
+
 ## teams list
 
 ```text

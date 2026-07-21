@@ -213,6 +213,11 @@ export const topLevelHelp = [
   "  linear-axi relations remove --issue <blocked> --blocked-by <blocker>",
   "  linear-axi comments list --issue <issue> [--after <cursor>] [--limit 50] [--full]",
   "  linear-axi comments create --issue <issue> (--body \"...\" | --body-file <path|->) [--id <uuid-v4>]",
+  "  linear-axi attachments list --issue <issue> [--after <cursor>] [--limit 100]",
+  "  linear-axi attachments view --id <attachment-id>",
+  "  linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]",
+  "  linear-axi attachments read --id <attachment-id> [--max-bytes <n>] [--full]",
+  "  linear-axi attachments upload --issue <issue> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large]",
   "  linear-axi wayfinder frontier --map <issue> [--first 20] [--after <cursor>]",
   ...officialTopLevelHelp
 ].join("\n")
@@ -267,6 +272,41 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
     ]),
     valueFlags: new Set(["client-id", "redirect-uri", "scope", "actor", "env-file", "timeout"]),
     help: "Usage: linear-axi auth oauth connect [--client-id <id>] [--redirect-uri <url>] [--scope <scopes>] [--actor user|app] [--prompt-consent] [--write-env] [--env-file <path>] [--timeout 300] [--notify]"
+  },
+  {
+    path: ["attachments", "list"],
+    flags: new Set(["help", "issue", "after", "limit"]),
+    valueFlags: new Set(["issue", "after", "limit"]),
+    required: new Set(["issue"]),
+    help: "Usage: linear-axi attachments list --issue <issue-id-or-key> [--after <cursor>] [--limit 100]"
+  },
+  {
+    path: ["attachments", "view"],
+    flags: new Set(["help", "id"]),
+    valueFlags: new Set(["id"]),
+    required: new Set(["id"]),
+    help: "Usage: linear-axi attachments view --id <attachment-id>"
+  },
+  {
+    path: ["attachments", "download"],
+    flags: new Set(["help", "id", "output", "overwrite", "max-bytes"]),
+    valueFlags: new Set(["id", "output", "max-bytes"]),
+    required: new Set(["id", "output"]),
+    help: "Usage: linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]\nWrites atomically and refuses an existing destination by default."
+  },
+  {
+    path: ["attachments", "read"],
+    flags: new Set(["help", "id", "max-bytes", "full"]),
+    valueFlags: new Set(["id", "max-bytes"]),
+    required: new Set(["id"]),
+    help: "Usage: linear-axi attachments read --id <attachment-id> [--max-bytes <n>] [--full]\nOnly conservative UTF-8 textual media types are rendered. Binary files must be downloaded for inspection."
+  },
+  {
+    path: ["attachments", "upload"],
+    flags: new Set(["help", "issue", "file", "title", "subtitle", "media-type", "allow-large"]),
+    valueFlags: new Set(["issue", "file", "title", "subtitle", "media-type"]),
+    required: new Set(["issue", "file"]),
+    help: "Usage: linear-axi attachments upload --issue <issue-id-or-key> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large]\nRequires explicit issue and regular-file intent. Uses resumable prepare, direct PUT, and finalize; deprecated base64 creation is excluded."
   },
   {
     path: ["teams", "list"],
@@ -464,6 +504,11 @@ const commandExamples: Readonly<Record<string, ReadonlyArray<string>>> = {
   "relations remove": ["linear-axi relations remove --issue ENG-124 --blocked-by ENG-123", "linear-axi relations remove --id <relation-id>"],
   "comments list": ["linear-axi comments list --issue ENG-123 --full"],
   "comments create": ["linear-axi comments create --issue ENG-123 --body \"Implemented in PR.\""],
+  "attachments list": ["linear-axi attachments list --issue ENG-123"],
+  "attachments view": ["linear-axi attachments view --id <attachment-id>"],
+  "attachments download": ["linear-axi attachments download --id <attachment-id> --output ./attachment.bin"],
+  "attachments read": ["linear-axi attachments read --id <attachment-id>"],
+  "attachments upload": ["linear-axi attachments upload --issue ENG-123 --file ./trace.txt"],
   "wayfinder frontier": ["linear-axi wayfinder frontier --map ENG-100 --first 20"]
 }
 
@@ -499,7 +544,12 @@ const optionValues: Readonly<Record<string, string>> = {
   parent: "<issue>",
   title: "<title>",
   description: "<text>",
-  body: "<text>"
+  body: "<text>",
+  output: "<path>",
+  file: "<path>",
+  "max-bytes": "<bytes>",
+  "media-type": "<type>",
+  subtitle: "<text>"
 }
 
 const completeHelp = (spec: CommandSpec): CommandSpec => {
@@ -543,7 +593,12 @@ const nativeOfficialToolsByCommand: Readonly<Record<string, ReadonlyArray<string
   "relations create": ["save_issue"],
   "relations remove": ["save_issue"],
   "comments list": ["list_comments"],
-  "comments create": ["save_comment"]
+  "comments create": ["save_comment"],
+  "attachments list": ["get_issue"],
+  "attachments view": ["get_attachment"],
+  "attachments download": ["get_attachment"],
+  "attachments read": ["get_attachment"],
+  "attachments upload": ["get_issue", "prepare_attachment_upload", "create_attachment_from_upload"]
 }
 
 export const commandSpecs: ReadonlyArray<CommandSpec> = [
