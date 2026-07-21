@@ -50,45 +50,77 @@ const baseRelation = {
   targetId: "target-id"
 }
 
-const fakeGateway = (overrides: Partial<LinearGateway> = {}): LinearGateway => ({
-  close: () => Effect.void,
-  callOfficialTool: () => Effect.succeed({}),
-  authStatus: () => Effect.succeed({
-    authenticated: true,
-    method: "apiKey",
-    viewer: { id: "user-id", name: "Henrik" }
-  }),
-  listTeams: () => Effect.succeed([{ id: "team-id", key: "ENG", name: "Engineering" }]),
-  resolveProjectUpdateAssociations: (input) => Effect.succeed(input),
-  listWorkflowStates: () => Effect.succeed([]),
-  listIssues: () => Effect.succeed(page([baseIssue])),
-  viewIssue: () => Effect.succeed(detail()),
-  createIssue: () => Effect.succeed(mutation(baseIssue, true, "issue created")),
-  assignIssue: () => Effect.succeed(mutation(baseIssue, true, "issue assigned")),
-  unassignIssue: () => Effect.succeed(mutation({ ...baseIssue, assignee: "unassigned", assigneeId: null }, true, "issue unassigned")),
-  closeIssue: () => Effect.succeed(mutation({ ...baseIssue, state: "Done", stateType: "completed" }, true, "issue closed")),
-  changeIssueState: () => Effect.succeed(mutation(baseIssue, false, "already in the requested workflow state (no-op)")),
-  setIssueParent: () => Effect.succeed(mutation(baseIssue, false, "requested parent already set (no-op)")),
-  clearIssueFields: () => Effect.succeed(mutation(baseIssue, false, "requested issue fields already clear (no-op)")),
-  updateIssueDescription: () => Effect.succeed(mutation(detail("updated"), true, "description updated and verified")),
-  listLabels: () => Effect.succeed(page([{ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, parentId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }])),
-  createLabel: () => Effect.succeed(mutation({ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, parentId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }, true, "label created")),
-  applyLabel: () => Effect.succeed(mutation(baseIssue, false, "label already applied (no-op)")),
-  removeLabel: () => Effect.succeed(mutation(baseIssue, false, "label already absent (no-op)")),
-  replaceLabels: () => Effect.succeed(mutation(baseIssue, false, "labels already match requested replacement (no-op)")),
-  listRelations: () => Effect.succeed(page([{ id: "relation-id", type: "blocks", direction: "outgoing", identifier: "ENG-124", title: "Target", state: "Todo", sourceId: baseIssue.id, targetId: "target-id" }])),
-  createRelation: () => Effect.succeed(mutation({ id: "relation-id", type: "blocks", direction: "outgoing", identifier: "ENG-124", title: "Target", state: "Todo", sourceId: baseIssue.id, targetId: "target-id" }, true, "directed relation created")),
-  removeRelation: () => Effect.succeed(mutation({ id: "relation-id" }, false, "directed relation already absent (no-op)")),
-  listComments: () => Effect.succeed(page([{ id: "comment-id", issueId: baseIssue.id, body: "Done", createdAt: "2026-07-08T00:00:00.000Z", updatedAt: "2026-07-08T00:00:00.000Z", author: "Henrik", url: `${baseIssue.url}#comment-id` }])),
-  createComment: () => Effect.succeed(mutation({ id: "comment-id", issueId: baseIssue.id, body: "Done", createdAt: "2026-07-08T00:00:00.000Z", updatedAt: "2026-07-08T00:00:00.000Z", author: "Henrik", url: `${baseIssue.url}#comment-id` }, true, "comment created")),
-  frontier: () => Effect.succeed({
-    map: { id: "map-id", identifier: "ENG-100", title: "Map" },
-    total: 1,
-    items: [{ id: baseIssue.id, identifier: baseIssue.identifier, title: baseIssue.title, type: "task" }],
-    pageInfo: { hasNextPage: false, endCursor: null }
-  }),
-  ...overrides
-})
+const normalizeActiveOfficialOutput = (name: string, value: unknown): unknown => {
+  const active = (entity: unknown): unknown => entity && typeof entity === "object" && !("archivedAt" in entity)
+    ? { ...entity, archivedAt: null }
+    : entity
+  if (["get_team", "get_project", "get_issue", "get_milestone"].includes(name)) return active(value)
+  if (["list_issue_statuses", "list_cycles"].includes(name) && Array.isArray(value)) return value.map(active)
+  if (value && typeof value === "object") {
+    const key = ({
+      list_issue_labels: "labels",
+      list_issues: "issues",
+      list_releases: "releases",
+      list_users: "users"
+    } as Record<string, string>)[name]
+    if (key && Array.isArray((value as Record<string, unknown>)[key])) {
+      return { ...value, [key]: ((value as Record<string, unknown>)[key] as ReadonlyArray<unknown>).map(active) }
+    }
+  }
+  return value
+}
+
+const fakeGateway = (
+  overrides: Partial<LinearGateway> = {},
+  normalizeActiveState = true
+): LinearGateway => {
+  const gateway: LinearGateway = {
+    close: () => Effect.void,
+    callOfficialTool: () => Effect.succeed({}),
+    authStatus: () => Effect.succeed({
+      authenticated: true,
+      method: "apiKey",
+      viewer: { id: "user-id", name: "Henrik" }
+    }),
+    listTeams: () => Effect.succeed([{ id: "team-id", key: "ENG", name: "Engineering" }]),
+    resolveProjectUpdateAssociations: (input) => Effect.succeed(input),
+    listWorkflowStates: () => Effect.succeed([]),
+    listIssues: () => Effect.succeed(page([baseIssue])),
+    viewIssue: () => Effect.succeed(detail()),
+    createIssue: () => Effect.succeed(mutation(baseIssue, true, "issue created")),
+    assignIssue: () => Effect.succeed(mutation(baseIssue, true, "issue assigned")),
+    unassignIssue: () => Effect.succeed(mutation({ ...baseIssue, assignee: "unassigned", assigneeId: null }, true, "issue unassigned")),
+    closeIssue: () => Effect.succeed(mutation({ ...baseIssue, state: "Done", stateType: "completed" }, true, "issue closed")),
+    changeIssueState: () => Effect.succeed(mutation(baseIssue, false, "already in the requested workflow state (no-op)")),
+    setIssueParent: () => Effect.succeed(mutation(baseIssue, false, "requested parent already set (no-op)")),
+    clearIssueFields: () => Effect.succeed(mutation(baseIssue, false, "requested issue fields already clear (no-op)")),
+    updateIssueDescription: () => Effect.succeed(mutation(detail("updated"), true, "description updated and verified")),
+    listLabels: () => Effect.succeed(page([{ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, parentId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }])),
+    createLabel: () => Effect.succeed(mutation({ id: "label-id", name: "wayfinder:task", scope: "workspace", teamId: null, parentId: null, color: "#123456", description: "Task", isGroup: false, archivedAt: null }, true, "label created")),
+    applyLabel: () => Effect.succeed(mutation(baseIssue, false, "label already applied (no-op)")),
+    removeLabel: () => Effect.succeed(mutation(baseIssue, false, "label already absent (no-op)")),
+    replaceLabels: () => Effect.succeed(mutation(baseIssue, false, "labels already match requested replacement (no-op)")),
+    listRelations: () => Effect.succeed(page([{ id: "relation-id", type: "blocks", direction: "outgoing", identifier: "ENG-124", title: "Target", state: "Todo", sourceId: baseIssue.id, targetId: "target-id" }])),
+    createRelation: () => Effect.succeed(mutation({ id: "relation-id", type: "blocks", direction: "outgoing", identifier: "ENG-124", title: "Target", state: "Todo", sourceId: baseIssue.id, targetId: "target-id" }, true, "directed relation created")),
+    removeRelation: () => Effect.succeed(mutation({ id: "relation-id" }, false, "directed relation already absent (no-op)")),
+    listComments: () => Effect.succeed(page([{ id: "comment-id", issueId: baseIssue.id, body: "Done", createdAt: "2026-07-08T00:00:00.000Z", updatedAt: "2026-07-08T00:00:00.000Z", author: "Henrik", url: `${baseIssue.url}#comment-id` }])),
+    createComment: () => Effect.succeed(mutation({ id: "comment-id", issueId: baseIssue.id, body: "Done", createdAt: "2026-07-08T00:00:00.000Z", updatedAt: "2026-07-08T00:00:00.000Z", author: "Henrik", url: `${baseIssue.url}#comment-id` }, true, "comment created")),
+    frontier: () => Effect.succeed({
+      map: { id: "map-id", identifier: "ENG-100", title: "Map" },
+      total: 1,
+      items: [{ id: baseIssue.id, identifier: baseIssue.identifier, title: baseIssue.title, type: "task" }],
+      pageInfo: { hasNextPage: false, endCursor: null }
+    }),
+    ...overrides
+  }
+  if (!normalizeActiveState || !overrides.callOfficialTool) return gateway
+  return {
+    ...gateway,
+    callOfficialTool: (name, args) => overrides.callOfficialTool!(name, args).pipe(
+      Effect.map((value) => normalizeActiveOfficialOutput(name, value))
+    )
+  }
+}
 
 const run = async (argv: ReadonlyArray<string>, gateway = fakeGateway()) => {
   const parsed = parseArgs(argv, commandSpecs)
@@ -683,6 +715,40 @@ describe("runCommand", () => {
     }
   })
 
+  test("document and release updates canonicalize mutable targets to immutable ids", async () => {
+    const cases = [
+      { argv: ["documents", "update", "--id", "old-document-slug", "--title", "New"], tool: "save_document", read: "get_document", id: "document-id", slugId: "old-document-slug", field: "title" },
+      { argv: ["releases", "update", "--id", "old-release-slug", "--name", "New"], tool: "save_release", read: "get_release", id: "release-id", slugId: "old-release-slug", field: "name" },
+      { argv: ["release-notes", "update", "--id", "old-note-slug", "--title", "New"], tool: "save_release_note", read: "get_release_note", id: "note-id", slugId: "old-note-slug", field: "title" }
+    ] as const
+
+    for (const entry of cases) {
+      const reads: Array<Readonly<Record<string, unknown>>> = []
+      let saved: Readonly<Record<string, unknown>> | undefined
+      const output = await run(entry.argv, fakeGateway({
+        callOfficialTool: (name, args) => {
+          if (name === entry.read) {
+            reads.push(args)
+            return Effect.succeed({
+              id: entry.id,
+              slugId: reads.length === 1 ? entry.slugId : "renamed-slug",
+              [entry.field]: reads.length === 1 ? "Old" : "New"
+            })
+          }
+          if (name === entry.tool) {
+            saved = args
+            return Effect.succeed({ id: entry.id })
+          }
+          throw new Error(`unexpected tool ${name}`)
+        }
+      }))
+
+      expect(reads).toEqual([{ id: entry.slugId }, { id: entry.id }])
+      expect(saved).toEqual({ id: entry.id, [entry.field]: "New" })
+      expect(output).toMatchObject({ changed: true })
+    }
+  })
+
   test("project updates canonicalize mutable selectors to immutable ids", async () => {
     const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
     let reads = 0
@@ -761,6 +827,33 @@ describe("runCommand", () => {
     }
   })
 
+  test("document cycle verification treats team as transport-only", async () => {
+    let documentReads = 0
+    let saved: Readonly<Record<string, unknown>> | undefined
+    const output = await run([
+      "documents", "update", "--id", "document-slug", "--cycle", "Cycle 7", "--team", "Engineering"
+    ], fakeGateway({
+      callOfficialTool: (name, args) => {
+        if (name === "get_document") {
+          documentReads += 1
+          return Effect.succeed(documentReads === 1
+            ? { id: "document-id", slugId: "document-slug", cycle: null }
+            : { id: "document-id", slugId: "renamed-slug", cycle: { id: "cycle-id" } })
+        }
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering" })
+        if (name === "list_cycles") return Effect.succeed([{ id: "cycle-id", name: "Cycle 7", team: { id: "team-id" } }])
+        if (name === "save_document") {
+          saved = args
+          return Effect.succeed({ id: "document-id" })
+        }
+        throw new Error(`unexpected tool ${name}`)
+      }
+    }))
+
+    expect(saved).toEqual({ id: "document-id", cycle: "cycle-id", team: "team-id" })
+    expect(output).toMatchObject({ changed: true })
+  })
+
   test("release updates canonicalize pipeline and scoped stage selectors", async () => {
     let reads = 0
     let saved: Readonly<Record<string, unknown>> | undefined
@@ -806,6 +899,9 @@ describe("runCommand", () => {
         }
         if (name === "list_releases") {
           return Effect.succeed({ releases: [{ id: "release-id", slugId: "v2", pipeline: { id: "pipeline-id" } }], hasNextPage: false })
+        }
+        if (name === "get_release_note" && args.includeReleases !== true) {
+          return Effect.succeed({ id: "note-id", pipeline: null })
         }
         if (name === "get_release_note") return Effect.succeed(reads++ === 0
           ? { id: "note-id", pipeline: null, releases: [] }
@@ -857,7 +953,9 @@ describe("runCommand", () => {
           return Effect.succeed({
             id: "note-id",
             pipeline: { id: "pipeline-id" },
-            releases: verificationReads++ === 0 ? [] : [{ id: "release-1" }, { id: stableReleaseId }]
+            ...(args.includeReleases === true
+              ? { releases: verificationReads++ === 0 ? [] : [{ id: "release-1" }, { id: stableReleaseId }] }
+              : {})
           })
         }
         if (name === "save_release_note") {
@@ -986,6 +1084,7 @@ describe("runCommand", () => {
         "documents", "update", "--id", "document-id", "--cycle", "Cycle 7", "--team", "Engineering"
       ], commandSpecs), fakeGateway({
         callOfficialTool: (name) => {
+          if (name === "get_document") return Effect.succeed({ id: "document-id", cycle: null })
           if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", name: "Engineering" })
           if (name === "list_cycles") return Effect.succeed([{
             id: "cycle-id",
@@ -1007,6 +1106,7 @@ describe("runCommand", () => {
         "release-notes", "update", "--id", "note-id", "--pipeline", "Delivery", "--releases-json", "[\"v2\"]"
       ], commandSpecs), fakeGateway({
         callOfficialTool: (name) => {
+          if (name === "get_release_note") return Effect.succeed({ id: "note-id", pipeline: { id: "pipeline-id" } })
           if (name === "list_release_pipelines") {
             return Effect.succeed({ releasePipelines: [{ id: "pipeline-id", name: "Delivery" }], hasNextPage: false })
           }
@@ -1521,6 +1621,31 @@ describe("runCommand", () => {
     expect(assigneeSaves).toBe(0)
   })
 
+  test("advanced issue assignee ambiguity caps candidate ids", async () => {
+    const users = Array.from({ length: 15 }, (_, index) => ({
+      id: `user-${String(index + 1).padStart(2, "0")}`,
+      name: "Alex",
+      active: true,
+      isAssignable: true,
+      archivedAt: null
+    }))
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "create", "--team", "ENG", "--title", "Launch", "--assignee", "Alex", "--if-absent"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", archivedAt: null })
+        if (name === "list_users") return Effect.succeed({ users, hasNextPage: false })
+        throw new Error(`unexpected ${name}`)
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(error.message).toContain("Ambiguous or invalid Linear user selector Alex")
+    expect(error.help).toContain("showing 10 of 15")
+    expect(error.help).toContain("user-10")
+    expect(error.help).not.toContain("user-11")
+    expect(error.help).toContain("Narrow with an immutable id")
+  })
+
   test("advanced issue assignees must be active, unarchived, and assignable", async () => {
     const selectors = ["55555555-5555-4555-8555-555555555555", "alice@example.com"] as const
     const invalidUsers = [
@@ -1737,6 +1862,61 @@ describe("runCommand", () => {
       expect(calls).toContain(entry.archivedTool)
       expect(saves).toBe(0)
     }
+  })
+
+  test("advanced issue mutations fail closed when active-state metadata is omitted", async () => {
+    const cases = [
+      { flags: [], malformedTool: "get_team" },
+      { flags: ["--project", "Roadmap"], malformedTool: "get_project" },
+      { flags: ["--state", "In Progress"], malformedTool: "list_issue_statuses" },
+      { flags: ["--cycle", "Cycle 1"], malformedTool: "list_cycles" },
+      { flags: ["--assignee", "Alex"], malformedTool: "list_users" },
+      { flags: ["--labels-json", '["Bug"]'], malformedTool: "list_issue_labels" },
+      { flags: ["--releases-json", '["v1"]'], malformedTool: "list_releases" },
+      { flags: ["--project", "Roadmap", "--milestone", "Launch"], malformedTool: "get_milestone" },
+      { flags: [], malformedTool: "list_issues" }
+    ] as const
+
+    for (const entry of cases) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "issues", "create", "--team", "ENG", "--title", "Launch", "--if-absent", ...entry.flags
+      ], commandSpecs), fakeGateway({
+        callOfficialTool: (name) => {
+          if (name === "save_issue") saves += 1
+          if (name === "get_team") return Effect.succeed({ id: "team-id", key: "ENG", ...(entry.malformedTool === name ? {} : { archivedAt: null }) })
+          if (name === "get_project") return Effect.succeed({ id: "project-id", name: "Roadmap", ...(entry.malformedTool === name ? {} : { archivedAt: null }) })
+          if (name === "list_issue_statuses") return Effect.succeed([{ id: "state-id", name: "In Progress", team: { id: "team-id" }, ...(entry.malformedTool === name ? {} : { archivedAt: null }) }])
+          if (name === "list_cycles") return Effect.succeed([{ id: "cycle-id", name: "Cycle 1", team: { id: "team-id" }, ...(entry.malformedTool === name ? {} : { archivedAt: null }) }])
+          if (name === "list_users") return Effect.succeed({ users: [{ id: "user-id", name: "Alex", active: true, isAssignable: true, ...(entry.malformedTool === name ? {} : { archivedAt: null }) }], hasNextPage: false })
+          if (name === "list_issue_labels") return Effect.succeed({ labels: [{ id: "label-id", name: "Bug", isGroup: false, ...(entry.malformedTool === name ? {} : { archivedAt: null }) }], hasNextPage: false })
+          if (name === "get_milestone") return Effect.succeed({ id: "milestone-id", name: "Launch", project: { id: "project-id" }, ...(entry.malformedTool === name ? {} : { archivedAt: null }) })
+          if (name === "list_releases") return Effect.succeed({ releases: [{ id: "release-id", version: "v1", ...(entry.malformedTool === name ? {} : { archivedAt: null }) }], hasNextPage: false })
+          if (name === "list_issues") return Effect.succeed({
+            issues: entry.malformedTool === name ? [{ id: "issue-id", title: "Launch", teamId: "team-id" }] : [],
+            hasNextPage: false
+          })
+          throw new Error(`unexpected ${name}`)
+        }
+      }, false), "/repo/src/main.ts")))
+
+      expect(error._tag).toBe("LinearDomainError")
+      expect(error.message).toContain("output shape drifted")
+      expect(saves).toBe(0)
+    }
+
+    let saves = 0
+    const updateError = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "update", "--id", "ENG-123", "--title", "Renamed"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_issue") return Effect.succeed({ id: "issue-id", identifier: "ENG-123", teamId: "team-id", title: "Old" })
+        if (name === "save_issue") saves += 1
+        throw new Error(`unexpected ${name}`)
+      }
+    }, false), "/repo/src/main.ts")))
+    expect(updateError.message).toContain("output shape drifted")
+    expect(saves).toBe(0)
   })
 
   test("advanced issue mutations reject archived projects by id or name", async () => {

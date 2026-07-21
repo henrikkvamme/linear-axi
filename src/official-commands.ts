@@ -331,10 +331,19 @@ const runVerifiedMutation = (
   if (richTextReplacement && !preconditioned) {
     return yield* usage("rich-text replacements and clears require --if-updated-at with the exact canonical timestamp emitted by the CLI", entry)
   }
-  const canonicalArgs = yield* canonicalizeMutationArgs(entry.tool, args, gateway)
+  const mutationTarget = isMutableSelectorMutation(entry.tool)
+    ? yield* resolveMutationTarget(gateway, entry.tool, args.id)
+    : undefined
+  const canonicalArgs = yield* canonicalizeMutationArgs(entry.tool, args, gateway, mutationTarget)
   const inspection = officialMutationInspectionCommand(entry.tool, canonicalArgs)
-  const beforeRaw = yield* gateway.callOfficialTool(mutationReadTool(entry.tool), mutationReadArgs(entry.tool, canonicalArgs))
-  const before = yield* extractMutationObject(entry.tool, beforeRaw, canonicalArgs)
+  const beforeArgs = mutationReadArgs(entry.tool, canonicalArgs)
+  const before = mutationTarget && Object.keys(beforeArgs).length === 1 && beforeArgs.id === mutationTarget.id
+    ? mutationTarget
+    : (yield* extractMutationObject(
+        entry.tool,
+        yield* gateway.callOfficialTool(mutationReadTool(entry.tool), beforeArgs),
+        canonicalArgs
+      ))
   if (preconditioned) {
     if (typeof before.updatedAt !== "string" || !isCanonicalTimestamp(before.updatedAt)) {
       return yield* mutationShapeDrift(entry.tool)
@@ -380,10 +389,13 @@ const runVerifiedMutation = (
 const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*(
   tool: string,
   args: Readonly<Record<string, unknown>>,
-  gateway: LinearGateway
+  gateway: LinearGateway,
+  mutationTarget?: Record<string, unknown>
 ) {
   const canonical: Record<string, unknown> = { ...args }
   if (tool === "save_document") {
+    const document = mutationTarget ?? (yield* mutationShapeDrift(tool))
+    canonical.id = document.id
     if (typeof args.project === "string") {
       canonical.project = (yield* resolveGetAssociation(gateway, "project", args.project, "get_project", { query: args.project }, ["id", "name", "slugId"])).id
     }
@@ -399,8 +411,6 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
     }
     if (typeof args.cycle === "string") {
       if (!team) {
-        const document = yield* gateway.callOfficialTool("get_document", { id: args.id })
-        if (!Predicate.isObject(document) || !mutationEntityMatches(document, args.id, tool)) return yield* mutationShapeDrift(tool)
         const cycleOwner = Predicate.isObject(document.cycle) ? officialOwnerReference(document.cycle, "team") : undefined
         const currentTeam = officialReferenceSelector(document.team) ?? officialReferenceSelector(cycleOwner)
         if (!currentTeam) {
@@ -498,11 +508,11 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
   }
 
   if (tool === "save_release") {
+    const release = mutationTarget ?? (yield* mutationShapeDrift(tool))
+    canonical.id = release.id
     if (typeof args.pipeline === "string" || typeof args.stage === "string") {
       let pipelineSelector = typeof args.pipeline === "string" ? args.pipeline : undefined
       if (!pipelineSelector) {
-        const release = yield* gateway.callOfficialTool("get_release", { id: args.id })
-        if (!Predicate.isObject(release) || !mutationEntityMatches(release, args.id, tool)) return yield* mutationShapeDrift(tool)
         pipelineSelector = officialReferenceSelector(release.pipeline)
         if (!pipelineSelector) return yield* mutationShapeDrift(tool)
       }
@@ -517,13 +527,13 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
   }
 
   if (tool === "save_release_note") {
+    const releaseNote = mutationTarget ?? (yield* mutationShapeDrift(tool))
+    canonical.id = releaseNote.id
     const releaseSelectors = Array.isArray(args.releases) ? args.releases.map(String) : []
     const rangeSelectors = [args.rangeFromRelease, args.rangeToRelease].filter((value): value is string => typeof value === "string")
     if (typeof args.pipeline === "string" || releaseSelectors.length > 0 || rangeSelectors.length > 0) {
       let pipelineSelector = typeof args.pipeline === "string" ? args.pipeline : undefined
       if (!pipelineSelector) {
-        const releaseNote = yield* gateway.callOfficialTool("get_release_note", { id: args.id })
-        if (!Predicate.isObject(releaseNote) || !mutationEntityMatches(releaseNote, args.id, tool)) return yield* mutationShapeDrift(tool)
         pipelineSelector = officialReferenceSelector(releaseNote.pipeline)
         if (!pipelineSelector) return yield* mutationShapeDrift(tool)
       }
@@ -591,6 +601,24 @@ const canonicalizeMutationArgs = Effect.fn("canonicalizeMutationArgs")(function*
     return { ...args, project: project.id, id: milestone.id }
   }
   return canonical
+})
+
+const isMutableSelectorMutation = (
+  tool: string
+): tool is "save_document" | "save_release" | "save_release_note" =>
+  tool === "save_document" || tool === "save_release" || tool === "save_release_note"
+
+const resolveMutationTarget = Effect.fn("resolveMutationTarget")(function*(
+  gateway: LinearGateway,
+  tool: "save_document" | "save_release" | "save_release_note",
+  selector: unknown
+) {
+  if (typeof selector !== "string") return yield* mutationShapeDrift(tool)
+  const result = yield* gateway.callOfficialTool(mutationReadTool(tool), { id: selector })
+  if (!Predicate.isObject(result) || !nonEmptyString(result.id) || !mutationEntityMatches(result, selector, tool)) {
+    return yield* mutationShapeDrift(tool)
+  }
+  return result
 })
 
 const resolveGetAssociation = Effect.fn("resolveGetAssociation")(function*(
@@ -721,7 +749,7 @@ const mutationSatisfied = (
   args: Readonly<Record<string, unknown>>,
   tool: string
 ): boolean => Object.entries(args).every(([key, desired]) => {
-  if (mutationIdentityKeys(tool).includes(key)) return true
+  if (mutationIdentityKeys(tool).includes(key) || mutationTransportKeys(tool, args).includes(key)) return true
   if (desired === null && !(key in current)) return false
   if (key.startsWith("add") && key.length > 3) return mutationCollectionContains(current[lowerFirst(key.slice(3))], desired)
   if (key.startsWith("remove") && key.length > 6) return mutationCollectionAbsent(current[lowerFirst(key.slice(6))], desired)
@@ -734,6 +762,11 @@ const mutationSatisfied = (
     ? referenceEqual(current[key], desired)
     : literalEqual(current[key], desired)
 })
+
+const mutationTransportKeys = (
+  tool: string,
+  args: Readonly<Record<string, unknown>>
+): ReadonlyArray<string> => tool === "save_document" && typeof args.cycle === "string" ? ["team"] : []
 
 const mutationReferenceKeys = (tool: string): ReadonlyArray<string> => ({
   save_document: ["project", "issue", "initiative", "cycle", "team"],

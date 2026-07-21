@@ -46,7 +46,7 @@ export const resolveExactOfficialId = (
   Effect.map((entity) => entity.id as string)
 )
 
-const renderCandidateIds = (rows: ReadonlyArray<Record<string, unknown>>): string => {
+export const renderCandidateIds = (rows: ReadonlyArray<Record<string, unknown>>): string => {
   const ids = rows
     .map((row) => nonEmptyString(row.id) ? row.id : "missing-id")
     .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)

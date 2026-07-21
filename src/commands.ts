@@ -44,7 +44,7 @@ import {
 } from "./official-identity"
 import { indeterminateOfficialMutation, officialMutationInspectionCommand } from "./official-inspection"
 import { fetchOfficialRows } from "./official-pagination"
-import { resolveExactOfficialId as uniqueOfficialId } from "./official-selector"
+import { renderCandidateIds, resolveExactOfficialId as uniqueOfficialId } from "./official-selector"
 import { validateFrontierCursor } from "./wayfinder"
 
 const ISSUE_FIELD_SET: ReadonlySet<string> = new Set(ISSUE_FIELDS)
@@ -297,14 +297,18 @@ const createOfficialIssue = (
   }, "issues")
   for (const candidate of candidates) {
     const candidateTeam = officialOwnerReference(candidate, "team")
-    if (!officialIssueIdentity(candidate) || !nonEmptyString(candidate.title) ||
+    const candidateId = officialIssueIdentity(candidate)
+    if (!candidateId || !nonEmptyString(candidate.title) ||
       officialReferenceValues(candidateTeam).length === 0 ||
       !officialReferenceMatchesIdentity(candidateTeam, teamIdentity)) {
       return yield* officialShapeError("list_issues candidate identity, title, and team")
     }
+    if (!hasValidOfficialArchivedState(candidate)) {
+      return yield* officialShapeError("issue archived state")
+    }
   }
   const matches = candidates.filter((issue) =>
-    issue.archivedAt == null && issue.title === title &&
+    issue.archivedAt === null && issue.title === title &&
     officialReferenceMatchesIdentity(officialOwnerReference(issue, "team"), teamIdentity))
   if (matches.length > 1) {
     return yield* Effect.fail(new LinearDomainError({
@@ -598,15 +602,15 @@ const resolveOfficialAssignableUserSelector = (
       const candidates = matches.length > 0 ? matches : rows
       return yield* Effect.fail(new LinearDomainError({
         message: matches.length === 0 ? `No Linear user exactly matched ${selector}` : `Ambiguous or invalid Linear user selector ${selector}`,
-        help: `Candidate ids: ${candidates.map((candidate) => String(candidate.id)).join(", ") || "none"}`
+        help: renderCandidateIds(candidates)
       }))
     }
     user = matches[0]!
   }
-  if (!("archivedAt" in user) || typeof user.active !== "boolean" || typeof user.isAssignable !== "boolean") {
+  if (!hasValidOfficialArchivedState(user) || typeof user.active !== "boolean" || typeof user.isAssignable !== "boolean") {
     return yield* officialShapeError("user assignability")
   }
-  if (user.archivedAt != null || user.active !== true || user.isAssignable !== true) {
+  if (user.archivedAt !== null || user.active !== true || user.isAssignable !== true) {
     return yield* Effect.fail(new LinearDomainError({
       message: `Linear user ${user.id} cannot be assigned issues`,
       help: "Choose an active, unarchived, assignable user."
@@ -667,7 +671,7 @@ const resolveOfficialIssueSelectors = (
     const selector = input.cycle
     const cycles = yield* gateway.callOfficialTool("list_cycles", { teamId: team.id })
     if (!Array.isArray(cycles) || cycles.some((cycle) => !Predicate.isObject(cycle))) return yield* officialShapeError("list_cycles")
-    const activeCycles = (cycles as ReadonlyArray<Record<string, unknown>>).filter((cycle) => cycle.archivedAt == null)
+    const activeCycles = yield* explicitlyActiveOfficialEntities("cycle", cycles as ReadonlyArray<Record<string, unknown>>)
     const cycleId = yield* uniqueOfficialId("cycle", selector, activeCycles, ["id", "name", "number"])
     const cycle = activeCycles.find((candidate) => candidate.id === cycleId)!
     yield* requireOfficialOwnership("cycle", selector, cycle, "team", team)
@@ -789,10 +793,11 @@ const resolveOfficialLabels = (
 ): Effect.Effect<ReadonlyArray<string>, CliError> => Effect.gen(function*() {
   if (selectors.length === 0) return []
   const rows = yield* fetchOfficialRows(gateway, "list_issue_labels", { team, limit: 250 }, "labels")
+  const activeLabels = yield* explicitlyActiveOfficialEntities("label", rows)
   return yield* Effect.forEach(selectors, (raw) => Effect.gen(function*() {
     const selector = String(raw)
-    const id = yield* uniqueOfficialId("label", selector, rows, ["id", "name"])
-    const label = rows.find((row) => row.id === id)
+    const id = yield* uniqueOfficialId("label", selector, activeLabels, ["id", "name"])
+    const label = activeLabels.find((row) => row.id === id)
     if (label?.isGroup === true) {
       return yield* Effect.fail(new LinearDomainError({
         message: `Issue label ${selector} is a label group`,
@@ -816,7 +821,7 @@ const resolveOfficialReleases = (
       limit: 250,
       ...(includeArchived ? { includeArchived: true } : {})
     }, "releases")
-    const candidates = includeArchived ? rows : rows.filter((row) => row.archivedAt == null)
+    const candidates = includeArchived ? rows : yield* explicitlyActiveOfficialEntities("release", rows)
     result.push(yield* uniqueOfficialId("release", selector, candidates, ["id", "name", "version", "slugId"]))
   }
   return result
@@ -826,12 +831,32 @@ const requireOfficialEntityActive = (
   noun: string,
   selector: string,
   entity: Readonly<Record<string, unknown>>
-): Effect.Effect<void, LinearDomainError> => entity.archivedAt == null
-  ? Effect.void
-  : Effect.fail(new LinearDomainError({
-      message: `${noun} ${selector} is archived`,
-      help: `Choose an active ${noun}.`
-    }))
+): Effect.Effect<void, LinearDomainError> => {
+  if (!hasValidOfficialArchivedState(entity)) {
+    return officialShapeError(`${noun} archived state`)
+  }
+  return entity.archivedAt === null
+    ? Effect.void
+    : Effect.fail(new LinearDomainError({
+        message: `${noun} ${selector} is archived`,
+        help: `Choose an active ${noun}.`
+      }))
+}
+
+const explicitlyActiveOfficialEntities = (
+  noun: string,
+  entities: ReadonlyArray<Record<string, unknown>>
+): Effect.Effect<ReadonlyArray<Record<string, unknown>>, LinearDomainError> => {
+  if (entities.some((entity) => !hasValidOfficialArchivedState(entity))) {
+    return officialShapeError(`${noun} archived state`)
+  }
+  return Effect.succeed(entities.filter((entity) => entity.archivedAt === null))
+}
+
+const hasValidOfficialArchivedState = (
+  entity: Readonly<Record<string, unknown>>
+): boolean => Object.prototype.hasOwnProperty.call(entity, "archivedAt") &&
+  (entity.archivedAt === null || nonEmptyString(entity.archivedAt))
 
 const requireOfficialOwnership = (
   noun: string,
@@ -863,7 +888,7 @@ const resolveOfficialStateSelector = (
   if (!Array.isArray(result) || result.some((state) => !Predicate.isObject(state))) {
     return yield* officialShapeError("list_issue_statuses")
   }
-  const activeStates = (result as ReadonlyArray<Record<string, unknown>>).filter((state) => state.archivedAt == null)
+  const activeStates = yield* explicitlyActiveOfficialEntities("workflow state", result as ReadonlyArray<Record<string, unknown>>)
   const stateId = yield* uniqueOfficialId("workflow state", selector, activeStates, ["id", "name"])
   const state = activeStates.find((candidate) => candidate.id === stateId)!
   yield* requireOfficialOwnership("workflow state", selector, state, "team", team)
