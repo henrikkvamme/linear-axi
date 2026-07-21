@@ -82,12 +82,14 @@ describe("attachment content boundary", () => {
     const unsafe = {
       filename: "trace\u009b31m\u202e.txt",
       title: "Trace\u0085\u2066",
-      subtitle: "Details\u009f\u2069"
+      subtitle: "Details\u009f\u2069",
+      contentType: "text/plain\u009b\u202e"
     }
     const expected = {
       filename: "trace\\u009b31m\\u202e.txt",
       title: "Trace\\u0085\\u2066",
-      subtitle: "Details\\u009f\\u2069"
+      subtitle: "Details\\u009f\\u2069",
+      mediaType: "text/plain\\u009b\\u202e"
     }
     const attachment = detail(unsafe)
 
@@ -96,7 +98,7 @@ describe("attachment content boundary", () => {
       identifier: "ENG-123",
       attachments: [attachment]
     })
-    expect(listed).toMatchObject({ attachments: [{ filename: expected.filename, title: expected.title }] })
+    expect(listed).toMatchObject({ attachments: [{ filename: expected.filename, title: expected.title, mediaType: expected.mediaType }] })
 
     const viewed = await run(["attachments", "view", "--id", "attachment-1"], attachment)
     expect(viewed).toMatchObject({ attachment: expected })
@@ -104,7 +106,7 @@ describe("attachment content boundary", () => {
     const read = await run(["attachments", "read", "--id", "attachment-1"], attachment, {
       fetcher: async () => new Response("hello world\n", { status: 200 })
     })
-    expect(read).toMatchObject({ attachment: { filename: expected.filename } })
+    expect(read).toMatchObject({ attachment: { filename: expected.filename, mediaType: expected.mediaType } })
   })
 
   test("read emits bounded UTF-8 text and makes terminal controls explicit", async () => {
@@ -249,11 +251,12 @@ describe("attachment content boundary", () => {
     }
 
     const output = await run(["attachments", "download", "--id", "attachment-1", "--output", outputPath], detail({
+      contentType: "text/plain\u009b\u202e",
       size: bytes.length,
       sha256: "A948904F2F0F479B8F8197694B30184B0D2ED1C1CD2A1EC0FB85D299A192A447"
     }), runtime)
     expect(readFileSync(outputPath)).toEqual(Buffer.from(bytes))
-    expect(output).toMatchObject({ attachmentId: "attachment-1", path: outputPath, bytes: bytes.length, mediaType: "text/plain; charset=utf-8" })
+    expect(output).toMatchObject({ attachmentId: "attachment-1", path: outputPath, bytes: bytes.length, mediaType: "text/plain\\u009b\\u202e" })
     expect(output.sha256).toMatch(/^[a-f0-9]{64}$/)
 
     writeFileSync(outputPath, "keep")

@@ -246,7 +246,7 @@ const readAttachment = Effect.fn("Attachments.read")(function*(
     attachment: {
       id: attachment.id,
       filename: terminalSafeMetadata(attachment.filename),
-      mediaType: attachment.mediaType,
+      mediaType: terminalSafeMetadata(attachment.mediaType),
       size: attachment.size
     },
     text: safeText,
@@ -280,7 +280,7 @@ const downloadAttachment = Effect.fn("Attachments.download")(function*(
         attachmentId: attachment.id,
         path: target.path,
         bytes: result.bytes,
-        mediaType: attachment.mediaType,
+        mediaType: terminalSafeMetadata(attachment.mediaType),
         sha256: result.sha256,
         help: []
       }
@@ -386,7 +386,8 @@ const decodeDetail = (value: unknown): AttachmentDetail | undefined => {
 const publicSummary = (attachment: AttachmentSummary): AttachmentSummary => ({
   ...attachment,
   filename: terminalSafeMetadata(attachment.filename),
-  title: terminalSafeMetadata(attachment.title)
+  title: terminalSafeMetadata(attachment.title),
+  mediaType: terminalSafeMetadata(attachment.mediaType)
 })
 
 const publicDetail = (attachment: AttachmentDetail) => {
@@ -396,7 +397,7 @@ const publicDetail = (attachment: AttachmentDetail) => {
     filename: terminalSafeMetadata(attachment.filename),
     title: terminalSafeMetadata(attachment.title),
     subtitle: terminalSafeMetadata(attachment.subtitle),
-    mediaType: attachment.mediaType,
+    mediaType: terminalSafeMetadata(attachment.mediaType),
     size: attachment.size,
     createdAt: attachment.createdAt,
     updatedAt: attachment.updatedAt,
