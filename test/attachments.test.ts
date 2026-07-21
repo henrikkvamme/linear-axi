@@ -79,7 +79,7 @@ describe("attachment content boundary", () => {
   })
 
   test("read emits bounded UTF-8 text and makes terminal controls explicit", async () => {
-    const bytes = new TextEncoder().encode("hello\u001b[31mred\u0007\u009b31m\n")
+    const bytes = new TextEncoder().encode("hello\u001b[31mred\u0007\u009b31m\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\n")
     const output = await run(["attachments", "read", "--id", "attachment-1", "--max-bytes", "64"], detail({ size: bytes.length }), {
       fetcher: async () => new Response(new ReadableStream({
         start(controller) {
@@ -92,11 +92,23 @@ describe("attachment content boundary", () => {
 
     expect(output).toEqual({
       attachment: { id: "attachment-1", filename: "trace.txt", mediaType: "text/plain; charset=utf-8", size: bytes.length },
-      text: "hello\\u001b[31mred\\u0007\\u009b31m\n",
+      text: "hello\\u001b[31mred\\u0007\\u009b31m\\u061c\\u200e\\u200f\\u202a\\u202b\\u202c\\u202d\\u202e\\u2066\\u2067\\u2068\\u2069\n",
       bytesRead: bytes.length,
       truncated: false,
       help: []
     })
+  })
+
+  test("complete reads reject same-size content that fails checksum verification", async () => {
+    const expected = new TextEncoder().encode("hello world\n")
+    const corrupted = new TextEncoder().encode("hello worle\n")
+    const error = await Effect.runPromise(Effect.flip(runEffect(
+      ["attachments", "read", "--id", "attachment-1"],
+      detail({ size: expected.length, sha256: createHash("sha256").update(expected).digest("hex") }),
+      { fetcher: async () => new Response(corrupted, { status: 200 }) }
+    )))
+
+    expect(error.message).toContain("checksum verification failed")
   })
 
   test("read rejects binary media before fetching", async () => {

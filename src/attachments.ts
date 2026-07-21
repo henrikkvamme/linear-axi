@@ -232,6 +232,7 @@ const readAttachment = Effect.fn("Attachments.read")(function*(
       `Run \`linear-axi attachments download --id=${shellQuote(attachment.id)} --output <path>\` instead.`
     )
   }
+  if (!read.truncated) yield* verifyAttachmentChecksum(digestSha256(read.bytes), attachment.sha256)
   const decoded = decodeUtf8(read.bytes, read.truncated)
   if (!decoded) {
     return yield* domain(
@@ -437,7 +438,8 @@ const makeTerminalSafe = (value: string): string => {
   for (const character of value) {
     const code = character.codePointAt(0)!
     if ((code >= 0 && code <= 8) || code === 11 || code === 12 || (code >= 14 && code <= 31) ||
-      code === 127 || (code >= 128 && code <= 159)) {
+      code === 127 || (code >= 128 && code <= 159) || code === 0x061c || code === 0x200e || code === 0x200f ||
+      (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069)) {
       output += `\\u${code.toString(16).padStart(4, "0")}`
     } else if (code === 13) {
       output += "\\r"
@@ -447,6 +449,14 @@ const makeTerminalSafe = (value: string): string => {
   }
   return output
 }
+
+const digestSha256 = (bytes: Uint8Array): string => new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+
+const verifyAttachmentChecksum = Effect.fn("Attachments.verifyChecksum")(function*(actual: string, expected: string | null) {
+  if (expected !== null && actual !== expected) {
+    return yield* domain("Attachment checksum verification failed", "Do not use the content; retry the attachment command.")
+  }
+})
 
 const decodeUtf8 = (bytes: Uint8Array, truncated: boolean): { readonly text: string; readonly bytesRead: number } | null => {
   const incompleteSuffix = truncated ? incompleteUtf8SuffixLength(bytes) : 0
@@ -1199,9 +1209,7 @@ const writeAtomicDownloadPinned = Effect.fn("Attachments.writeAtomicDownloadPinn
       return yield* domain("Attachment download was truncated", "Retry the command to request fresh attachment metadata.")
     }
     const sha256 = hasher.digest("hex")
-    if (attachment.sha256 !== null && sha256 !== attachment.sha256) {
-      return yield* domain("Attachment checksum verification failed", "Do not use the partial content; retry the download.")
-    }
+    yield* verifyAttachmentChecksum(sha256, attachment.sha256)
     if (!syncFileDescriptor(fd)) {
       return yield* domain("Could not fsync the downloaded attachment", "Check the destination filesystem and retry.")
     }
