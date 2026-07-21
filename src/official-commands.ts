@@ -6,7 +6,8 @@ import {
   findCanonicalIntersection,
   officialCollectionAbsent as collectionAbsent,
   officialCollectionContains as collectionContains,
-  officialCollectionEqual as collectionEqual
+  officialCollectionEqual as collectionEqual,
+  officialReferenceEqual
 } from "./official-collection"
 import {
   officialEntityIdentity,
@@ -866,7 +867,7 @@ const mutationSatisfied = (
     return richTextEqual(current[key], desired)
   }
   return mutationReferenceKeys(tool).includes(key)
-    ? referenceEqual(current[key], desired)
+    ? mutationReferenceEqual(tool, key, current[key], desired)
     : literalEqual(current[key], desired)
 })
 
@@ -884,24 +885,21 @@ const mutationReferenceKeys = (tool: string): ReadonlyArray<string> => ({
   save_status_update: ["project", "initiative"]
 } as Record<string, ReadonlyArray<string>>)[tool] ?? []
 
+const MUTATION_REFERENCE_KEYS = ["id", "identifier", "name", "key", "email", "displayName", "slugId", "version", "number", "type"] as const
 const MUTATION_COLLECTION_OPTIONS = {
-  referenceKeys: ["id", "identifier", "name", "key", "email", "displayName", "slugId", "version", "number", "type"],
+  referenceKeys: MUTATION_REFERENCE_KEYS,
   canonicalIdentityKey: "id"
 } as const
+const MUTATION_ALIAS_REFERENCE_OPTIONS = { referenceKeys: MUTATION_REFERENCE_KEYS } as const
 const mutationCollectionEqual = (current: unknown, desired: unknown): boolean => collectionEqual(current, desired, MUTATION_COLLECTION_OPTIONS)
 const mutationCollectionContains = (current: unknown, desired: unknown): boolean => collectionContains(current, desired, MUTATION_COLLECTION_OPTIONS)
 const mutationCollectionAbsent = (current: unknown, desired: unknown): boolean => collectionAbsent(current, desired, MUTATION_COLLECTION_OPTIONS)
-const referenceValues = (value: unknown): ReadonlyArray<string> => Predicate.isObject(value)
-  ? [value.id, value.identifier, value.name, value.key, value.email, value.displayName, value.slugId, value.version, value.number, value.type]
-      .filter((reference): reference is string | number => nonEmptyString(reference) || typeof reference === "number")
-      .map(String)
-  : nonEmptyString(value) || typeof value === "number" ? [String(value)] : []
-const referenceEqual = (current: unknown, desired: unknown): boolean => {
+const mutationReferenceEqual = (tool: string, key: string, current: unknown, desired: unknown): boolean => {
   if (desired === null) return current == null
-  if (Predicate.isObject(current)) return referenceValues(current).some((reference) => referenceTextEqual(reference, String(desired)))
-  return typeof current === "string" && typeof desired === "string"
-    ? referenceTextEqual(current, desired)
-    : current === desired
+  const options = tool === "save_project" && key === "state"
+    ? MUTATION_ALIAS_REFERENCE_OPTIONS
+    : MUTATION_COLLECTION_OPTIONS
+  return officialReferenceEqual(current, desired, options)
 }
 const literalEqual = (current: unknown, desired: unknown): boolean =>
   desired === null ? current == null : current === desired

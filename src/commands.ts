@@ -32,7 +32,8 @@ import {
   findCanonicalIntersection,
   officialCollectionAbsent as collectionAbsent,
   officialCollectionContains as collectionContains,
-  officialCollectionEqual as collectionEqual
+  officialCollectionEqual as collectionEqual,
+  officialReferenceEqual
 } from "./official-collection"
 import {
   filterOfficialActiveEntities,
@@ -1011,11 +1012,7 @@ const officialLinksContain = (current: unknown, desired: unknown): boolean => Ar
 
 const officialReferenceMatches = (current: unknown, desired: unknown): boolean => {
   if (desired === null) return current === null || current === undefined
-  if (Predicate.isObject(current)) return [current.id, current.identifier, current.key, current.name, current.email, current.displayName, current.slugId, current.version]
-    .some((value) => typeof value === "string" && officialTextEqual(value, String(desired)))
-  return typeof current === "string" && typeof desired === "string"
-    ? officialTextEqual(current, desired)
-    : current === desired
+  return officialReferenceEqual(current, desired, ISSUE_COLLECTION_OPTIONS)
 }
 const officialLiteralMatches = (current: unknown, desired: unknown): boolean =>
   desired === null ? current === null || current === undefined : current === desired

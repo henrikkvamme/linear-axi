@@ -23,12 +23,27 @@ export const officialCollectionAbsent = (
   options: OfficialCollectionOptions
 ): boolean => {
   if (!Array.isArray(current) || !Array.isArray(desired)) return false
-  const canonicalIdentityKey = options.canonicalIdentityKey
-  if (canonicalIdentityKey !== undefined && desired.length > 0 && current.some((item) =>
-    !Predicate.isObject(item) || !validReference(item[canonicalIdentityKey]))) return false
-  const references = officialCollectionReferences(current, options)
+  const references = officialCollectionReferences(current, options, desired.length > 0)
   return references.every((values) => values.length > 0) &&
     desired.every((value) => !references.some((values) => values.some((reference) => officialReferenceTextEqual(reference, String(value)))))
+}
+
+export const officialReferenceEqual = (
+  current: unknown,
+  desired: unknown,
+  options: OfficialCollectionOptions
+): boolean => {
+  if (!validReference(desired)) return current === desired
+  if (Predicate.isObject(current)) {
+    const canonicalIdentityKey = options.canonicalIdentityKey
+    if (canonicalIdentityKey !== undefined) {
+      const identity = current[canonicalIdentityKey]
+      return validReference(identity) && officialReferenceTextEqual(String(identity), String(desired))
+    }
+    return officialObjectReferences(current, options.referenceKeys)
+      .some((reference) => officialReferenceTextEqual(reference, String(desired)))
+  }
+  return validReference(current) && officialReferenceTextEqual(String(current), String(desired))
 }
 
 export const findCanonicalIntersection = (
@@ -47,7 +62,7 @@ const officialCollectionMatches = (
   options: OfficialCollectionOptions
 ): boolean => {
   if (!Array.isArray(current) || !Array.isArray(desired)) return false
-  const entries = officialCollectionReferences(current, options).map((references) => ({
+  const entries = officialCollectionReferences(current, options, desired.length > 0).map((references) => ({
     key: references[0]?.toLowerCase(),
     references
   }))
@@ -66,13 +81,26 @@ const officialCollectionMatches = (
 
 const officialCollectionReferences = (
   value: ReadonlyArray<unknown>,
-  options: OfficialCollectionOptions
-): ReadonlyArray<ReadonlyArray<string>> => value.map((item) => Predicate.isObject(item)
-  ? options.referenceKeys
-      .map((key) => item[key])
-      .filter((reference): reference is string | number => validReference(reference))
-      .map(String)
-  : validReference(item) ? [String(item)] : [])
+  options: OfficialCollectionOptions,
+  requireCanonicalIdentity: boolean
+): ReadonlyArray<ReadonlyArray<string>> => value.map((item) => {
+  if (requireCanonicalIdentity && options.canonicalIdentityKey !== undefined) {
+    if (!Predicate.isObject(item)) return []
+    const identity = item[options.canonicalIdentityKey]
+    return validReference(identity) ? [String(identity)] : []
+  }
+  return Predicate.isObject(item)
+    ? officialObjectReferences(item, options.referenceKeys)
+    : validReference(item) ? [String(item)] : []
+})
+
+const officialObjectReferences = (
+  value: Readonly<Record<PropertyKey, unknown>>,
+  referenceKeys: ReadonlyArray<string>
+): ReadonlyArray<string> => referenceKeys
+  .map((key) => value[key])
+  .filter((reference): reference is string | number => validReference(reference))
+  .map(String)
 
 const officialReferenceTextEqual = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase()
 const validReference = (value: unknown): value is string | number => nonEmptyString(value) || typeof value === "number"

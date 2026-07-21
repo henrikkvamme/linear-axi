@@ -536,12 +536,16 @@ describe("runCommand", () => {
     const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = []
     let projectReads = 0
     const gateway = fakeGateway({
+      resolveProjectUpdateAssociations: (input) => Effect.succeed({
+        teams: input.teams.map((selector) => `${selector.toLowerCase()}-id`),
+        initiatives: []
+      }),
       callOfficialTool: (name, args) => {
         calls.push({ name, args })
         if (name === "get_project") {
           return Effect.succeed(projectReads++ < 2
             ? { id: "project-id", name: "Roadmap", teams: [], priority: 0 }
-            : { id: "project-id", name: "Roadmap", teams: [{ key: "ENG" }, { key: "OPS" }], priority: 2 })
+            : { id: "project-id", name: "Roadmap", teams: [{ id: "eng-id", key: "ENG" }, { id: "ops-id", key: "OPS" }], priority: 2 })
         }
         return Effect.succeed({ id: "project-id", name: "Roadmap" })
       }
@@ -560,7 +564,7 @@ describe("runCommand", () => {
     expect(calls).toEqual([
       { name: "get_project", args: { query: "project-id" } },
       { name: "get_project", args: { query: "project-id" } },
-      { name: "save_project", args: { id: "project-id", setTeams: ["ENG", "OPS"], priority: 2 } },
+      { name: "save_project", args: { id: "project-id", setTeams: ["eng-id", "ops-id"], priority: 2 } },
       { name: "get_project", args: { query: "project-id" } }
     ])
     expect(output).toMatchObject({ changed: true, result: "official save_project update verified" })
@@ -729,6 +733,7 @@ describe("runCommand", () => {
   test("official collection verification accepts documented selectors case-insensitively", async () => {
     let saves = 0
     const output = await run(["projects", "update", "--id", "PROJECT-ID", "--teams-json", '["eng"]'], fakeGateway({
+      resolveProjectUpdateAssociations: () => Effect.succeed({ teams: ["team-id"], initiatives: [] }),
       callOfficialTool: (name) => {
         if (name === "save_project") saves += 1
         return Effect.succeed({ id: "project-id", teams: [{ id: "team-id", key: "ENG", name: "Engineering" }] })
@@ -744,6 +749,10 @@ describe("runCommand", () => {
     const output = await run([
       "projects", "update", "--id", "project-id", "--teams-json", '["ENG","eng","team-id"]'
     ], fakeGateway({
+      resolveProjectUpdateAssociations: (input) => Effect.succeed({
+        teams: input.teams.map(() => "team-id"),
+        initiatives: []
+      }),
       callOfficialTool: (name) => {
         if (name === "save_project") saves += 1
         return Effect.succeed({ id: "project-id", teams: [{ id: "team-id", key: "ENG", name: "Engineering" }] })
@@ -752,6 +761,47 @@ describe("runCommand", () => {
 
     expect(output).toMatchObject({ changed: false, result: "requested properties already match (no-op)" })
     expect(saves).toBe(0)
+  })
+
+  test("official collection verification cannot substitute aliases for canonical ids", async () => {
+    for (const flag of ["--teams-json", "--add-teams-json"]) {
+      let saves = 0
+      const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+        "projects", "update", "--id", "project-id", flag, '["ENG"]'
+      ], commandSpecs), fakeGateway({
+        resolveProjectUpdateAssociations: (input) => Effect.succeed({
+          teams: input.teams.map(() => "team-id"),
+          initiatives: []
+        }),
+        callOfficialTool: (name) => {
+          if (name === "save_project") saves += 1
+          return Effect.succeed({ id: "project-id", teams: [{ id: "wrong-id", name: "team-id" }] })
+        }
+      }), "/repo/src/main.ts")))
+
+      expect(saves, flag).toBe(1)
+      expect(error._tag, flag).toBe("LinearApiError")
+      expect(error.help, flag).toContain("linear-axi projects view --query 'project-id' --full")
+      expect(error.help, flag).not.toContain("retry")
+    }
+  })
+
+  test("official scalar verification cannot substitute aliases for canonical ids", async () => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "documents", "update", "--id", "document-id", "--issue", "ENG-123"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_issue") return Effect.succeed({ id: "issue-id", identifier: "ENG-123" })
+        if (name === "save_document") saves += 1
+        return Effect.succeed({ id: "document-id", issue: { id: "wrong-id", name: "issue-id" } })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(saves).toBe(1)
+    expect(error._tag).toBe("LinearApiError")
+    expect(error.help).toContain("linear-axi documents view --id 'document-id' --full")
+    expect(error.help).not.toContain("retry")
   })
 
   test("official scalar clears require an explicit field readback", async () => {
@@ -3468,6 +3518,29 @@ describe("runCommand", () => {
     }), "/repo/src/main.ts")))
 
     expect(reads).toBe(2)
+    expect(error._tag).toBe("LinearApiError")
+    expect(error.help).toContain("linear-axi issues inspect --id 'issue-id' --full")
+    expect(error.help).not.toContain("retry")
+  })
+
+  test("issue scalar verification cannot substitute aliases for canonical ids", async () => {
+    let saves = 0
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "update", "--id", "ENG-123", "--project", "Roadmap"
+    ], commandSpecs), fakeGateway({
+      callOfficialTool: (name) => {
+        if (name === "get_project") return Effect.succeed({ id: "project-id", name: "Roadmap" })
+        if (name === "save_issue") saves += 1
+        return Effect.succeed({
+          id: "issue-id",
+          identifier: "ENG-123",
+          teamId: "team-id",
+          project: { id: "wrong-id", name: "project-id" }
+        })
+      }
+    }), "/repo/src/main.ts")))
+
+    expect(saves).toBe(1)
     expect(error._tag).toBe("LinearApiError")
     expect(error.help).toContain("linear-axi issues inspect --id 'issue-id' --full")
     expect(error.help).not.toContain("retry")
