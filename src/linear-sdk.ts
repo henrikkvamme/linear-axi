@@ -205,6 +205,14 @@ const mutationIdentity = async (
     team = await (await resolveIssue(client, input.issue)).team
   } else if (input.team) {
     team = await resolveTeam(client, input.team)
+  } else if (input.relation) {
+    const relation = await lookupRelationByUuid(client, input.relation)
+    if (relation) {
+      const source = await relation.issue
+      if (source) {
+        team = await source.team
+      }
+    }
   }
   return {
     workspace: {

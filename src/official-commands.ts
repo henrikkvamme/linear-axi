@@ -198,8 +198,8 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
       ? "read"
       : undefined
   if (!operation) throw new Error(`Official command ${entry.path.join(" ")} has no explicit operation classification`)
-  const mutationTarget = entry.path.join(" ") === "documents update"
-    ? { kind: "issue" as const, flag: "issue" }
+  const mutationTargets = entry.path.join(" ") === "documents update"
+    ? [{ kind: "issue" as const, flag: "issue" }]
     : undefined
   const flagNames = Object.entries(entry.flags).flatMap(([name, flag]) =>
     flag.kind === "boolean" && name !== "full" ? [name, `no-${name}`] : [name])
@@ -238,7 +238,7 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
     required,
     repeatableFlags,
     officialTools: [entry.tool],
-    mutationTarget,
+    mutationTargets,
     help: [
       operation === "mutation"
         ? `${usage} --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]`
@@ -249,7 +249,7 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
       "Example:",
       ...entry.examples.map((example) =>
         `  ${example}${operation === "mutation" ? " --expect-workspace <workspace-uuid-or-url-key>" : ""}` +
-        `${mutationTarget && example.includes(`--${mutationTarget.flag}`) ? " --expect-team <team-key-or-uuid>" : ""}`)
+        `${mutationTargets?.some((target) => example.includes(`--${target.flag}`)) ? " --expect-team <team-key-or-uuid>" : ""}`)
     ].join("\n")
   }
 })

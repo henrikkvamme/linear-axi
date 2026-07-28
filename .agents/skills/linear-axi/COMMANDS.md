@@ -504,7 +504,7 @@ Example:
 
 ```text
 Usage: linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> [--id <uuid-v4>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
-   or: linear-axi relations create --issue <source-issue> --related-issue <target-issue> --type blocks|related|duplicate|similar [--id <uuid-v4>]
+   or: linear-axi relations create --issue <source-issue> --related-issue <target-issue> --type blocks|related|duplicate|similar [--id <uuid-v4>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 --blocked-by is the blocker (source); --issue is the blocked issue (target). Do not combine --blocked-by with --related-issue or --type.
 For generic --type blocks, --issue is the blocker and --related-issue is the blocked issue. Blocks relations cannot use two references that resolve to the same issue.
 Options:
@@ -525,8 +525,8 @@ Example:
 
 ```text
 Usage: linear-axi relations remove --id <relation-id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
-   or: linear-axi relations remove --issue <blocked-issue> --blocked-by <blocker-issue>
-   or: linear-axi relations remove --issue <source> --related-issue <target> --type blocks|related|duplicate|similar
+   or: linear-axi relations remove --issue <blocked-issue> --blocked-by <blocker-issue> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
+   or: linear-axi relations remove --issue <source> --related-issue <target> --type blocks|related|duplicate|similar --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options:
   --help
   --id <id>

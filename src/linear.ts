@@ -69,6 +69,7 @@ export interface MutationIdentity {
 export interface MutationIdentityInput {
   readonly issue?: string
   readonly team?: string
+  readonly relation?: string
 }
 
 export interface TeamSummary {

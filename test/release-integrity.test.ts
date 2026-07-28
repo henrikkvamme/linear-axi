@@ -42,11 +42,13 @@ describe("release integrity", () => {
         expect(spec.valueFlags?.has("expect-workspace"), spec.path.join(" ")).toBe(true)
         expect(spec.required?.has("expect-workspace"), spec.path.join(" ")).toBe(true)
         expect(spec.help.split("\n")[0], spec.path.join(" ")).toContain("--expect-workspace")
-        const examples = spec.help.split("\n").filter((line) => line.trimStart().startsWith("linear-axi "))
+        const examples = spec.help.split("\n").filter((line) =>
+          /^(?:Usage:\s+|or:\s+)?linear-axi /.test(line.trimStart())
+        )
         expect(examples.length, spec.path.join(" ")).toBeGreaterThan(0)
         for (const example of examples) {
           expect(example, spec.path.join(" ")).toContain("--expect-workspace")
-          if (spec.mutationTarget && example.includes(`--${spec.mutationTarget.flag}`)) {
+          if (spec.mutationTargets?.some((target) => example.includes(`--${target.flag}`))) {
             expect(example, spec.path.join(" ")).toContain("--expect-team")
           }
         }
@@ -131,6 +133,37 @@ describe("release integrity", () => {
       expected: { idOrKey: "BEN" },
       actual: { key: "SAM", name: "Sambu" }
     })
+    expect(mutations).toBe(0)
+  })
+
+  test("relation removal by immutable id verifies its resolved team before mutation", async () => {
+    let mutations = 0
+    let identityInput: unknown
+    const gateway = {
+      close: () => Effect.void,
+      mutationIdentity: (input: unknown) => {
+        identityInput = input
+        return Effect.succeed({
+          workspace: { id: "11111111-1111-4111-8111-111111111111", urlKey: "bender", name: "Bender" },
+          team: { id: "22222222-2222-4222-8222-222222222222", key: "SAM", name: "Sambu" }
+        })
+      },
+      removeRelation: () => {
+        mutations += 1
+        return Effect.die("mutation must not run")
+      }
+    } as unknown as LinearGateway
+    const parsed = parseArgs([
+      "relations", "remove",
+      "--id", "33333333-3333-4333-8333-333333333333",
+      "--expect-workspace", "bender",
+      "--expect-team", "BEN"
+    ], commandSpecs)
+
+    const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/tmp/linear-axi")))
+
+    expect(identityInput).toEqual({ relation: "33333333-3333-4333-8333-333333333333" })
+    expect(error).toMatchObject({ code: "team_mismatch", actual: { key: "SAM" } })
     expect(mutations).toBe(0)
   })
 

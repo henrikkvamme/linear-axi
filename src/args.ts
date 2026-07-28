@@ -22,11 +22,13 @@ export interface CommandSpec {
   fields?: ReadonlyArray<string>
   officialTools?: ReadonlyArray<string>
   repeatableFlags?: ReadonlySet<string>
-  mutationTarget?: {
-    readonly kind: "issue" | "team"
-    readonly flag: string
-  }
+  mutationTargets?: ReadonlyArray<MutationTarget>
   help: string
+}
+
+export interface MutationTarget {
+  readonly kind: "issue" | "team" | "relation"
+  readonly flag: string
 }
 
 export const ISSUE_FIELDS = [
@@ -634,13 +636,14 @@ const completeHelp = (spec: CommandSpec): CommandSpec => {
   const examples = commandExamples[spec.path.join(" ")] ?? []
   const guardedExamples = examples.map((example) =>
     spec.operation === "mutation"
-      ? `${example} --expect-workspace <workspace-uuid-or-url-key>${spec.mutationTarget ? " --expect-team <team-key-or-uuid>" : ""}`
+      ? `${example} --expect-workspace <workspace-uuid-or-url-key>${spec.mutationTargets?.some((target) => example.includes(`--${target.flag}`)) ? " --expect-team <team-key-or-uuid>" : ""}`
       : example)
   const help = spec.operation === "mutation"
-    ? spec.help.replace(
-      /^([^\n]+)/,
-      "$1 --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]"
-    )
+    ? spec.help.split("\n").map((line) =>
+        /^(?:Usage:\s+|\s+or:\s+)linear-axi /.test(line)
+          ? `${line} --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]`
+          : line
+      ).join("\n")
     : spec.help
   return {
     ...spec,
@@ -676,78 +679,66 @@ const nativeOfficialToolsByCommand: Readonly<Record<string, ReadonlyArray<string
   "attachments upload": ["get_issue", "prepare_attachment_upload", "create_attachment_from_upload"]
 }
 
-const nativeCommandOperations = {
-  home: "local",
-  capabilities: "local",
-  "capabilities require": "local",
-  "auth status": "local",
-  "auth login": "local",
-  "auth oauth setup": "local",
-  "auth oauth connect": "local",
-  "attachments list": "read",
-  "attachments view": "read",
-  "attachments download": "read",
-  "attachments read": "read",
-  "attachments upload": "mutation",
-  "teams list": "read",
-  "workflow-states list": "read",
-  "issues list": "read",
-  "issues view": "read",
-  "issues create": "mutation",
-  "issues assign": "mutation",
-  "issues unassign": "mutation",
-  "issues close": "mutation",
-  "issues state": "mutation",
-  "issues parent set": "mutation",
-  "issues parent clear": "mutation",
-  "issues update": "mutation",
-  "labels list": "read",
-  "labels create": "mutation",
-  "labels apply": "mutation",
-  "labels add": "mutation",
-  "labels remove": "mutation",
-  "labels replace": "mutation",
-  "relations list": "read",
-  "relations create": "mutation",
-  "relations remove": "mutation",
-  "comments list": "read",
-  "comments create": "mutation",
-  "wayfinder frontier": "read"
-} as const satisfies Readonly<Record<string, CommandSpec["operation"]>>
-
-const nativeMutationTargets: Readonly<Record<string, CommandSpec["mutationTarget"]>> = {
-  "attachments upload": { kind: "issue", flag: "issue" },
-  "issues create": { kind: "team", flag: "team" },
-  "issues assign": { kind: "issue", flag: "id" },
-  "issues unassign": { kind: "issue", flag: "id" },
-  "issues close": { kind: "issue", flag: "id" },
-  "issues state": { kind: "issue", flag: "id" },
-  "issues parent set": { kind: "issue", flag: "id" },
-  "issues parent clear": { kind: "issue", flag: "id" },
-  "issues update": { kind: "issue", flag: "id" },
-  "labels create": { kind: "team", flag: "team" },
-  "labels apply": { kind: "issue", flag: "issue" },
-  "labels add": { kind: "issue", flag: "issue" },
-  "labels remove": { kind: "issue", flag: "issue" },
-  "labels replace": { kind: "issue", flag: "issue" },
-  "relations create": { kind: "issue", flag: "issue" },
-  "relations remove": { kind: "issue", flag: "issue" },
-  "comments create": { kind: "issue", flag: "issue" }
-}
+const nativeCommandSafety = {
+  home: { operation: "local" },
+  capabilities: { operation: "local" },
+  "capabilities require": { operation: "local" },
+  "auth status": { operation: "local" },
+  "auth login": { operation: "local" },
+  "auth oauth setup": { operation: "local" },
+  "auth oauth connect": { operation: "local" },
+  "attachments list": { operation: "read" },
+  "attachments view": { operation: "read" },
+  "attachments download": { operation: "read" },
+  "attachments read": { operation: "read" },
+  "attachments upload": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "teams list": { operation: "read" },
+  "workflow-states list": { operation: "read" },
+  "issues list": { operation: "read" },
+  "issues view": { operation: "read" },
+  "issues create": { operation: "mutation", mutationTargets: [{ kind: "team", flag: "team" }] },
+  "issues assign": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues unassign": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues close": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues state": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues parent set": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues parent clear": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues update": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "labels list": { operation: "read" },
+  "labels create": { operation: "mutation", mutationTargets: [{ kind: "team", flag: "team" }] },
+  "labels apply": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "labels add": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "labels remove": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "labels replace": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "relations list": { operation: "read" },
+  "relations create": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "relations remove": {
+    operation: "mutation",
+    mutationTargets: [{ kind: "relation", flag: "id" }, { kind: "issue", flag: "issue" }]
+  },
+  "comments list": { operation: "read" },
+  "comments create": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "wayfinder frontier": { operation: "read" }
+} as const satisfies Readonly<Record<string, {
+  readonly operation: CommandSpec["operation"]
+  readonly mutationTargets?: ReadonlyArray<MutationTarget>
+}>>
 
 const classifyNativeSpec = (spec: RawCommandSpec): CommandSpec => {
   const path = spec.path.join(" ")
-  const operation: CommandSpec["operation"] | undefined =
-    nativeCommandOperations[path as keyof typeof nativeCommandOperations]
-  if (!operation) throw new Error(`Command ${path} has no explicit operation classification`)
-  if (operation !== "mutation") return { ...spec, operation }
+  const safety = nativeCommandSafety[path as keyof typeof nativeCommandSafety]
+  if (!safety) throw new Error(`Command ${path} has no explicit safety classification`)
+  if (safety.operation !== "mutation") return { ...spec, operation: safety.operation }
+  if (!("mutationTargets" in safety)) {
+    throw new Error(`Native mutation ${path} has no mutation identity target`)
+  }
   return {
     ...spec,
-    operation,
+    operation: safety.operation,
     flags: new Set([...spec.flags, "expect-workspace", "expect-team"]),
     valueFlags: new Set([...(spec.valueFlags ?? []), "expect-workspace", "expect-team"]),
     required: new Set([...(spec.required ?? []), "expect-workspace"]),
-    mutationTarget: nativeMutationTargets[path]
+    mutationTargets: safety.mutationTargets
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { Comment, Issue, IssueLabel, LinearClient, User } from "@linear/sdk"
+import type { Comment, Issue, IssueLabel, IssueRelation, LinearClient, User } from "@linear/sdk"
 import { Effect } from "effect"
 import { makeLinearGateway } from "../src/linear"
 import type { ConnectionLike } from "../src/linear-pagination"
@@ -104,6 +104,31 @@ describe("SDK LinearGateway conflict contracts", () => {
       workspace: auth.workspace!,
       team
     })
+  })
+
+  test("resolves a mutation team from an immutable relation id", async () => {
+    const viewer = {
+      organization: Promise.resolve({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        urlKey: "bender",
+        name: "Bender"
+      })
+    }
+    const source = issue()
+    const relation = {
+      id: "33333333-3333-4333-8333-333333333333",
+      issue: Promise.resolve(source)
+    } as unknown as IssueRelation
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        viewer: Promise.resolve(viewer),
+        issueRelation: async () => relation
+      })
+    })
+
+    const identity = await Effect.runPromise(gateway.mutationIdentity({ relation: relation.id }))
+
+    expect(identity).toMatchObject({ workspace: { urlKey: "bender" }, team })
   })
 
   test("resolves human issue identifiers by exact team key and issue number", async () => {

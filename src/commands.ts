@@ -214,14 +214,17 @@ const mutationIdentityGuard = Effect.fn("Commands.mutationIdentityGuard")(functi
 ) {
   const expectedWorkspace = readStringFlag(parsed.flags, "expect-workspace")!
   const expectedTeam = readStringFlag(parsed.flags, "expect-team")
-  const targetValue = spec.mutationTarget
-    ? readStringFlag(parsed.flags, spec.mutationTarget.flag)
-    : undefined
-  const identityInput = targetValue && spec.mutationTarget?.kind === "issue"
-    ? { issue: targetValue }
-    : targetValue && spec.mutationTarget?.kind === "team"
-      ? { team: targetValue }
-      : {}
+  const target = spec.mutationTargets?.map((candidate) => ({
+    ...candidate,
+    value: readStringFlag(parsed.flags, candidate.flag)
+  })).find((candidate) => candidate.value !== undefined)
+  const identityInput = target?.kind === "issue"
+    ? { issue: target.value }
+    : target?.kind === "team"
+      ? { team: target.value }
+      : target?.kind === "relation"
+        ? { relation: target.value }
+        : {}
   const actual = yield* gateway.mutationIdentity(identityInput)
   const expectedWorkspaceLower = expectedWorkspace.toLowerCase()
   if (
