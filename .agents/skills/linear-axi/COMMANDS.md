@@ -69,6 +69,7 @@ Example:
 
 ```text
 Usage: linear-axi attachments list --issue <issue-id-or-key> [--after <cursor>] [--limit 100]
+Continuation cursors bind to exact attachment membership and order. Restart without --after if the page changed.
 Options:
   --help
   --issue <issue> (required)

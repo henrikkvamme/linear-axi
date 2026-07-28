@@ -97,7 +97,11 @@ const UploadRecoverySchema = Schema.Struct({
   assetUrl: Schema.NullOr(LinearPrivateAssetUrl),
   attachmentId: Schema.NullOr(Schema.String)
 })
-const AttachmentCursorSchema = Schema.Struct({ issue: Schema.NonEmptyString, offset: NonNegativeSafeInteger })
+const AttachmentCursorSchema = Schema.Struct({
+  issue: Schema.NonEmptyString,
+  offset: NonNegativeSafeInteger,
+  snapshot: Sha256
+})
 
 export type AttachmentWire = Schema.Schema.Type<typeof AttachmentWireSchema>
 export type IssueAttachments = Schema.Schema.Type<typeof IssueAttachmentsSchema>

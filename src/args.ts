@@ -278,7 +278,7 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
     flags: new Set(["help", "issue", "after", "limit"]),
     valueFlags: new Set(["issue", "after", "limit"]),
     required: new Set(["issue"]),
-    help: "Usage: linear-axi attachments list --issue <issue-id-or-key> [--after <cursor>] [--limit 100]"
+    help: "Usage: linear-axi attachments list --issue <issue-id-or-key> [--after <cursor>] [--limit 100]\nContinuation cursors bind to exact attachment membership and order. Restart without --after if the page changed."
   },
   {
     path: ["attachments", "view"],

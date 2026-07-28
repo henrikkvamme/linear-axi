@@ -207,8 +207,44 @@ describe("runCommand", () => {
     }))
 
     expect(output.help).toEqual([
-      "Run `linear-axi attachments list --issue='ENG-123'\"'\"'; echo injected; '\"'\"'' --after='att1.eyJpc3N1ZSI6IkVORy0xMjMnOyBlY2hvIGluamVjdGVkOyAnIiwib2Zmc2V0IjoxfQ' --limit 1` for the next page."
+      "Run `linear-axi attachments list --issue='ENG-123'\"'\"'; echo injected; '\"'\"'' --after='att2.eyJpc3N1ZSI6IkVORy0xMjMnOyBlY2hvIGluamVjdGVkOyAnIiwib2Zmc2V0IjoxLCJzbmFwc2hvdCI6IjhlOGJmM2JkZTMzNDJhOGFhNDQzNTQ1NDk2OTQ5Yzk4MTkxYWQyMzRlMWM5ZWZmYTQ0NTcxY2M0NmNhMmY5NmYifQ' --limit 1` for the next page."
     ])
+  })
+
+  test("attachments list rejects a continuation when membership changes", async () => {
+    let reads = 0
+    const gateway = fakeGateway({
+      callOfficialTool: () => Effect.succeed({
+        id: baseIssue.id,
+        identifier: baseIssue.identifier,
+        attachments: reads++ < 2
+          ? [
+              { id: "attachment-1", filename: "one.txt" },
+              { id: "attachment-2", filename: "two.txt" },
+              { id: "attachment-3", filename: "three.txt" }
+            ]
+          : [
+              { id: "attachment-new", filename: "new.txt" },
+              { id: "attachment-1", filename: "one.txt" },
+              { id: "attachment-2", filename: "two.txt" },
+              { id: "attachment-3", filename: "three.txt" }
+            ]
+      })
+    })
+    const first = await run(["attachments", "list", "--issue", "ENG-123", "--limit", "2"], gateway)
+    const cursor = (first.page as { readonly endCursor: string }).endCursor
+    const second = await run(["attachments", "list", "--issue", "ENG-123", "--after", cursor, "--limit", "2"], gateway)
+    expect(second.attachments).toMatchObject([{ id: "attachment-3" }])
+
+    const error = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["attachments", "list", "--issue", "ENG-123", "--after", cursor, "--limit", "2"], commandSpecs),
+      gateway,
+      "/repo/src/main.ts"
+    )))
+
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toContain("membership or order changed")
+    expect(error.help).toContain("restart pagination")
   })
 
   test("attachments list has a definitive empty state", async () => {

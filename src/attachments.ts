@@ -305,7 +305,7 @@ const getAttachment = Effect.fn("Attachments.get")(function*(parsed: ParsedArgs,
 const listAttachments = Effect.fn("Attachments.list")(function*(parsed: ParsedArgs, gateway: LinearGateway) {
   const selector = readStringFlag(parsed.flags, "issue")!
   const limit = readLimitFlag(parsed.flags, 100)
-  const offset = yield* decodeCursor(readStringFlag(parsed.flags, "after"), selector)
+  const cursor = yield* decodeCursor(readStringFlag(parsed.flags, "after"), selector)
   const issueRaw = yield* gateway.callOfficialTool("get_issue", { id: selector })
   let issue: IssueAttachments
   try { issue = decodeIssueAttachments(issueRaw) } catch {
@@ -315,6 +315,14 @@ const listAttachments = Effect.fn("Attachments.list")(function*(parsed: ParsedAr
     }))
   }
   if (!matchesIssue(issue, selector)) return yield* domain("Official Linear MCP returned a different issue", `Run \`linear-axi issues view --id=${shellQuote(selector)}\` to inspect it.`)
+  const snapshot = attachmentSnapshot(issue.attachments)
+  if (cursor && cursor.snapshot !== snapshot) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: "Attachment membership or order changed after the previous page",
+      help: `Run \`linear-axi attachments list --issue=${shellQuote(selector)}\` to restart pagination.`
+    }))
+  }
+  const offset = cursor?.offset ?? 0
   const rows = issue.attachments.map((attachment) => publicSummary(toSummary(attachment)))
   if (offset > rows.length) {
     return yield* Effect.fail(new UsageError({
@@ -326,15 +334,16 @@ const listAttachments = Effect.fn("Attachments.list")(function*(parsed: ParsedAr
   const nextOffset = offset + items.length
   const hasNext = nextOffset < rows.length
   const identifier = Predicate.isString(issue.identifier) && issue.identifier.length > 0 ? issue.identifier : undefined
+  const endCursor = hasNext ? encodeCursor(selector, nextOffset, snapshot) : null
   return {
     issue: { id: issue.id, ...(identifier ? { identifier } : {}) },
     count: `${items.length} ${items.length === 1 ? "attachment" : "attachments"} shown`,
-    page: { hasNext, endCursor: hasNext ? encodeCursor(selector, nextOffset) : null },
+    page: { hasNext, endCursor },
     ...(items.length === 0
       ? { attachments: `0 attachments found for ${selector}` }
       : { attachments: items }),
     help: hasNext
-      ? [`Run \`linear-axi attachments list --issue=${shellQuote(selector)} --after=${shellQuote(encodeCursor(selector, nextOffset))} --limit ${limit}\` for the next page.`]
+      ? [`Run \`linear-axi attachments list --issue=${shellQuote(selector)} --after=${shellQuote(endCursor!)} --limit ${limit}\` for the next page.`]
       : items.length > 0
         ? ["Run `linear-axi attachments view --id <attachment-id>` for metadata and content availability."]
         : []
@@ -1067,22 +1076,25 @@ const firstNumber = (...values: ReadonlyArray<unknown>): number | null =>
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
 
-const encodeCursor = (issue: string, offset: number): string =>
-  `att1.${Buffer.from(JSON.stringify({ issue, offset }), "utf8").toString("base64url")}`
+const attachmentSnapshot = (attachments: ReadonlyArray<AttachmentWire>): string =>
+  digestSha256(new TextEncoder().encode(JSON.stringify(attachments.map((attachment) => attachment.id))))
+
+const encodeCursor = (issue: string, offset: number, snapshot: string): string =>
+  `att2.${Buffer.from(JSON.stringify({ issue, offset, snapshot }), "utf8").toString("base64url")}`
 
 const decodeCursor = Effect.fn("Attachments.decodeCursor")(function*(
   cursor: string | undefined,
   issue: string
-): Effect.fn.Return<number, UsageError> {
+): Effect.fn.Return<{ readonly offset: number; readonly snapshot: string } | undefined, UsageError> {
   return yield* Effect.try({
     try: () => {
-      if (cursor === undefined) return 0
-      if (!cursor.startsWith("att1.")) throw new Error("prefix")
+      if (cursor === undefined) return undefined
+      if (!cursor.startsWith("att2.")) throw new Error("prefix")
       const value = decodeAttachmentCursor(JSON.parse(Buffer.from(cursor.slice(5), "base64url").toString("utf8")))
       if (value.issue !== issue) {
         throw new Error("shape")
       }
-      return value.offset
+      return { offset: value.offset, snapshot: value.snapshot }
     },
     catch: () => new UsageError({
       message: "invalid --after cursor for attachments list",
