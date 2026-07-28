@@ -285,28 +285,28 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
     flags: new Set(["help", "id"]),
     valueFlags: new Set(["id"]),
     required: new Set(["id"]),
-    help: "Usage: linear-axi attachments view --id <attachment-id>"
+    help: "Usage: linear-axi attachments view --id <attachment-id>\nReports metadata and content availability without exposing signed URLs or headers."
   },
   {
     path: ["attachments", "download"],
     flags: new Set(["help", "id", "output", "overwrite", "max-bytes"]),
     valueFlags: new Set(["id", "output", "max-bytes"]),
     required: new Set(["id", "output"]),
-    help: "Usage: linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]\nInstalls atomically without replacement. Existing destinations fail closed, including with --overwrite."
+    help: "Usage: linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]\nDefaults to 1 GiB; --max-bytes accepts 1 through 2147483647. Requires macOS or Linux and an existing non-symlink destination directory. Installs atomically without replacement; existing destinations fail closed, including with --overwrite."
   },
   {
     path: ["attachments", "read"],
     flags: new Set(["help", "id", "max-bytes", "full"]),
     valueFlags: new Set(["id", "max-bytes"]),
     required: new Set(["id"]),
-    help: "Usage: linear-axi attachments read --id <attachment-id> [--max-bytes <n>] [--full]\nOnly conservative UTF-8 textual media types are rendered. Binary files must be downloaded for inspection."
+    help: "Usage: linear-axi attachments read --id <attachment-id> [--max-bytes <n>] [--full]\nRenders UTF-8 text/*, JSON, XML, YAML, TOML, JavaScript, SQL, and SVG with no charset or a UTF-8 charset. Defaults to 32768 bytes; --max-bytes accepts 1 through 1048576 and is mutually exclusive with --full, which selects that ceiling. Other files must be downloaded for inspection."
   },
   {
     path: ["attachments", "upload"],
     flags: new Set(["help", "issue", "file", "title", "subtitle", "media-type", "allow-large"]),
     valueFlags: new Set(["issue", "file", "title", "subtitle", "media-type"]),
     required: new Set(["issue", "file"]),
-    help: "Usage: linear-axi attachments upload --issue <issue-id-or-key> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large]\nRequires explicit issue and regular-file intent. Uses resumable prepare, direct PUT, and finalize; deprecated base64 creation is excluded."
+    help: "Usage: linear-axi attachments upload --issue <issue-id-or-key> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large]\nRequires macOS or Linux and an explicit stable, non-empty, non-symlink regular file. Media type is inferred for txt, md, csv, json, yaml, yml, xml, toml, js, mjs, ts, tsx, html, css, sql, svg, png, jpg, jpeg, gif, webp, pdf, zip, gz, mp4, and mov; --media-type may override it with one supported parameter-free type. Supported types: text/plain, text/markdown, text/csv, application/json, application/yaml, application/xml, application/toml, application/javascript, text/typescript, text/tsx, text/html, text/css, application/sql, image/svg+xml, image/png, image/jpeg, image/gif, image/webp, application/pdf, application/zip, application/gzip, video/mp4, video/quicktime. Defaults to 100 MiB; --allow-large raises the ceiling to 2147483647 bytes. Resumable recovery records live under $XDG_STATE_HOME/linear-axi/uploads or ~/.local/state/linear-axi/uploads. Deprecated base64 creation is excluded."
   },
   {
     path: ["teams", "list"],
