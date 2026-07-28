@@ -5,16 +5,22 @@ import { officialCommandSpecs, officialTopLevelHelp } from "./official-commands"
 export interface ParsedArgs {
   command: ReadonlyArray<string>
   flags: ReadonlyMap<string, string | boolean>
+  repeatedFlags: ReadonlyMap<string, ReadonlyArray<string | boolean>>
 }
 
 export interface CommandSpec {
   path: ReadonlyArray<string>
+  operation: "read" | "mutation" | "local"
   flags: ReadonlySet<string>
   valueFlags?: ReadonlySet<string>
   required?: ReadonlySet<string>
   fields?: ReadonlyArray<string>
   officialTools?: ReadonlyArray<string>
   repeatableFlags?: ReadonlySet<string>
+  mutationTarget?: {
+    readonly kind: "issue" | "team"
+    readonly flag: string
+  }
   help: string
 }
 
@@ -31,8 +37,12 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
   const command: Array<string> = []
   const flags = new Map<string, string | boolean>()
   const duplicates = new Set<string>()
+  const repeatedFlags = new Map<string, Array<string | boolean>>()
   const setFlag = (flag: string, value: string | boolean): void => {
     if (flags.has(flag)) duplicates.add(flag)
+    const values = repeatedFlags.get(flag) ?? []
+    values.push(value)
+    repeatedFlags.set(flag, values)
     flags.set(flag, value)
   }
 
@@ -113,6 +123,20 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
     if (flag === "limit" || flag === "first") {
       validatePageSize(flag, value, spec.help)
     }
+    if (flag === "expect-workspace" && typeof value === "string" &&
+      !isUuid(value) && !/^[a-z0-9][a-z0-9-]{0,62}$/i.test(value)) {
+      throw new UsageError({
+        message: "--expect-workspace must be a workspace UUID or URL key",
+        help: spec.help
+      })
+    }
+    if (flag === "expect-team" && typeof value === "string" &&
+      !isUuid(value) && !/^[a-z][a-z0-9-]{0,31}$/i.test(value)) {
+      throw new UsageError({
+        message: "--expect-team must be a team key or UUID",
+        help: spec.help
+      })
+    }
   }
 
   for (const flag of duplicates) {
@@ -135,8 +159,11 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
     }
   }
 
-  return { command: path, flags }
+  return { command: path, flags, repeatedFlags }
 }
+
+const isUuid = (value: string): boolean =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 
 export const findSpec = (
   path: ReadonlyArray<string>,
@@ -159,6 +186,9 @@ export const readStringFlag = (
 
 export const readBooleanFlag = (flags: ReadonlyMap<string, string | boolean>, name: string): boolean =>
   flags.get(name) === true
+
+export const readRepeatedStringFlags = (parsed: ParsedArgs, name: string): ReadonlyArray<string> =>
+  (parsed.repeatedFlags.get(name) ?? []).filter((value): value is string => typeof value === "string")
 
 export const readLimitFlag = (flags: ReadonlyMap<string, string | boolean>, fallback: number): number => {
   const raw = readStringFlag(flags, "limit")
@@ -183,6 +213,9 @@ export const topLevelHelp = [
   "linear-axi",
   "Commands:",
   "  linear-axi",
+  "  linear-axi --version",
+  "  linear-axi capabilities",
+  "  linear-axi capabilities require [--api-level <integer>] [--capability <name>]...",
   "  linear-axi auth status",
   "  linear-axi auth login [--notify] [--no-open]",
   "  linear-axi auth oauth setup [--notify]",
@@ -222,11 +255,25 @@ export const topLevelHelp = [
   ...officialTopLevelHelp
 ].join("\n")
 
-const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
+type RawCommandSpec = Omit<CommandSpec, "operation">
+
+const rawCommandSpecs: ReadonlyArray<RawCommandSpec> = [
   {
     path: ["home"],
-    flags: new Set(["help"]),
+    flags: new Set(["help", "version"]),
     help: topLevelHelp
+  },
+  {
+    path: ["capabilities"],
+    flags: new Set(["help"]),
+    help: "Usage: linear-axi capabilities"
+  },
+  {
+    path: ["capabilities", "require"],
+    flags: new Set(["help", "api-level", "capability"]),
+    valueFlags: new Set(["api-level", "capability"]),
+    repeatableFlags: new Set(["capability"]),
+    help: "Usage: linear-axi capabilities require [--api-level <integer>] [--capability <name>]..."
   },
   {
     path: ["auth", "status"],
@@ -513,6 +560,10 @@ const commandExamples: Readonly<Record<string, ReadonlyArray<string>>> = {
 }
 
 const optionValues: Readonly<Record<string, string>> = {
+  "api-level": "<integer>",
+  capability: "<name>",
+  "expect-workspace": "<workspace-uuid-or-url-key>",
+  "expect-team": "<team-key-or-uuid>",
   "client-id": "<id>",
   "redirect-uri": "<url>",
   scope: "<scopes>",
@@ -567,9 +618,13 @@ const completeHelp = (spec: CommandSpec): CommandSpec => {
     return `  --${flag}${value}${required}`
   })
   const examples = commandExamples[spec.path.join(" ")] ?? []
+  const guardedExamples = examples.map((example) =>
+    spec.operation === "mutation"
+      ? `${example} --expect-workspace <workspace-uuid-or-url-key>${spec.mutationTarget ? " --expect-team <team-key-or-uuid>" : ""}`
+      : example)
   return {
     ...spec,
-    help: [spec.help, "Options:", ...options, "Example:", ...examples.map((example) => `  ${example}`)].join("\n")
+    help: [spec.help, "Options:", ...options, "Example:", ...guardedExamples.map((example) => `  ${example}`)].join("\n")
   }
 }
 
@@ -601,11 +656,88 @@ const nativeOfficialToolsByCommand: Readonly<Record<string, ReadonlyArray<string
   "attachments upload": ["get_issue", "prepare_attachment_upload", "create_attachment_from_upload"]
 }
 
+const nativeCommandOperations = {
+  home: "local",
+  capabilities: "local",
+  "capabilities require": "local",
+  "auth status": "local",
+  "auth login": "local",
+  "auth oauth setup": "local",
+  "auth oauth connect": "local",
+  "attachments list": "read",
+  "attachments view": "read",
+  "attachments download": "read",
+  "attachments read": "read",
+  "attachments upload": "mutation",
+  "teams list": "read",
+  "workflow-states list": "read",
+  "issues list": "read",
+  "issues view": "read",
+  "issues create": "mutation",
+  "issues assign": "mutation",
+  "issues unassign": "mutation",
+  "issues close": "mutation",
+  "issues state": "mutation",
+  "issues parent set": "mutation",
+  "issues parent clear": "mutation",
+  "issues update": "mutation",
+  "labels list": "read",
+  "labels create": "mutation",
+  "labels apply": "mutation",
+  "labels add": "mutation",
+  "labels remove": "mutation",
+  "labels replace": "mutation",
+  "relations list": "read",
+  "relations create": "mutation",
+  "relations remove": "mutation",
+  "comments list": "read",
+  "comments create": "mutation",
+  "wayfinder frontier": "read"
+} as const satisfies Readonly<Record<string, CommandSpec["operation"]>>
+
+const nativeMutationTargets: Readonly<Record<string, CommandSpec["mutationTarget"]>> = {
+  "attachments upload": { kind: "issue", flag: "issue" },
+  "issues create": { kind: "team", flag: "team" },
+  "issues assign": { kind: "issue", flag: "id" },
+  "issues unassign": { kind: "issue", flag: "id" },
+  "issues close": { kind: "issue", flag: "id" },
+  "issues state": { kind: "issue", flag: "id" },
+  "issues parent set": { kind: "issue", flag: "id" },
+  "issues parent clear": { kind: "issue", flag: "id" },
+  "issues update": { kind: "issue", flag: "id" },
+  "labels create": { kind: "team", flag: "team" },
+  "labels apply": { kind: "issue", flag: "issue" },
+  "labels add": { kind: "issue", flag: "issue" },
+  "labels remove": { kind: "issue", flag: "issue" },
+  "labels replace": { kind: "issue", flag: "issue" },
+  "relations create": { kind: "issue", flag: "issue" },
+  "relations remove": { kind: "issue", flag: "issue" },
+  "comments create": { kind: "issue", flag: "issue" }
+}
+
+const classifyNativeSpec = (spec: RawCommandSpec): CommandSpec => {
+  const path = spec.path.join(" ")
+  const operation: CommandSpec["operation"] | undefined =
+    nativeCommandOperations[path as keyof typeof nativeCommandOperations]
+  if (!operation) throw new Error(`Command ${path} has no explicit operation classification`)
+  if (operation !== "mutation") return { ...spec, operation }
+  return {
+    ...spec,
+    operation,
+    flags: new Set([...spec.flags, "expect-workspace", "expect-team"]),
+    valueFlags: new Set([...(spec.valueFlags ?? []), "expect-workspace", "expect-team"]),
+    required: new Set([...(spec.required ?? []), "expect-workspace"]),
+    mutationTarget: nativeMutationTargets[path]
+  }
+}
+
 export const commandSpecs: ReadonlyArray<CommandSpec> = [
-  ...rawCommandSpecs.map((spec) => completeHelp({
+  ...rawCommandSpecs.map((raw) => {
+    const spec = classifyNativeSpec(raw)
+    return completeHelp({
     ...spec,
     officialTools: nativeOfficialToolsByCommand[spec.path.join(" ")]
-  })),
+  })}),
   ...officialCommandSpecs
 ]
 

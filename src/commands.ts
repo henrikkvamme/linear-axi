@@ -9,6 +9,7 @@ import {
   type ParsedArgs,
   readBooleanFlag,
   readLimitFlag,
+  readRepeatedStringFlags,
   readStringFlag,
   topLevelHelp
 } from "./args"
@@ -57,6 +58,7 @@ import { fetchOfficialRows } from "./official-pagination"
 import { renderCandidateIds, resolveExactOfficialId as uniqueOfficialId } from "./official-selector"
 import { validateFrontierCursor } from "./wayfinder"
 import { runAttachmentCommand } from "./attachments"
+import { API_LEVEL, buildCapabilities, CAPABILITIES } from "./build-info"
 
 const ISSUE_FIELD_SET: ReadonlySet<string> = new Set(ISSUE_FIELDS)
 const LABEL_FIELD_SET: ReadonlySet<string> = new Set(LABEL_FIELDS)
@@ -76,11 +78,24 @@ export const runCommand = (
   credentialPathEnv: Env = process.env
 ): Effect.Effect<OutputValue, CliError> =>
   Effect.try({
-    try: () => dispatchCommand(parsed, gateway, binPath, env, credentialPathEnv),
+    try: () => {
+      const commandParsed = withoutMutationExpectations(parsed)
+      const spec = findSpec(parsed.command, commandSpecs)
+      const commandGateway = spec?.operation === "mutation" && parsed.flags.get("help") !== true
+        ? mutationGuardedGateway(parsed, gateway, spec)
+        : gateway
+      return dispatchCommand(commandParsed, commandGateway, binPath, env, credentialPathEnv)
+    },
     catch: (cause): CliError => cause instanceof UsageError
       ? cause
       : new LinearDomainError({ message: "Command validation failed", help: helpFor(parsed.command) })
   }).pipe(Effect.flatten)
+
+const withoutMutationExpectations = (parsed: ParsedArgs): ParsedArgs => ({
+  ...parsed,
+  flags: new Map([...parsed.flags].filter(([name]) => name !== "expect-workspace" && name !== "expect-team")),
+  repeatedFlags: new Map([...parsed.repeatedFlags].filter(([name]) => name !== "expect-workspace" && name !== "expect-team"))
+})
 
 const dispatchCommand = (
   parsed: ParsedArgs,
@@ -96,7 +111,11 @@ const dispatchCommand = (
   }
 
   switch (path) {
-    case "home": return home(gateway, binPath)
+    case "home": return parsed.flags.get("version") === true
+      ? Effect.succeed(buildCapabilities())
+      : home(gateway, binPath)
+    case "capabilities": return Effect.succeed(buildCapabilities())
+    case "capabilities require": return capabilitiesRequire(parsed)
     case "auth status":
       return gateway.authStatus().pipe(Effect.map((auth) => ({
         auth,
@@ -132,6 +151,131 @@ const dispatchCommand = (
     case "wayfinder frontier": return wayfinderFrontier(parsed, gateway)
     default: return runAttachmentCommand(parsed, gateway) ?? runOfficialCommand(parsed, gateway) ?? Effect.fail(new UsageError({ message: `unknown command ${path}`, help: topLevelHelp }))
   }
+}
+
+const capabilitiesRequire = (parsed: ParsedArgs): Effect.Effect<OutputValue, CliError> => {
+  const rawApiLevel = readStringFlag(parsed.flags, "api-level")
+  const apiLevel = rawApiLevel === undefined ? undefined : Number(rawApiLevel)
+  if (apiLevel !== undefined && (!Number.isInteger(apiLevel) || apiLevel < 1)) {
+    return usage("--api-level must be a positive integer", parsed.command)
+  }
+  const requestedCapabilities = readRepeatedStringFlags(parsed, "capability")
+  const missingCapabilities = requestedCapabilities.filter((capability) =>
+    !(CAPABILITIES as ReadonlyArray<string>).includes(capability))
+  const missing = {
+    ...(apiLevel !== undefined && apiLevel > API_LEVEL ? { apiLevel } : {}),
+    ...(missingCapabilities.length > 0 ? { capabilities: missingCapabilities } : {})
+  }
+  if (Object.keys(missing).length > 0) {
+    return Effect.fail(new LinearDomainError({
+      message: "The installed linear-axi does not satisfy the requested capability contract",
+      code: "capability_requirements_unsatisfied",
+      expected: {
+        ...(apiLevel === undefined ? {} : { apiLevel }),
+        capabilities: requestedCapabilities
+      },
+      current: {
+        apiLevel: API_LEVEL,
+        capabilities: [...CAPABILITIES]
+      },
+      missing,
+      help: "Run `nixus config apply --yes --update tools` in the managed dotfiles environment, then rerun this exact capability requirement."
+    }))
+  }
+  return Effect.succeed({
+    satisfied: true,
+    requirements: {
+      ...(apiLevel === undefined ? {} : { apiLevel }),
+      capabilities: requestedCapabilities
+    },
+    ...buildCapabilities()
+  })
+}
+
+const mutationIdentityGuard = (
+  parsed: ParsedArgs,
+  gateway: LinearGateway,
+  spec: NonNullable<ReturnType<typeof findSpec>>
+): Effect.Effect<void, CliError> => {
+  const expectedWorkspace = readStringFlag(parsed.flags, "expect-workspace")!
+  const expectedTeam = readStringFlag(parsed.flags, "expect-team")
+  const targetValue = spec.mutationTarget
+    ? readStringFlag(parsed.flags, spec.mutationTarget.flag)
+    : undefined
+  const identityInput = targetValue && spec.mutationTarget?.kind === "issue"
+    ? { issue: targetValue }
+    : targetValue && spec.mutationTarget?.kind === "team"
+      ? { team: targetValue }
+      : {}
+  return gateway.mutationIdentity(identityInput).pipe(
+    Effect.flatMap((actual) => {
+      const expectedWorkspaceLower = expectedWorkspace.toLowerCase()
+      if (
+        actual.workspace.id.toLowerCase() !== expectedWorkspaceLower &&
+        actual.workspace.urlKey.toLowerCase() !== expectedWorkspaceLower
+      ) {
+        return Effect.fail(new LinearDomainError({
+          message: "Authenticated Linear workspace does not match the mutation expectation",
+          code: "workspace_mismatch",
+          expected: { idOrUrlKey: expectedWorkspace },
+          actual: actual.workspace,
+          help: "Re-run with the intended workspace credential; do not repeat the mutation."
+        }))
+      }
+      if (expectedTeam && targetValue && !actual.team) {
+        return Effect.fail(new LinearDomainError({
+          message: "Resolved Linear mutation target did not provide a verifiable team identity",
+          code: "team_mismatch",
+          expected: { idOrKey: expectedTeam },
+          actual: null,
+          help: "Resolve the intended target team and credential; do not repeat the mutation."
+        }))
+      }
+      if (expectedTeam && actual.team) {
+        const expectedTeamLower = expectedTeam.toLowerCase()
+        if (
+          actual.team.id.toLowerCase() !== expectedTeamLower &&
+          actual.team.key.toLowerCase() !== expectedTeamLower
+        ) {
+          return Effect.fail(new LinearDomainError({
+            message: "Resolved Linear target team does not match the mutation expectation",
+            code: "team_mismatch",
+            expected: { idOrKey: expectedTeam },
+            actual: actual.team,
+            help: "Resolve the intended target team and credential; do not repeat the mutation."
+          }))
+        }
+      }
+      return Effect.void
+    })
+  )
+}
+
+const mutationGuardedGateway = (
+  parsed: ParsedArgs,
+  gateway: LinearGateway,
+  spec: NonNullable<ReturnType<typeof findSpec>>
+): LinearGateway => {
+  let cachedGuard: Effect.Effect<void, CliError> | undefined
+  const guardOnce = Effect.suspend(() => {
+    if (cachedGuard) return cachedGuard
+    return Effect.cached(mutationIdentityGuard(parsed, gateway, spec)).pipe(
+      Effect.flatMap((memoized) => {
+        cachedGuard = memoized
+        return memoized
+      })
+    )
+  })
+  return new Proxy(gateway, {
+    get(target, property, receiver) {
+      const value: unknown = Reflect.get(target, property, receiver)
+      if (typeof value !== "function" || property === "mutationIdentity" || property === "close") return value
+      return (...args: ReadonlyArray<unknown>) => guardOnce.pipe(
+        Effect.flatMap(() => Effect.suspend(() =>
+          (value as (...callArgs: ReadonlyArray<unknown>) => Effect.Effect<unknown, CliError>)(...args)))
+      )
+    }
+  })
 }
 
 const home = (gateway: LinearGateway, binPath: string) =>

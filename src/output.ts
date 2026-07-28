@@ -10,8 +10,12 @@ export const writeToon = (value: OutputValue): void => {
   process.stdout.write("\n")
 }
 
-export const errorOutput = (message: string, help?: string): OutputValue => ({
-  error: message,
+export const errorOutput = (
+  message: string,
+  help?: string,
+  details?: Readonly<Record<string, unknown>>
+): OutputValue => ({
+  error: details ? { ...details, message } : message,
   ...(help ? { help } : {})
 })
 

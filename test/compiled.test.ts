@@ -9,10 +9,11 @@ test("standalone binary runs without a source checkout", () => {
   const root = mkdtempSync(join(tmpdir(), "linear-axi-compiled-test-"))
   const binary = join(root, "linear-axi")
   const home = join(root, "empty-home")
+  const revision = Bun.spawnSync({ cmd: ["git", "rev-parse", "HEAD"], cwd: repoRoot, stdout: "pipe" }).stdout.toString().trim()
 
   try {
     const build = Bun.spawnSync({
-      cmd: ["bun", "build", "--compile", "--no-compile-autoload-dotenv", "--outfile", binary, "src/main.ts"],
+      cmd: ["bun", "scripts/build.ts", "--revision", revision, "--outfile", binary],
       cwd: repoRoot,
       stdout: "pipe",
       stderr: "pipe"
@@ -35,6 +36,22 @@ test("standalone binary runs without a source checkout", () => {
     expect(stderr).toBe("")
     expect(stdout).toContain("linear-axi auth login")
     expect(stdout).not.toContain("LINEAR_AXI_REPO")
+
+    const capabilities = Bun.spawnSync({
+      cmd: [binary, "capabilities"],
+      cwd: root,
+      env: { HOME: home, PATH: process.env.PATH ?? "" },
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    const capabilityOutput = new TextDecoder().decode(capabilities.stdout)
+    expect(capabilities.exitCode).toBe(0)
+    expect(new TextDecoder().decode(capabilities.stderr)).toBe("")
+    expect(capabilityOutput).toContain("version: 0.2.0")
+    expect(capabilityOutput).toContain(`revision: ${revision}`)
+    expect(capabilityOutput).toContain("apiLevel: 2")
+    expect(capabilityOutput).toContain("mutation-identity-v1")
+    expect(capabilityOutput).toContain("attachment-files-v1")
 
     for (const command of [
       ["issues", "assign"],
@@ -136,7 +153,10 @@ test("standalone binary runs without a source checkout", () => {
     expect(new TextDecoder().decode(repeated.stdout)).toContain("--state may only be specified once")
 
     const conflicting = Bun.spawnSync({
-      cmd: [binary, "projects", "update", "--id", "project-id", "--summary", "text", "--clear-summary"],
+      cmd: [
+        binary, "projects", "update", "--id", "project-id", "--summary", "text", "--clear-summary",
+        "--expect-workspace", "engineering"
+      ],
       cwd: root,
       env: { HOME: home, PATH: process.env.PATH ?? "" },
       stdout: "pipe",
@@ -161,7 +181,36 @@ test("standalone binary runs without a source checkout", () => {
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
-}, 15_000)
+}, 30_000)
+
+test("compiled revisions are injected immutably at build time", () => {
+  const root = mkdtempSync(join(tmpdir(), "linear-axi-revisions-"))
+  const revisions = [
+    Bun.spawnSync({ cmd: ["git", "rev-parse", "HEAD"], cwd: repoRoot, stdout: "pipe" }).stdout.toString().trim(),
+    Bun.spawnSync({ cmd: ["git", "rev-parse", "HEAD^"], cwd: repoRoot, stdout: "pipe" }).stdout.toString().trim()
+  ]
+  try {
+    const reported = revisions.map((revision, index) => {
+      const binary = join(root, `linear-axi-${index}`)
+      const build = Bun.spawnSync({
+        cmd: ["bun", "scripts/build.ts", "--revision", revision, "--outfile", binary],
+        cwd: repoRoot,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(build.exitCode).toBe(0)
+      const result = Bun.spawnSync({ cmd: [binary, "capabilities"], cwd: root, stdout: "pipe", stderr: "pipe" })
+      expect(result.exitCode).toBe(0)
+      expect(new TextDecoder().decode(result.stderr)).toBe("")
+      const match = new TextDecoder().decode(result.stdout).match(/revision: ([0-9a-f]{40})/)
+      expect(match?.[1]).toBe(revision)
+      return match?.[1]
+    })
+    expect(reported[0]).not.toBe(reported[1])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 30_000)
 
 test("compiled attachment commands render representative successful output", () => {
   const root = mkdtempSync(join(tmpdir(), "linear-axi-compiled-attachment-"))
@@ -182,7 +231,10 @@ test("compiled attachment commands render representative successful output", () 
       [["attachments", "view", "--id", "attachment-1"], "authenticated-signed-https"],
       [["attachments", "read", "--id", "attachment-1"], "hello world"],
       [["attachments", "download", "--id", "attachment-1", "--output", destination], "downloaded.txt"],
-      [["attachments", "upload", "--issue", "ENG-123", "--file", source], "attachment uploaded and verified"]
+      [[
+        "attachments", "upload", "--issue", "ENG-123", "--file", source,
+        "--expect-workspace", "engineering", "--expect-team", "ENG"
+      ], "attachment uploaded and verified"]
     ] as const) {
       const result = Bun.spawnSync({ cmd: [binary, ...args], cwd: root, stdout: "pipe", stderr: "pipe" })
       const stdout = new TextDecoder().decode(result.stdout)

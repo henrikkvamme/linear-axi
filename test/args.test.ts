@@ -1,6 +1,21 @@
 import { describe, expect, test } from "bun:test"
-import { commandSpecs, ISSUE_FIELDS, LABEL_FIELDS, parseArgs } from "../src/args"
+import { commandSpecs, ISSUE_FIELDS, LABEL_FIELDS, parseArgs as parseProductionArgs } from "../src/args"
 import { UsageError } from "../src/errors"
+
+const parseArgs: typeof parseProductionArgs = (argv, specs) => {
+  const path: Array<string> = []
+  for (const value of argv) {
+    if (value.startsWith("--")) break
+    path.push(value)
+  }
+  const spec = specs.find((candidate) => candidate.path.join("\0") === path.join("\0"))
+  return parseProductionArgs(
+    spec?.operation === "mutation" && !argv.includes("--help") && !argv.includes("--expect-workspace")
+      ? [...argv, "--expect-workspace", "engineering"]
+      : argv,
+    specs
+  )
+}
 
 describe("parseArgs", () => {
   test("defaults to home", () => {

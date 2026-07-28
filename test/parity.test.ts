@@ -64,6 +64,7 @@ describe("official Linear MCP parity drift", () => {
   test("README and bundled skill cover the mandatory practical intents", async () => {
     const readme = await Bun.file("README.md").text()
     const skill = await Bun.file(".agents/skills/linear-axi/SKILL.md").text()
+    const commands = await Bun.file(".agents/skills/linear-axi/COMMANDS.md").text()
     const required = [
       "workflow-states list", "issues state", "issues parent set", "issues parent clear",
       "labels add", "labels remove", "labels replace", "relations remove", "issues update",
@@ -71,15 +72,15 @@ describe("official Linear MCP parity drift", () => {
     ]
     for (const command of required) {
       expect(readme).toContain(`linear-axi ${command}`)
-      expect(skill).toContain(`linear-axi ${command}`)
+      expect(commands).toContain(`linear-axi ${command}`)
     }
     for (const noun of ["projects", "documents", "milestones", "releases", "release-notes", "status-updates", "users", "agent-skills", "diffs"]) {
-      expect(skill).toContain(`\`${noun}`)
+      expect(commands).toContain(`## ${noun}`)
     }
     expect(readme).toContain("47 official tools")
-    expect(skill).toContain("all 47 observed official tools")
     expect(readme).toContain("deprecated base64-heavy `create_attachment` path")
-    expect(skill).toContain("Every live attachment upload requires an explicit issue and local file intent")
-    expect(skill).toContain("Download images and other binary files")
+    expect(skill).toContain("Preserve attachment file boundaries")
+    expect(skill).toContain("capabilities require")
+    expect(skill).toContain("If no GitHub linkage was intended")
   })
 })

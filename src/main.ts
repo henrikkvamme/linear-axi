@@ -47,7 +47,16 @@ Effect.runPromiseExit(main).then((exit) => {
 
   const error = firstTypedError(exit.cause)
   if (error) {
-    writeToon(errorOutput(error.message, error.help))
+    const details = error instanceof LinearDomainError && error.code
+      ? {
+          code: error.code,
+          ...(error.expected === undefined ? {} : { expected: error.expected }),
+          ...(error.actual === undefined ? {} : { actual: error.actual }),
+          ...(error.missing === undefined ? {} : { missing: error.missing }),
+          ...(error.current === undefined ? {} : { current: error.current })
+        }
+      : undefined
+    writeToon(errorOutput(error.message, error.help, details))
     process.exitCode = exitCodeFor(error)
     return
   }

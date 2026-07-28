@@ -16,6 +16,7 @@ export type GatewayError = AuthError | LinearApiError | LinearDomainError
 
 export interface LinearGateway {
   close(): Effect.Effect<void>
+  mutationIdentity(input: MutationIdentityInput): Effect.Effect<MutationIdentity, GatewayError>
   callOfficialTool(name: string, args: Readonly<Record<string, unknown>>): Effect.Effect<unknown, GatewayError>
   authStatus(): Effect.Effect<AuthStatus, GatewayError>
   listTeams(limit: number): Effect.Effect<ReadonlyArray<TeamSummary>, GatewayError>
@@ -51,6 +52,23 @@ export interface AuthStatus {
     readonly id: string
     readonly name: string
   }
+  readonly workspace?: WorkspaceIdentity
+}
+
+export interface WorkspaceIdentity {
+  readonly id: string
+  readonly urlKey: string
+  readonly name: string
+}
+
+export interface MutationIdentity {
+  readonly workspace: WorkspaceIdentity
+  readonly team?: TeamSummary
+}
+
+export interface MutationIdentityInput {
+  readonly issue?: string
+  readonly team?: string
 }
 
 export interface TeamSummary {

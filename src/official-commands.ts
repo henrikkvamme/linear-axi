@@ -152,12 +152,66 @@ const commands: ReadonlyArray<OfficialCommand> = [
   command("status-updates update", "save_status_update", { type: requiredStringEnum(["project", "initiative"]), id: requiredString(), project: stringFlag(), initiative: stringFlag(), body: stringFlag(), "clear-body": emptyStringFlag("body", ["body"]), "if-updated-at": preconditionFlag(), health: stringFlag(undefined, ["onTrack", "atRisk", "offTrack"]), full: fullFlag() }, "statusUpdate", undefined, undefined, ["linear-axi status-updates update --type project --id <update-id> --health onTrack"], undefined, statusUpdateValidation)
 ]
 
+export const officialMutationTools: ReadonlySet<string> = new Set([
+  "save_document",
+  "save_milestone",
+  "save_project",
+  "save_release",
+  "save_release_note",
+  "save_status_update"
+])
+
+const officialReadTools: ReadonlySet<string> = new Set([
+  "get_agent_skill",
+  "get_diff",
+  "get_diff_threads",
+  "get_document",
+  "get_issue",
+  "get_milestone",
+  "get_project",
+  "get_release",
+  "get_release_note",
+  "get_status_updates",
+  "get_team",
+  "get_user",
+  "list_agent_skills",
+  "list_comments",
+  "list_cycles",
+  "list_diffs",
+  "list_documents",
+  "list_issues",
+  "list_milestones",
+  "list_project_labels",
+  "list_projects",
+  "list_release_notes",
+  "list_release_pipelines",
+  "list_releases",
+  "list_teams",
+  "list_users",
+  "search_documentation"
+])
+
 export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((entry) => {
+  const operation = officialMutationTools.has(entry.tool)
+    ? "mutation"
+    : officialReadTools.has(entry.tool)
+      ? "read"
+      : undefined
+  if (!operation) throw new Error(`Official command ${entry.path.join(" ")} has no explicit operation classification`)
+  const mutationTarget = entry.path.join(" ") === "documents update"
+    ? { kind: "issue" as const, flag: "issue" }
+    : undefined
   const flagNames = Object.entries(entry.flags).flatMap(([name, flag]) =>
     flag.kind === "boolean" && name !== "full" ? [name, `no-${name}`] : [name])
-  const flags = new Set(["help", ...flagNames])
-  const valueFlags = new Set(Object.entries(entry.flags).filter(([, flag]) => !["boolean", "null", "empty-string"].includes(flag.kind)).map(([name]) => name))
-  const required = new Set(Object.entries(entry.flags).filter(([, flag]) => flag.required).map(([name]) => name))
+  const flags = new Set(["help", ...flagNames, ...(operation === "mutation" ? ["expect-workspace", "expect-team"] : [])])
+  const valueFlags = new Set([
+    ...Object.entries(entry.flags).filter(([, flag]) => !["boolean", "null", "empty-string"].includes(flag.kind)).map(([name]) => name),
+    ...(operation === "mutation" ? ["expect-workspace", "expect-team"] : [])
+  ])
+  const required = new Set([
+    ...Object.entries(entry.flags).filter(([, flag]) => flag.required).map(([name]) => name),
+    ...(operation === "mutation" ? ["expect-workspace"] : [])
+  ])
   const repeatableFlags = new Set(Object.entries(entry.flags).filter(([, flag]) => flag.repeatable).map(([name]) => name))
   const usage = `Usage: linear-axi ${entry.path.join(" ")} ${Object.entries(entry.flags)
     .filter(([, flag]) => flag.required)
@@ -165,19 +219,36 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
     .join(" ")}`.trimEnd()
   const options = [
     "  --help - Show command help.",
-    ...Object.entries(entry.flags).map(([name, flag]) => renderOfficialFlag(name, flag))
+    ...Object.entries(entry.flags).map(([name, flag]) => renderOfficialFlag(name, flag)),
+    ...(operation === "mutation"
+      ? [
+          "  --expect-workspace <workspace-uuid-or-url-key> (required) - Fail closed unless the authenticated workspace matches.",
+          "  --expect-team <team-key-or-uuid> - Fail closed unless the resolved target team matches."
+        ]
+      : [])
   ]
   const safety = mutationRichTextKeys(entry.tool).length === 0
     ? []
     : ["Safety:", "  Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains."]
   return {
     path: entry.path,
+    operation,
     flags,
     valueFlags,
     required,
     repeatableFlags,
     officialTools: [entry.tool],
-    help: [usage, "Options (single-use unless marked repeatable):", ...options, ...safety, "Example:", ...entry.examples.map((example) => `  ${example}`)].join("\n")
+    mutationTarget,
+    help: [
+      operation === "mutation" ? `${usage} --expect-workspace <workspace-uuid-or-url-key>` : usage,
+      "Options (single-use unless marked repeatable):",
+      ...options,
+      ...safety,
+      "Example:",
+      ...entry.examples.map((example) =>
+        `  ${example}${operation === "mutation" ? " --expect-workspace <workspace-uuid-or-url-key>" : ""}` +
+        `${mutationTarget && example.includes(`--${mutationTarget.flag}`) ? " --expect-team <team-key-or-uuid>" : ""}`)
+    ].join("\n")
   }
 })
 

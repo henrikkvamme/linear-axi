@@ -3,7 +3,7 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
-  outputs = { nixpkgs, ... }:
+  outputs = { self, nixpkgs, ... }:
     let
       systems = [
         "aarch64-darwin"
@@ -18,14 +18,16 @@
           pkgs = nixpkgs.legacyPackages.${system};
           linear-axi = pkgs.buildNpmPackage {
             pname = "linear-axi";
-            version = "0.1.0";
+            version = "0.2.0";
 
             src = pkgs.lib.fileset.toSource {
               root = ./.;
               fileset = pkgs.lib.fileset.unions [
                 ./src
+                ./docs/linear-mcp-parity.json
                 ./package.json
                 ./package-lock.json
+                ./scripts/build.ts
               ];
             };
 
@@ -36,7 +38,7 @@
 
             buildPhase = ''
               runHook preBuild
-              bun build --compile --no-compile-autoload-dotenv --outfile linear-axi src/main.ts
+              bun scripts/build.ts --revision ${self.rev or (throw "linear-axi release build requires an immutable source revision")} --outfile linear-axi
               runHook postBuild
             '';
 

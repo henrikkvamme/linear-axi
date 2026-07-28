@@ -27,7 +27,7 @@ const issue = (overrides: Record<string, unknown> = {}): Issue => ({
   state: Promise.resolve({ id: "state", name: "Todo", type: "unstarted" }),
   assignee: undefined,
   parent: undefined,
-  team: Promise.resolve({ id: "22222222-2222-4222-8222-222222222222", key: "BEN" }),
+  team: Promise.resolve({ id: "22222222-2222-4222-8222-222222222222", key: "BEN", name: "Bender" }),
   labels: async () => page([]),
   ...overrides
 } as unknown as Issue)
@@ -78,6 +78,34 @@ const issueLabel = (overrides: Record<string, unknown> = {}): IssueLabel => ({
 } as unknown as IssueLabel)
 
 describe("SDK LinearGateway conflict contracts", () => {
+  test("reports authenticated workspace from viewer organization stable identity", async () => {
+    const viewer = {
+      id: user().id,
+      name: "Henrik",
+      organization: Promise.resolve({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        urlKey: "bender",
+        name: "Bender"
+      })
+    }
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([issue()], { viewer: Promise.resolve(viewer) })
+    })
+
+    const auth = await Effect.runPromise(gateway.authStatus())
+    const identity = await Effect.runPromise(gateway.mutationIdentity({ issue: "BEN-1" }))
+
+    expect(auth.workspace).toEqual({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      urlKey: "bender",
+      name: "Bender"
+    })
+    expect(identity).toEqual({
+      workspace: auth.workspace!,
+      team
+    })
+  })
+
   test("resolves human issue identifiers by exact team key and issue number", async () => {
     const filters: unknown[] = []
     const client = clientWithIssues([], {

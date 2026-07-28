@@ -64,6 +64,8 @@ describe("linear-axi process", () => {
     ["auth", "login"],
     ["auth", "oauth", "setup"],
     ["auth", "oauth", "connect"],
+    ["capabilities"],
+    ["capabilities", "require"],
     ["teams", "list"],
     ["issues", "list"],
     ["issues", "view"],
@@ -130,7 +132,7 @@ describe("linear-axi process", () => {
 
   test("attachment path and size usage errors happen before authentication", () => {
     for (const [args, message] of [
-      [["attachments", "upload", "--issue", "ENG-123", "--file", "."], "regular file"],
+      [["attachments", "upload", "--issue", "ENG-123", "--file", ".", "--expect-workspace", "engineering"], "regular file"],
       [["attachments", "read", "--id", "attachment-1", "--max-bytes", "0"], "--max-bytes must be an integer"],
       [["attachments", "download", "--id", "attachment-1", "--output", "."], "destination already exists"]
     ] as const) {
@@ -146,7 +148,7 @@ describe("linear-axi process", () => {
     for (const [args, message] of [
       [["relations", "create", "--issue", "ENG-124", "--blocked-by"], "--blocked-by requires a value"],
       [["relations", "create", "--issue", "ENG-124", "--blockd-by", "ENG-123"], "unknown flag --blockd-by"],
-      [["relations", "create", "--issue", "ENG-124", "--blocked-by", "ENG-123", "--type", "blocks"], "must not combine"],
+      [["relations", "create", "--issue", "ENG-124", "--blocked-by", "ENG-123", "--type", "blocks", "--expect-workspace", "engineering"], "must not combine"],
       [["relations", "list", "--issue", "ENG-124", "--blocked-by", "--direction", "incoming"], "must not combine"]
     ] as const) {
       const result = runCli(...args)
@@ -233,7 +235,7 @@ describe("linear-axi process", () => {
   })
 
   test("rejects comment creation before auth when required fields are missing", () => {
-    const result = runCli("comments", "create", "--issue", "ENG-123")
+    const result = runCli("comments", "create", "--issue", "ENG-123", "--expect-workspace", "engineering")
     const stdout = stdoutText(result)
 
     expect(result.exitCode).toBe(2)
@@ -244,8 +246,8 @@ describe("linear-axi process", () => {
 
   test("reports blank assignee selectors before authentication", () => {
     for (const [args, flag] of [
-      [["issues", "assign", "--id", "ENG-123", "--assignee", " "], "--assignee"],
-      [["issues", "unassign", "--id", "ENG-123", "--if-assignee", " "], "--if-assignee"]
+      [["issues", "assign", "--id", "ENG-123", "--assignee", " ", "--expect-workspace", "engineering"], "--assignee"],
+      [["issues", "unassign", "--id", "ENG-123", "--if-assignee", " ", "--expect-workspace", "engineering"], "--if-assignee"]
     ] as const) {
       const result = runCli(...args)
       const stdout = stdoutText(result)
@@ -258,7 +260,7 @@ describe("linear-axi process", () => {
   })
 
   test("rejects malformed mutation flags before authentication", () => {
-    const result = runCli("labels", "create", "--workspace", "--name", "fixture", "--color", "red")
+    const result = runCli("labels", "create", "--workspace", "--name", "fixture", "--color", "red", "--expect-workspace", "engineering")
     expect(result.exitCode).toBe(2)
     expect(stderrText(result)).toBe("")
     expect(stdoutText(result)).toContain("--color must use #RRGGBB")

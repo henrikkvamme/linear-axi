@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
-import { commandSpecs, parseArgs } from "../src/args"
+import { commandSpecs, parseArgs as parseProductionArgs } from "../src/args"
 import { runCommand } from "../src/commands"
 import { LinearApiError, UsageError } from "../src/errors"
 import type { IssueDetail, IssueSummary, LinearGateway } from "../src/linear"
@@ -100,6 +100,10 @@ const fakeGateway = (
 ): LinearGateway => {
   const gateway: LinearGateway = {
     close: () => Effect.void,
+    mutationIdentity: () => Effect.succeed({
+      workspace: { id: "workspace-id", urlKey: "engineering", name: "Engineering" },
+      team: { id: "team-id", key: "ENG", name: "Engineering" }
+    }),
     callOfficialTool: () => Effect.succeed({}),
     authStatus: () => Effect.succeed({
       authenticated: true,
@@ -144,6 +148,21 @@ const fakeGateway = (
       Effect.map((value) => normalizeActiveOfficialOutput(name, value, args))
     )
   }
+}
+
+const parseArgs: typeof parseProductionArgs = (argv, specs) => {
+  const path: Array<string> = []
+  for (const value of argv) {
+    if (value.startsWith("--")) break
+    path.push(value)
+  }
+  const spec = specs.find((candidate) => candidate.path.join("\0") === path.join("\0"))
+  return parseProductionArgs(
+    spec?.operation === "mutation" && !argv.includes("--help") && !argv.includes("--expect-workspace")
+      ? [...argv, "--expect-workspace", "engineering", "--expect-team", "ENG"]
+      : argv,
+    specs
+  )
 }
 
 const run = async (argv: ReadonlyArray<string>, gateway = fakeGateway()) => {

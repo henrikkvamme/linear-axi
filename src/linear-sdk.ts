@@ -37,6 +37,8 @@ import type {
   ListRelationsInput,
   ListWorkflowStatesInput,
   MutationResult,
+  MutationIdentity,
+  MutationIdentityInput,
   PageResult,
   RelationDirection,
   RelationSummary,
@@ -127,6 +129,7 @@ export const makeSdkLinearGateway = (
 
   return {
     close: () => callOfficialTool?.close() ?? Effect.void,
+    mutationIdentity: (input) => call("mutation identity", (client) => mutationIdentity(client, input)),
     callOfficialTool: (name, args) => callOfficialTool
       ? callOfficialTool(name, args)
       : Effect.fail(new AuthError({
@@ -138,10 +141,16 @@ export const makeSdkLinearGateway = (
         ? Effect.succeed({ authenticated: false, method: "none" })
         : call("auth status", async (client): Promise<AuthStatus> => {
             const viewer = await client.viewer
+            const organization = await viewer.organization
             return {
               authenticated: true,
               method: credentials?.kind ?? "apiKey",
-              viewer: { id: viewer.id, name: viewer.name }
+              viewer: { id: viewer.id, name: viewer.name },
+              workspace: {
+                id: organization.id,
+                urlKey: organization.urlKey,
+                name: organization.name
+              }
             }
           }),
 
@@ -182,6 +191,28 @@ export const makeSdkLinearGateway = (
     listComments: (input) => call("comments list", (client) => listComments(client, input)),
     createComment: (input) => call("comments create", (client) => createComment(client, input)),
     frontier: (input) => call("wayfinder frontier", (client) => frontier(client, input.map, input.first, input.after))
+  }
+}
+
+const mutationIdentity = async (
+  client: LinearClient,
+  input: MutationIdentityInput
+): Promise<MutationIdentity> => {
+  const viewer = await client.viewer
+  const organization = await viewer.organization
+  let team: Team | undefined
+  if (input.issue) {
+    team = await (await resolveIssue(client, input.issue)).team
+  } else if (input.team) {
+    team = await resolveTeam(client, input.team)
+  }
+  return {
+    workspace: {
+      id: organization.id,
+      urlKey: organization.urlKey,
+      name: organization.name
+    },
+    ...(team ? { team: teamSummary(team) } : {})
   }
 }
 

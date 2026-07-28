@@ -2,6 +2,7 @@ import { Effect, Predicate, Schema } from "effect"
 import { LinearApiError } from "./errors"
 import type { Credentials, GatewayError } from "./linear"
 import { officialMutationInspectionHelp } from "./official-inspection"
+import { PACKAGE_VERSION } from "./build-info"
 
 export const OFFICIAL_MCP_URL = "https://mcp.linear.app/mcp"
 export const OFFICIAL_MCP_PROTOCOL_VERSION = "2025-03-26"
@@ -177,7 +178,7 @@ export const makeOfficialMcpClient = (
       params: {
         protocolVersion: OFFICIAL_MCP_PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: "linear-axi", version: "0.1.0" }
+        clientInfo: { name: "linear-axi", version: PACKAGE_VERSION }
       }
     })
     sessionId = initializedResponse.response.headers.get("mcp-session-id") ?? undefined

@@ -29,6 +29,22 @@ nix profile install github:henrikkvamme/linear-axi#linear-axi
 
 The flake supports Apple silicon macOS and x86-64 Linux.
 
+## Build and capability identity
+
+Every release artifact reports machine-readable provenance without credentials or network access:
+
+```sh
+linear-axi capabilities
+linear-axi capabilities require \
+  --api-level 2 \
+  --capability mutation-identity-v1 \
+  --capability attachment-files-v1
+```
+
+The output includes package version, exact immutable build revision, API level, bundled official-inventory date and SHA-256, named capabilities, and bundled-skill convergence metadata. `--version` is an alias for the same structured output. Compiled and Nix release builds fail when an exact revision is unavailable. Direct `bun src/main.ts` development invocation identifies its revision as `development`.
+
+`capabilities require` exits `0` when satisfied. Missing API levels or capabilities exit `1` with current and missing values plus the managed update command. It never loads credentials or calls Linear.
+
 ## Login
 
 ```sh
@@ -42,6 +58,8 @@ For a remote agent using the shared browser, run `linear-axi auth login --notify
 If your browser lands on `127.0.0.1` and says the site cannot be reached, paste the full callback URL into the still-running CLI.
 
 Rerun `linear-axi auth login` to switch workspaces or replace an expired credential. To disconnect completely, revoke the OAuth grant in Linear and delete the configured credentials file.
+
+After login, verify `auth status` reports the intended workspace stable ID or URL key and `teams list` contains the intended team. Workspace names are display-only and are never accepted as the sole mutation security match.
 
 You can also set credentials yourself in the process environment, a repo-local `.env`, or the user credentials file:
 
@@ -67,36 +85,33 @@ linear-axi issues list --assignee me --limit 20
 linear-axi issues list --team BEN --label wayfinder:map --state open --limit 100
 linear-axi issues list --parent BEN-100 --assignee none --state open --limit 100
 linear-axi issues view --id <issue-id-or-key> [--full]
-linear-axi issues create --team <key-or-id> --title "..." --description-file <path> --parent <issue> --label <label>
-linear-axi issues assign --id <issue> --assignee me
-linear-axi issues unassign --id <issue> --if-assignee me
-linear-axi issues close --id <issue>
+linear-axi issues create --team <key-or-id> --title "..." --expect-workspace <workspace> --expect-team <team>
+linear-axi issues assign --id <issue> --assignee me --expect-workspace <workspace> --expect-team <team>
+linear-axi issues unassign --id <issue> --if-assignee me --expect-workspace <workspace> --expect-team <team>
+linear-axi issues close --id <issue> --expect-workspace <workspace> --expect-team <team>
 linear-axi workflow-states list --team <team>
-linear-axi issues state --id <issue> --state "In Progress"
-linear-axi issues parent set --id <child> --parent <parent>
-linear-axi issues parent clear --id <child>
-linear-axi issues update --id <issue> --description-file <path> --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ>
-linear-axi issues update --id <issue> --priority 2 --due-date 2026-08-01 --project <project> --cycle <cycle>
-linear-axi issues update --id <issue> --clear-assignee --clear-estimate --clear-project --clear-cycle
-linear-axi issues update --id <issue> --clear-due-date --clear-milestone
+linear-axi issues state --id <issue> --state "In Progress" --expect-workspace <workspace> --expect-team <team>
+linear-axi issues parent set --id <child> --parent <parent> --expect-workspace <workspace> --expect-team <team>
+linear-axi issues parent clear --id <child> --expect-workspace <workspace> --expect-team <team>
+linear-axi issues update --id <issue> --description-file <path> --if-updated-at <timestamp> --expect-workspace <workspace> --expect-team <team>
 linear-axi labels list --workspace --name <exact-name>
 linear-axi labels list --workspace --include-archived --fields id,name,archivedAt
-linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
-linear-axi labels add --issue <issue> --label <label>
-linear-axi labels remove --issue <issue> --label <label>
-linear-axi labels replace --issue <issue> --labels-json '["Bug","Urgent"]'
-linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue>
+linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent --expect-workspace <workspace>
+linear-axi labels add --issue <issue> --label <label> --expect-workspace <workspace> --expect-team <team>
+linear-axi labels remove --issue <issue> --label <label> --expect-workspace <workspace> --expect-team <team>
+linear-axi labels replace --issue <issue> --labels-json '["Bug","Urgent"]' --expect-workspace <workspace> --expect-team <team>
+linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> --expect-workspace <workspace> --expect-team <team>
 linear-axi relations list --issue <blocked-issue> --blocked-by
-linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks
+linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks --expect-workspace <workspace> --expect-team <team>
 linear-axi relations list --issue <issue> --type blocks --direction both
-linear-axi relations remove --issue <blocked> --blocked-by <blocker>
+linear-axi relations remove --issue <blocked> --blocked-by <blocker> --expect-workspace <workspace> --expect-team <team>
 linear-axi comments list --issue <issue> --limit 50
-linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
+linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4> --expect-workspace <workspace> --expect-team <team>
 linear-axi attachments list --issue <issue> --limit 100
 linear-axi attachments view --id <attachment-id>
 linear-axi attachments read --id <attachment-id> [--max-bytes <n> | --full]
 linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]
-linear-axi attachments upload --issue <issue> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large]
+linear-axi attachments upload --issue <issue> --file <path> --expect-workspace <workspace> --expect-team <team>
 linear-axi wayfinder frontier --map <map-issue> --first 20
 linear-axi <command> --help
 ```
@@ -142,6 +157,8 @@ Team keys, issue identifiers, and label names are matched exactly without case s
 `issues list`, `labels list`, `relations list`, `comments list`, and `attachments list` return `page.endCursor` when another page exists. Pass that exact value to the same command with `--after`. Attachment cursors reject continuation if membership or order changed, preventing incomplete or duplicated traversal. Wayfinder frontier instead returns `pageInfo.endCursor` and uses `--first`; `--limit` remains an alias for `--first`, but the two flags cannot be combined. Relation pages and issue-scoped exact-name label pages are recomputed from current data and are not snapshot-isolated, so restart without `--after` when current membership matters.
 
 ### Mutation safety
+
+Every native, official-backed, and attachment mutation requires `--expect-workspace <workspace-uuid-or-url-key>`. Team-scoped mutations accept `--expect-team <team-key-or-uuid>` and verify the resolved target team. Missing expectations are usage exit `2`. A live `workspace_mismatch` or `team_mismatch` is exit `1`, emits expected and actual stable identities, and makes zero mutation calls. Identity lookup itself is read-only.
 
 Issue, label, relation, and comment creation accept a caller-retained UUID v4 with `--id`. Repeating the same request with the same UUID is a no-op, while reuse for different content or scope is a conflict. Rich-text retry comparisons tolerate normalized line endings, trailing newlines, and Linear's angle-bracket form for HTTP(S) Markdown links. `labels create --if-absent` also treats a case-insensitive same-name label with matching properties in the requested scope as a no-op. `labels create --group` creates a top-level group; `--parent` creates an ordinary child under a top-level group in the same scope, and the two flags cannot be combined. Attaching or replacing issue labels accepts ordinary labels only and at most one child from each label group. `labels replace --labels-json '[]'` clears all labels. A directed relation is a no-op when its source, target, and type already exist, even without `--id`.
 
