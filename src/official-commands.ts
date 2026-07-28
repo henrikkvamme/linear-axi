@@ -240,7 +240,9 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
     officialTools: [entry.tool],
     mutationTarget,
     help: [
-      operation === "mutation" ? `${usage} --expect-workspace <workspace-uuid-or-url-key>` : usage,
+      operation === "mutation"
+        ? `${usage} --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]`
+        : usage,
       "Options (single-use unless marked repeatable):",
       ...options,
       ...safety,
@@ -253,7 +255,7 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
 })
 
 export const officialTopLevelHelp: ReadonlyArray<string> = commands.map((entry) =>
-  `  linear-axi ${entry.path.join(" ")}`)
+  `  linear-axi ${entry.path.join(" ")}${officialMutationTools.has(entry.tool) ? " --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]" : ""}`)
 
 export const runOfficialCommand = (
   parsed: ParsedArgs,

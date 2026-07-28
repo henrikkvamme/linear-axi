@@ -4,13 +4,20 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHash } from "node:crypto"
 import { Effect } from "effect"
-import { commandSpecs, parseArgs } from "../src/args"
+import { commandSpecs, parseArgs as parseCommandArgs } from "../src/args"
 import { runAttachmentCommand, syncDirectory, type AttachmentRuntime } from "../src/attachments"
 import { statFileAt, writeFileDescriptor } from "../src/native-files"
 import { LinearApiError } from "../src/errors"
 import type { LinearGateway } from "../src/linear"
 
 const roots: Array<string> = []
+const parseArgs = (argv: ReadonlyArray<string>, specs = commandSpecs) =>
+  parseCommandArgs(
+    argv[0] === "attachments" && argv[1] === "upload" && !argv.includes("--expect-workspace")
+      ? [...argv, "--expect-workspace", "engineering", "--expect-team", "ENG"]
+      : argv,
+    specs
+  )
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -1042,6 +1049,57 @@ describe("resumable attachment upload", () => {
     expect(error.message).toContain("bytes changed during transfer")
     expect(finalized).toBe(false)
   })
+
+  test("unknown finalize retry preserves workspace and team expectations", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
+    roots.push(root)
+    const source = join(root, "trace.txt")
+    writeFileSync(source, "hello world\n")
+    const uploadGateway = {
+      ...gateway({}),
+      callOfficialTool: (name: string) => {
+        if (name === "get_issue") return Effect.succeed({ id: "issue-1", identifier: "ENG-123", attachments: [] })
+        if (name === "prepare_attachment_upload") return Effect.succeed({
+          assetUrl: "https://uploads.linear.app/assets/stable-1",
+          uploadRequest: { url: "https://storage.googleapis.com/put", headers: { "content-type": "text/plain" } }
+        })
+        if (name === "create_attachment_from_upload") {
+          return Effect.fail(new LinearApiError({ message: "response lost", help: "retry" }))
+        }
+        return Effect.die(`unexpected ${name}`)
+      }
+    } as LinearGateway
+    const parsedWithExpectations = parseArgs([
+      "attachments", "upload",
+      "--issue", "ENG-123",
+      "--file", source,
+      "--expect-workspace", "bender",
+      "--expect-team", "ENG"
+    ], commandSpecs)
+    const parsed = {
+      ...parsedWithExpectations,
+      flags: new Map([...parsedWithExpectations.flags].filter(([name]) =>
+        name !== "expect-workspace" && name !== "expect-team")),
+      repeatedFlags: new Map([...parsedWithExpectations.repeatedFlags].filter(([name]) =>
+        name !== "expect-workspace" && name !== "expect-team")),
+      mutationExpectations: { workspace: "bender", team: "ENG" }
+    }
+
+    const error = await Effect.runPromise(Effect.flip(runAttachmentCommand(
+      parsed,
+      uploadGateway,
+      {
+        stateRoot: join(root, "state"),
+        fetcher: async (_url, init) => {
+          await new Response(init?.body).arrayBuffer()
+          return new Response(null, { status: 200 })
+        }
+      }
+    )!))
+
+    expect(error.help).toContain("--expect-workspace='bender'")
+    expect(error.help).toContain("--expect-team='ENG'")
+  }, 15_000)
 
   test("upload refuses cross-origin redirects before finalize", async () => {
     const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))

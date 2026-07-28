@@ -1,9 +1,22 @@
 import { expect, test } from "bun:test"
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const repoRoot = process.cwd()
+const bundledSkillSha256 = (root: string): string => {
+  const hash = createHash("sha256")
+  for (const path of [
+    ".agents/skills/linear-axi/COMMANDS.md",
+    ".agents/skills/linear-axi/SKILL.md"
+  ]) {
+    hash.update(`${path}\0`)
+    hash.update(readFileSync(join(root, path)))
+    hash.update("\0")
+  }
+  return hash.digest("hex")
+}
 
 test("standalone binary runs without a source checkout", () => {
   const root = mkdtempSync(join(tmpdir(), "linear-axi-compiled-test-"))
@@ -52,6 +65,7 @@ test("standalone binary runs without a source checkout", () => {
     expect(capabilityOutput).toContain("apiLevel: 2")
     expect(capabilityOutput).toContain("mutation-identity-v1")
     expect(capabilityOutput).toContain("attachment-files-v1")
+    expect(capabilityOutput).toContain(`contentSha256: ${bundledSkillSha256(repoRoot)}`)
 
     for (const command of [
       ["issues", "assign"],
@@ -191,10 +205,27 @@ test("compiled revisions are injected immutably at build time", () => {
   ]
   try {
     const reported = revisions.map((revision, index) => {
+      const snapshot = join(root, `source-${index}`)
+      const archive = join(root, `source-${index}.tar`)
+      mkdirSync(snapshot)
+      const archived = Bun.spawnSync({
+        cmd: ["git", "archive", "--format=tar", `--output=${archive}`, revision],
+        cwd: repoRoot,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(archived.exitCode).toBe(0)
+      const extracted = Bun.spawnSync({
+        cmd: ["tar", "-xf", archive, "-C", snapshot],
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(extracted.exitCode).toBe(0)
+      symlinkSync(join(repoRoot, "node_modules"), join(snapshot, "node_modules"), "dir")
       const binary = join(root, `linear-axi-${index}`)
       const build = Bun.spawnSync({
         cmd: ["bun", "scripts/build.ts", "--revision", revision, "--outfile", binary],
-        cwd: repoRoot,
+        cwd: snapshot,
         stdout: "pipe",
         stderr: "pipe"
       })

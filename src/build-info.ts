@@ -2,6 +2,7 @@ import packageMetadata from "../package.json" with { type: "json" }
 import parityManifest from "../docs/linear-mcp-parity.json" with { type: "json" }
 
 declare const __LINEAR_AXI_BUILD_REVISION__: string
+declare const __LINEAR_AXI_BUNDLED_SKILL_SHA256__: string
 
 export const PACKAGE_VERSION = packageMetadata.version
 export const API_LEVEL = 2
@@ -9,6 +10,10 @@ export const BUILD_REVISION =
   typeof __LINEAR_AXI_BUILD_REVISION__ === "undefined"
     ? "development"
     : __LINEAR_AXI_BUILD_REVISION__
+export const BUNDLED_SKILL_SHA256 =
+  typeof __LINEAR_AXI_BUNDLED_SKILL_SHA256__ === "undefined"
+    ? "development"
+    : __LINEAR_AXI_BUNDLED_SKILL_SHA256__
 
 export const CAPABILITIES = [
   "attachment-files-v1",
@@ -32,7 +37,9 @@ export const buildCapabilities = () => ({
       repository: "https://github.com/henrikkvamme/linear-axi",
       sourceRevision: BUILD_REVISION,
       path: ".agents/skills/linear-axi",
-      files: ["SKILL.md", "COMMANDS.md"]
+      files: ["COMMANDS.md", "SKILL.md"],
+      hashAlgorithm: "sha256-path-null-content-null-v1",
+      contentSha256: BUNDLED_SKILL_SHA256
     }
   }
 })

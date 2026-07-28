@@ -24,6 +24,8 @@
               root = ./.;
               fileset = pkgs.lib.fileset.unions [
                 ./src
+                ./.agents/skills/linear-axi/COMMANDS.md
+                ./.agents/skills/linear-axi/SKILL.md
                 ./docs/linear-mcp-parity.json
                 ./package.json
                 ./package-lock.json

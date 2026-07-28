@@ -69,6 +69,9 @@ const decodeLinkArray = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Ar
   url: Schema.String.check(Schema.isPattern(/^https?:\/\//)),
   title: Schema.NonEmptyString
 }))))
+const decodePositiveApiLevel = Schema.decodeUnknownSync(
+  Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan(0))
+)
 
 export const runCommand = (
   parsed: ParsedArgs,
@@ -93,6 +96,14 @@ export const runCommand = (
 
 const withoutMutationExpectations = (parsed: ParsedArgs): ParsedArgs => ({
   ...parsed,
+  mutationExpectations: readStringFlag(parsed.flags, "expect-workspace") === undefined
+    ? undefined
+    : {
+        workspace: readStringFlag(parsed.flags, "expect-workspace")!,
+        ...(readStringFlag(parsed.flags, "expect-team") === undefined
+          ? {}
+          : { team: readStringFlag(parsed.flags, "expect-team") })
+      },
   flags: new Map([...parsed.flags].filter(([name]) => name !== "expect-workspace" && name !== "expect-team")),
   repeatedFlags: new Map([...parsed.repeatedFlags].filter(([name]) => name !== "expect-workspace" && name !== "expect-team"))
 })
@@ -153,11 +164,15 @@ const dispatchCommand = (
   }
 }
 
-const capabilitiesRequire = (parsed: ParsedArgs): Effect.Effect<OutputValue, CliError> => {
+const capabilitiesRequire = Effect.fn("Commands.capabilitiesRequire")(function*(parsed: ParsedArgs) {
   const rawApiLevel = readStringFlag(parsed.flags, "api-level")
-  const apiLevel = rawApiLevel === undefined ? undefined : Number(rawApiLevel)
-  if (apiLevel !== undefined && (!Number.isInteger(apiLevel) || apiLevel < 1)) {
-    return usage("--api-level must be a positive integer", parsed.command)
+  let apiLevel: number | undefined
+  if (rawApiLevel !== undefined) {
+    try {
+      apiLevel = decodePositiveApiLevel(rawApiLevel)
+    } catch {
+      return yield* usage("--api-level must be a positive integer", parsed.command)
+    }
   }
   const requestedCapabilities = readRepeatedStringFlags(parsed, "capability")
   const missingCapabilities = requestedCapabilities.filter((capability) =>
@@ -167,7 +182,7 @@ const capabilitiesRequire = (parsed: ParsedArgs): Effect.Effect<OutputValue, Cli
     ...(missingCapabilities.length > 0 ? { capabilities: missingCapabilities } : {})
   }
   if (Object.keys(missing).length > 0) {
-    return Effect.fail(new LinearDomainError({
+    return yield* Effect.fail(new LinearDomainError({
       message: "The installed linear-axi does not satisfy the requested capability contract",
       code: "capability_requirements_unsatisfied",
       expected: {
@@ -182,21 +197,21 @@ const capabilitiesRequire = (parsed: ParsedArgs): Effect.Effect<OutputValue, Cli
       help: "Run `nixus config apply --yes --update tools` in the managed dotfiles environment, then rerun this exact capability requirement."
     }))
   }
-  return Effect.succeed({
+  return {
     satisfied: true,
     requirements: {
       ...(apiLevel === undefined ? {} : { apiLevel }),
       capabilities: requestedCapabilities
     },
     ...buildCapabilities()
-  })
-}
+  }
+})
 
-const mutationIdentityGuard = (
+const mutationIdentityGuard = Effect.fn("Commands.mutationIdentityGuard")(function*(
   parsed: ParsedArgs,
   gateway: LinearGateway,
   spec: NonNullable<ReturnType<typeof findSpec>>
-): Effect.Effect<void, CliError> => {
+) {
   const expectedWorkspace = readStringFlag(parsed.flags, "expect-workspace")!
   const expectedTeam = readStringFlag(parsed.flags, "expect-team")
   const targetValue = spec.mutationTarget
@@ -207,65 +222,52 @@ const mutationIdentityGuard = (
     : targetValue && spec.mutationTarget?.kind === "team"
       ? { team: targetValue }
       : {}
-  return gateway.mutationIdentity(identityInput).pipe(
-    Effect.flatMap((actual) => {
-      const expectedWorkspaceLower = expectedWorkspace.toLowerCase()
-      if (
-        actual.workspace.id.toLowerCase() !== expectedWorkspaceLower &&
-        actual.workspace.urlKey.toLowerCase() !== expectedWorkspaceLower
-      ) {
-        return Effect.fail(new LinearDomainError({
-          message: "Authenticated Linear workspace does not match the mutation expectation",
-          code: "workspace_mismatch",
-          expected: { idOrUrlKey: expectedWorkspace },
-          actual: actual.workspace,
-          help: "Re-run with the intended workspace credential; do not repeat the mutation."
-        }))
-      }
-      if (expectedTeam && targetValue && !actual.team) {
-        return Effect.fail(new LinearDomainError({
-          message: "Resolved Linear mutation target did not provide a verifiable team identity",
-          code: "team_mismatch",
-          expected: { idOrKey: expectedTeam },
-          actual: null,
-          help: "Resolve the intended target team and credential; do not repeat the mutation."
-        }))
-      }
-      if (expectedTeam && actual.team) {
-        const expectedTeamLower = expectedTeam.toLowerCase()
-        if (
-          actual.team.id.toLowerCase() !== expectedTeamLower &&
-          actual.team.key.toLowerCase() !== expectedTeamLower
-        ) {
-          return Effect.fail(new LinearDomainError({
-            message: "Resolved Linear target team does not match the mutation expectation",
-            code: "team_mismatch",
-            expected: { idOrKey: expectedTeam },
-            actual: actual.team,
-            help: "Resolve the intended target team and credential; do not repeat the mutation."
-          }))
-        }
-      }
-      return Effect.void
-    })
-  )
-}
+  const actual = yield* gateway.mutationIdentity(identityInput)
+  const expectedWorkspaceLower = expectedWorkspace.toLowerCase()
+  if (
+    actual.workspace.id.toLowerCase() !== expectedWorkspaceLower &&
+    actual.workspace.urlKey.toLowerCase() !== expectedWorkspaceLower
+  ) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: "Authenticated Linear workspace does not match the mutation expectation",
+      code: "workspace_mismatch",
+      expected: { idOrUrlKey: expectedWorkspace },
+      actual: actual.workspace,
+      help: "Re-run with the intended workspace credential; do not repeat the mutation."
+    }))
+  }
+  if (expectedTeam && !actual.team) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: "Resolved Linear mutation target did not provide a verifiable team identity",
+      code: "team_mismatch",
+      expected: { idOrKey: expectedTeam },
+      actual: null,
+      help: "Resolve the intended target team and credential; do not repeat the mutation."
+    }))
+  }
+  if (expectedTeam && actual.team) {
+    const expectedTeamLower = expectedTeam.toLowerCase()
+    if (
+      actual.team.id.toLowerCase() !== expectedTeamLower &&
+      actual.team.key.toLowerCase() !== expectedTeamLower
+    ) {
+      return yield* Effect.fail(new LinearDomainError({
+        message: "Resolved Linear target team does not match the mutation expectation",
+        code: "team_mismatch",
+        expected: { idOrKey: expectedTeam },
+        actual: actual.team,
+        help: "Resolve the intended target team and credential; do not repeat the mutation."
+      }))
+    }
+  }
+})
 
 const mutationGuardedGateway = (
   parsed: ParsedArgs,
   gateway: LinearGateway,
   spec: NonNullable<ReturnType<typeof findSpec>>
 ): LinearGateway => {
-  let cachedGuard: Effect.Effect<void, CliError> | undefined
-  const guardOnce = Effect.suspend(() => {
-    if (cachedGuard) return cachedGuard
-    return Effect.cached(mutationIdentityGuard(parsed, gateway, spec)).pipe(
-      Effect.flatMap((memoized) => {
-        cachedGuard = memoized
-        return memoized
-      })
-    )
-  })
+  const guardOnce = Effect.runSync(Effect.cached(mutationIdentityGuard(parsed, gateway, spec)))
   return new Proxy(gateway, {
     get(target, property, receiver) {
       const value: unknown = Reflect.get(target, property, receiver)

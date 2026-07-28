@@ -143,7 +143,7 @@ Example:
 ## attachments upload
 
 ```text
-Usage: linear-axi attachments upload --issue <issue-id-or-key> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large]
+Usage: linear-axi attachments upload --issue <issue-id-or-key> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Requires macOS or Linux and an explicit stable, non-empty, non-symlink regular file. Media type is inferred for txt, md, csv, json, yaml, yml, xml, toml, js, mjs, ts, tsx, html, css, sql, svg, png, jpg, jpeg, gif, webp, pdf, zip, gz, mp4, and mov; --media-type may override it with one supported parameter-free type. Supported types: text/plain, text/markdown, text/csv, application/json, application/yaml, application/xml, application/toml, application/javascript, text/typescript, text/tsx, text/html, text/css, application/sql, image/svg+xml, image/png, image/jpeg, image/gif, image/webp, application/pdf, application/zip, application/gzip, video/mp4, video/quicktime. Defaults to 100 MiB; --allow-large raises the ceiling to 2147483647 bytes. Resumable recovery records live under $XDG_STATE_HOME/linear-axi/uploads or ~/.local/state/linear-axi/uploads. Deprecated base64 creation is excluded.
 Options:
   --help
@@ -215,7 +215,7 @@ Example:
 ## issues create
 
 ```text
-Usage: linear-axi issues create --team <key-or-id> --title "..." [--description <text> | --description-file <path|->] [--parent <issue>] [--label <label> | --labels-json '<array>'] [--assignee <selector>] [--delegate <agent>] [--state <id-or-name>] [--priority 0-4] [--due-date YYYY-MM-DD] [--estimate <number>] [--project <selector>] [--cycle <selector>] [--milestone <selector>] [--links-json '<[{url,title}]>'] [--releases-json '<array>'] [--id <uuid-v4> | --if-absent]
+Usage: linear-axi issues create --team <key-or-id> --title "..." [--description <text> | --description-file <path|->] [--parent <issue>] [--label <label> | --labels-json '<array>'] [--assignee <selector>] [--delegate <agent>] [--state <id-or-name>] [--priority 0-4] [--due-date YYYY-MM-DD] [--estimate <number>] [--project <selector>] [--cycle <selector>] [--milestone <selector>] [--links-json '<[{url,title}]>'] [--releases-json '<array>'] [--id <uuid-v4> | --if-absent] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Advanced creation uses one official save_issue mutation after an exact-title preflight. --if-absent makes retries resumable; --id is supported by the native core path.
 Options:
   --help
@@ -252,7 +252,7 @@ Example:
 ## issues assign
 
 ```text
-Usage: linear-axi issues assign --id <issue-id-or-key> --assignee me|<user-id-email-name-or-display-name> [--replace]
+Usage: linear-axi issues assign --id <issue-id-or-key> --assignee me|<user-id-email-name-or-display-name> [--replace] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options:
   --help
   --id <id> (required)
@@ -267,7 +267,7 @@ Example:
 ## issues unassign
 
 ```text
-Usage: linear-axi issues unassign --id <issue-id-or-key> [--if-assignee me|<user-id-email-name-or-display-name>]
+Usage: linear-axi issues unassign --id <issue-id-or-key> [--if-assignee me|<user-id-email-name-or-display-name>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options:
   --help
   --id <id> (required)
@@ -281,7 +281,7 @@ Example:
 ## issues close
 
 ```text
-Usage: linear-axi issues close --id <issue-id-or-key> [--state <completed-state-uuid>]
+Usage: linear-axi issues close --id <issue-id-or-key> [--state <completed-state-uuid>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options:
   --help
   --id <id> (required)
@@ -295,7 +295,7 @@ Example:
 ## issues state
 
 ```text
-Usage: linear-axi issues state --id <issue-id-or-key> --state <state-id-or-name>
+Usage: linear-axi issues state --id <issue-id-or-key> --state <state-id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options:
   --help
   --id <id> (required)
@@ -309,7 +309,7 @@ Example:
 ## issues parent set
 
 ```text
-Usage: linear-axi issues parent set --id <issue-id-or-key> --parent <parent-id-or-key>
+Usage: linear-axi issues parent set --id <issue-id-or-key> --parent <parent-id-or-key> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options:
   --help
   --id <id> (required)
@@ -323,7 +323,7 @@ Example:
 ## issues parent clear
 
 ```text
-Usage: linear-axi issues parent clear --id <issue-id-or-key>
+Usage: linear-axi issues parent clear --id <issue-id-or-key> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options:
   --help
   --id <id> (required)
@@ -336,7 +336,7 @@ Example:
 ## issues update
 
 ```text
-Usage: linear-axi issues update --id <issue> [--title <text>] [--description <text> | --description-file <path|-> --if-updated-at <timestamp>] [--assignee <selector> | --clear-assignee] [--delegate <agent> | --clear-delegate] [--state <id-or-name>] [--priority 0-4] [--due-date YYYY-MM-DD | --clear-due-date] [--estimate <number> | --clear-estimate] [--project <selector> | --clear-project] [--cycle <selector> | --clear-cycle] [--milestone <selector> | --clear-milestone] [--parent <issue> | --clear-parent] [--labels-json '<array>' | --clear-labels] [--links-json '<[{url,title}]>'] [--set-releases-json '<array>' | --add-releases-json '<array>' | --remove-releases-json '<array>']
+Usage: linear-axi issues update --id <issue> [--title <text>] [--description <text> | --description-file <path|-> --if-updated-at <timestamp>] [--assignee <selector> | --clear-assignee] [--delegate <agent> | --clear-delegate] [--state <id-or-name>] [--priority 0-4] [--due-date YYYY-MM-DD | --clear-due-date] [--estimate <number> | --clear-estimate] [--project <selector> | --clear-project] [--cycle <selector> | --clear-cycle] [--milestone <selector> | --clear-milestone] [--parent <issue> | --clear-parent] [--labels-json '<array>' | --clear-labels] [--links-json '<[{url,title}]>'] [--set-releases-json '<array>' | --add-releases-json '<array>' | --remove-releases-json '<array>'] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Selected official MCP fields are sent in one save_issue mutation. Due-date and milestone clears use one verified native mutation and may only be combined with each other. Other clear flags pass explicit null or an empty label set. Links are append-only. Description writes require the exact updatedAt emitted by the CLI. Linear has no atomic compare-and-swap; an edit can still race between the final read and write.
 Options:
   --help
@@ -405,7 +405,7 @@ Example:
 ## labels create
 
 ```text
-Usage: linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <key-or-id>) [--description "..."] [--group] [--parent <group-id-or-name>] [--id <uuid-v4>] [--if-absent]
+Usage: linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <key-or-id>) [--description "..."] [--group] [--parent <group-id-or-name>] [--id <uuid-v4>] [--if-absent] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 --parent creates a child under an existing group. --group creates a label group. Caller UUID and --if-absent provide idempotent retries.
 Options:
   --help
@@ -427,7 +427,7 @@ Example:
 ## labels apply
 
 ```text
-Usage: linear-axi labels apply --issue <issue-id-or-key> --label <id-or-name>
+Usage: linear-axi labels apply --issue <issue-id-or-key> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options:
   --help
   --issue <issue> (required)
@@ -441,7 +441,7 @@ Example:
 ## labels add
 
 ```text
-Usage: linear-axi labels add --issue <issue-id-or-key> --label <id-or-name>
+Usage: linear-axi labels add --issue <issue-id-or-key> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options:
   --help
   --issue <issue> (required)
@@ -455,7 +455,7 @@ Example:
 ## labels remove
 
 ```text
-Usage: linear-axi labels remove --issue <issue-id-or-key> --label <id-or-name>
+Usage: linear-axi labels remove --issue <issue-id-or-key> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options:
   --help
   --issue <issue> (required)
@@ -469,7 +469,7 @@ Example:
 ## labels replace
 
 ```text
-Usage: linear-axi labels replace --issue <issue-id-or-key> --labels-json '<JSON string array>'
+Usage: linear-axi labels replace --issue <issue-id-or-key> --labels-json '<JSON string array>' --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Replacement is explicit: labels omitted from the JSON array are removed. Use [] to clear all labels.
 Options:
   --help
@@ -503,7 +503,7 @@ Example:
 ## relations create
 
 ```text
-Usage: linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> [--id <uuid-v4>]
+Usage: linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> [--id <uuid-v4>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
    or: linear-axi relations create --issue <source-issue> --related-issue <target-issue> --type blocks|related|duplicate|similar [--id <uuid-v4>]
 --blocked-by is the blocker (source); --issue is the blocked issue (target). Do not combine --blocked-by with --related-issue or --type.
 For generic --type blocks, --issue is the blocker and --related-issue is the blocked issue. Blocks relations cannot use two references that resolve to the same issue.
@@ -524,7 +524,7 @@ Example:
 ## relations remove
 
 ```text
-Usage: linear-axi relations remove --id <relation-id>
+Usage: linear-axi relations remove --id <relation-id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
    or: linear-axi relations remove --issue <blocked-issue> --blocked-by <blocker-issue>
    or: linear-axi relations remove --issue <source> --related-issue <target> --type blocks|related|duplicate|similar
 Options:
@@ -558,7 +558,7 @@ Example:
 ## comments create
 
 ```text
-Usage: linear-axi comments create --issue <issue-id-or-key> (--body "..." | --body-file <path|->) [--id <uuid-v4>]
+Usage: linear-axi comments create --issue <issue-id-or-key> (--body "..." | --body-file <path|->) [--id <uuid-v4>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options:
   --help
   --issue <issue> (required)
@@ -683,7 +683,7 @@ Example:
 ## documents update
 
 ```text
-Usage: linear-axi documents update --id <id> --expect-workspace <workspace-uuid-or-url-key>
+Usage: linear-axi documents update --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
@@ -793,7 +793,7 @@ Example:
 ## projects update
 
 ```text
-Usage: linear-axi projects update --id <id> --expect-workspace <workspace-uuid-or-url-key>
+Usage: linear-axi projects update --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
@@ -907,7 +907,7 @@ Example:
 ## releases update
 
 ```text
-Usage: linear-axi releases update --id <id> --expect-workspace <workspace-uuid-or-url-key>
+Usage: linear-axi releases update --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
@@ -975,7 +975,7 @@ Example:
 ## release-notes update
 
 ```text
-Usage: linear-axi release-notes update --id <id> --expect-workspace <workspace-uuid-or-url-key>
+Usage: linear-axi release-notes update --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
@@ -1069,7 +1069,7 @@ Example:
 ## milestones update
 
 ```text
-Usage: linear-axi milestones update --project <selector> --id <id> --expect-workspace <workspace-uuid-or-url-key>
+Usage: linear-axi milestones update --project <selector> --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --project <selector> (required) - Project name, slug, or ID.
@@ -1196,7 +1196,7 @@ Example:
 ## status-updates update
 
 ```text
-Usage: linear-axi status-updates update --type <project|initiative> --id <id> --expect-workspace <workspace-uuid-or-url-key>
+Usage: linear-axi status-updates update --type <project|initiative> --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --type <project|initiative> (required) - Set or filter by type.

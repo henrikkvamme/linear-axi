@@ -1,3 +1,4 @@
+import { Schema } from "effect"
 import { UsageError } from "./errors"
 import { buildOfficialToolCapabilities } from "./official-capabilities"
 import { officialCommandSpecs, officialTopLevelHelp } from "./official-commands"
@@ -6,6 +7,10 @@ export interface ParsedArgs {
   command: ReadonlyArray<string>
   flags: ReadonlyMap<string, string | boolean>
   repeatedFlags: ReadonlyMap<string, ReadonlyArray<string | boolean>>
+  mutationExpectations?: {
+    readonly workspace: string
+    readonly team?: string
+  }
 }
 
 export interface CommandSpec {
@@ -32,6 +37,12 @@ export const LABEL_FIELDS = ["id", "name", "scope", "color", "description", "isG
 export const DEFAULT_LABEL_FIELDS: ReadonlyArray<string> = ["id", "name", "scope"]
 
 const isFlag = (value: string): boolean => value.startsWith("--")
+const decodeWorkspaceExpectation = Schema.decodeUnknownSync(
+  Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z0-9][a-z0-9-]{0,62})$/i))
+)
+const decodeTeamExpectation = Schema.decodeUnknownSync(
+  Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9-]{0,31})$/i))
+)
 
 export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<CommandSpec>): ParsedArgs => {
   const command: Array<string> = []
@@ -123,19 +134,25 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
     if (flag === "limit" || flag === "first") {
       validatePageSize(flag, value, spec.help)
     }
-    if (flag === "expect-workspace" && typeof value === "string" &&
-      !isUuid(value) && !/^[a-z0-9][a-z0-9-]{0,62}$/i.test(value)) {
-      throw new UsageError({
-        message: "--expect-workspace must be a workspace UUID or URL key",
-        help: spec.help
-      })
+    if (flag === "expect-workspace" && typeof value === "string") {
+      try {
+        decodeWorkspaceExpectation(value)
+      } catch {
+        throw new UsageError({
+          message: "--expect-workspace must be a workspace UUID or URL key",
+          help: spec.help
+        })
+      }
     }
-    if (flag === "expect-team" && typeof value === "string" &&
-      !isUuid(value) && !/^[a-z][a-z0-9-]{0,31}$/i.test(value)) {
-      throw new UsageError({
-        message: "--expect-team must be a team key or UUID",
-        help: spec.help
-      })
+    if (flag === "expect-team" && typeof value === "string") {
+      try {
+        decodeTeamExpectation(value)
+      } catch {
+        throw new UsageError({
+          message: "--expect-team must be a team key or UUID",
+          help: spec.help
+        })
+      }
     }
   }
 
@@ -161,9 +178,6 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
 
   return { command: path, flags, repeatedFlags }
 }
-
-const isUuid = (value: string): boolean =>
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 
 export const findSpec = (
   path: ReadonlyArray<string>,
@@ -224,33 +238,33 @@ export const topLevelHelp = [
   "  linear-axi workflow-states list --team <key-or-id>",
   "  linear-axi issues list [--team <key-or-id>] [--label <id-or-name>] [--parent <issue>] [--assignee me|none|<user-uuid>] [--state open|closed] [--after <cursor>] [--limit 20] [--fields <fields>]",
   "  linear-axi issues view --id <issue-id-or-key> [--full]",
-  "  linear-axi issues create --team <key-or-id> --title \"...\" [issue properties] [--id <uuid-v4> | --if-absent]",
-  "  linear-axi issues assign --id <issue> --assignee me|<id-email-or-name> [--replace]",
-  "  linear-axi issues unassign --id <issue> [--if-assignee me|<id-email-or-name>]",
-  "  linear-axi issues close --id <issue> [--state <state-uuid>]",
-  "  linear-axi issues state --id <issue> --state <state-id-or-name>",
-  "  linear-axi issues parent set --id <issue> --parent <parent-issue>",
-  "  linear-axi issues parent clear --id <issue>",
-  "  linear-axi issues update --id <issue> [issue properties and explicit --clear-* flags]",
+  "  linear-axi issues create --team <key-or-id> --title \"...\" [issue properties] [--id <uuid-v4> | --if-absent] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues assign --id <issue> --assignee me|<id-email-or-name> [--replace] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues unassign --id <issue> [--if-assignee me|<id-email-or-name>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues close --id <issue> [--state <state-uuid>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues state --id <issue> --state <state-id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues parent set --id <issue> --parent <parent-issue> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues parent clear --id <issue> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues update --id <issue> [issue properties and explicit --clear-* flags] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi labels list [--workspace | --team <team>] [--name <exact-name>] [--issue <issue>] [--include-archived] [--after <cursor>] [--limit 100] [--fields <fields>]",
-  "  linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <team>) [--group] [--parent <group>] [--id <uuid-v4>] [--if-absent]",
-  "  linear-axi labels apply --issue <issue> --label <id-or-name>",
-  "  linear-axi labels add --issue <issue> --label <id-or-name>",
-  "  linear-axi labels remove --issue <issue> --label <id-or-name>",
-  "  linear-axi labels replace --issue <issue> --labels-json '[\"Bug\",\"Urgent\"]'",
+  "  linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <team>) [--group] [--parent <group>] [--id <uuid-v4>] [--if-absent] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi labels apply --issue <issue> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi labels add --issue <issue> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi labels remove --issue <issue> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi labels replace --issue <issue> --labels-json '[\"Bug\",\"Urgent\"]' --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi relations list --issue <blocked-issue> --blocked-by [--after <cursor>] [--limit 100]",
   "  linear-axi relations list --issue <issue> [--type <type>] [--direction outgoing|incoming|both] [--after <cursor>] [--limit 100]",
-  "  linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> [--id <uuid-v4>]",
-  "  linear-axi relations create --issue <source> --related-issue <target> --type <type> [--id <uuid-v4>]",
-  "  linear-axi relations remove --id <relation-id>",
-  "  linear-axi relations remove --issue <blocked> --blocked-by <blocker>",
+  "  linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> [--id <uuid-v4>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi relations create --issue <source> --related-issue <target> --type <type> [--id <uuid-v4>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi relations remove --id <relation-id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi relations remove --issue <blocked> --blocked-by <blocker> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi comments list --issue <issue> [--after <cursor>] [--limit 50] [--full]",
-  "  linear-axi comments create --issue <issue> (--body \"...\" | --body-file <path|->) [--id <uuid-v4>]",
+  "  linear-axi comments create --issue <issue> (--body \"...\" | --body-file <path|->) [--id <uuid-v4>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi attachments list --issue <issue> [--after <cursor>] [--limit 100]",
   "  linear-axi attachments view --id <attachment-id>",
   "  linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]",
   "  linear-axi attachments read --id <attachment-id> [--max-bytes <n>] [--full]",
-  "  linear-axi attachments upload --issue <issue> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large]",
+  "  linear-axi attachments upload --issue <issue> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi wayfinder frontier --map <issue> [--first 20] [--after <cursor>]",
   ...officialTopLevelHelp
 ].join("\n")
@@ -622,9 +636,15 @@ const completeHelp = (spec: CommandSpec): CommandSpec => {
     spec.operation === "mutation"
       ? `${example} --expect-workspace <workspace-uuid-or-url-key>${spec.mutationTarget ? " --expect-team <team-key-or-uuid>" : ""}`
       : example)
+  const help = spec.operation === "mutation"
+    ? spec.help.replace(
+      /^([^\n]+)/,
+      "$1 --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]"
+    )
+    : spec.help
   return {
     ...spec,
-    help: [spec.help, "Options:", ...options, "Example:", ...guardedExamples.map((example) => `  ${example}`)].join("\n")
+    help: [help, "Options:", ...options, "Example:", ...guardedExamples.map((example) => `  ${example}`)].join("\n")
   }
 }
 

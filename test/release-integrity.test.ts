@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { commandSpecs, parseArgs } from "../src/args"
+import { commandSpecs, parseArgs, topLevelHelp } from "../src/args"
 import { runCommand } from "../src/commands"
 import type { LinearGateway } from "../src/linear"
 
@@ -31,6 +31,7 @@ describe("release integrity", () => {
     expect(stdout).toContain("mutation-identity-v1")
     expect(stdout).toContain("attachment-files-v1")
     expect(stdout).toContain("officialInventory:")
+    expect(stdout).toContain("contentSha256: development")
   })
 
   test("every command is explicitly classified and every mutation requires workspace identity", () => {
@@ -40,6 +41,7 @@ describe("release integrity", () => {
         expect(spec.flags.has("expect-workspace"), spec.path.join(" ")).toBe(true)
         expect(spec.valueFlags?.has("expect-workspace"), spec.path.join(" ")).toBe(true)
         expect(spec.required?.has("expect-workspace"), spec.path.join(" ")).toBe(true)
+        expect(spec.help.split("\n")[0], spec.path.join(" ")).toContain("--expect-workspace")
         const examples = spec.help.split("\n").filter((line) => line.trimStart().startsWith("linear-axi "))
         expect(examples.length, spec.path.join(" ")).toBeGreaterThan(0)
         for (const example of examples) {
@@ -54,6 +56,11 @@ describe("release integrity", () => {
           expect(spec.operation, `${spec.path.join(" ")}: ${tool}`).toBe("mutation")
         }
       }
+    }
+    for (const line of topLevelHelp.split("\n").filter((line) =>
+      /^  linear-axi (attachments upload|issues (create|assign|unassign|close|state|parent (set|clear)|update)|labels (create|apply|add|remove|replace)|relations (create|remove)|comments create) /.test(line)
+    )) {
+      expect(line).toContain("--expect-workspace")
     }
   })
 
@@ -158,6 +165,42 @@ describe("release integrity", () => {
     expect(mutationCalls).toBe(0)
   })
 
+  test("an unresolved expected team makes zero official mutation calls", async () => {
+    let mutationCalls = 0
+    const gateway = {
+      close: () => Effect.void,
+      mutationIdentity: () => Effect.succeed({
+        workspace: { id: "11111111-1111-4111-8111-111111111111", urlKey: "bender", name: "Bender" }
+      }),
+      callOfficialTool: (name: string) => {
+        if (name === "save_project") mutationCalls += 1
+        return Effect.succeed({
+          id: "project-id",
+          name: "Project",
+          state: "planned",
+          archivedAt: null
+        })
+      },
+      resolveProjectUpdateAssociations: () => Effect.succeed({ teams: [], initiatives: [] })
+    } as unknown as LinearGateway
+    const parsed = parseArgs([
+      "projects", "update",
+      "--id", "project-id",
+      "--state", "started",
+      "--expect-workspace", "bender",
+      "--expect-team", "BEN"
+    ], commandSpecs)
+
+    const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/tmp/linear-axi")))
+
+    expect(error).toMatchObject({
+      code: "team_mismatch",
+      expected: { idOrKey: "BEN" },
+      actual: null
+    })
+    expect(mutationCalls).toBe(0)
+  })
+
   test("capability requirements are credential-free and structured", () => {
     const satisfied = runCli(
       "capabilities", "require",
@@ -209,6 +252,22 @@ describe("release integrity", () => {
     })
     expect(result.exitCode).toBe(1)
     expect(result.stderr.toString()).toContain("exact 40-hex immutable revision")
+  })
+
+  test("release builds reject a revision that differs from the checkout", () => {
+    const parentRevision = Bun.spawnSync({
+      cmd: ["git", "rev-parse", "HEAD^"],
+      cwd: repoRoot,
+      stdout: "pipe"
+    }).stdout.toString().trim()
+    const result = Bun.spawnSync({
+      cmd: ["bun", "scripts/build.ts", "--revision", parentRevision, "--outfile", "/tmp/linear-axi-mismatched-revision"],
+      cwd: repoRoot,
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr.toString()).toContain("does not match checkout HEAD")
   })
 
   test("bundled skill preflights capabilities and verifies issue completion and GitHub linkage", async () => {
