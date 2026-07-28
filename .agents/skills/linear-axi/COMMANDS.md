@@ -65,6 +65,78 @@ Example:
   linear-axi auth oauth connect --client-id lin_oauth_app_123 --write-env
 ```
 
+## attachments list
+
+```text
+Usage: linear-axi attachments list --issue <issue-id-or-key> [--after <cursor>] [--limit 100]
+Continuation cursors bind to exact attachment membership and order. Restart without --after if the page changed.
+Options:
+  --help
+  --issue <issue> (required)
+  --after <cursor>
+  --limit <1-100>
+Example:
+  linear-axi attachments list --issue ENG-123
+```
+
+## attachments view
+
+```text
+Usage: linear-axi attachments view --id <attachment-id>
+Reports metadata and content availability without exposing signed URLs or headers.
+Options:
+  --help
+  --id <id> (required)
+Example:
+  linear-axi attachments view --id <attachment-id>
+```
+
+## attachments download
+
+```text
+Usage: linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]
+Defaults to 1 GiB; --max-bytes accepts 1 through 2147483647. Requires macOS or Linux and an existing non-symlink destination directory. Installs atomically without replacement; existing destinations fail closed, including with --overwrite.
+Options:
+  --help
+  --id <id> (required)
+  --output <path> (required)
+  --overwrite
+  --max-bytes <bytes>
+Example:
+  linear-axi attachments download --id <attachment-id> --output ./attachment.bin
+```
+
+## attachments read
+
+```text
+Usage: linear-axi attachments read --id <attachment-id> [--max-bytes <n>] [--full]
+Renders UTF-8 text/*, JSON, XML, YAML, TOML, JavaScript, SQL, and SVG with no charset or a UTF-8 charset. Defaults to 32768 bytes; --max-bytes accepts 1 through 1048576 and is mutually exclusive with --full, which selects that ceiling. Other files must be downloaded for inspection.
+Options:
+  --help
+  --id <id> (required)
+  --max-bytes <bytes>
+  --full
+Example:
+  linear-axi attachments read --id <attachment-id>
+```
+
+## attachments upload
+
+```text
+Usage: linear-axi attachments upload --issue <issue-id-or-key> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large]
+Requires macOS or Linux and an explicit stable, non-empty, non-symlink regular file. Media type is inferred for txt, md, csv, json, yaml, yml, xml, toml, js, mjs, ts, tsx, html, css, sql, svg, png, jpg, jpeg, gif, webp, pdf, zip, gz, mp4, and mov; --media-type may override it with one supported parameter-free type. Supported types: text/plain, text/markdown, text/csv, application/json, application/yaml, application/xml, application/toml, application/javascript, text/typescript, text/tsx, text/html, text/css, application/sql, image/svg+xml, image/png, image/jpeg, image/gif, image/webp, application/pdf, application/zip, application/gzip, video/mp4, video/quicktime. Defaults to 100 MiB; --allow-large raises the ceiling to 2147483647 bytes. Resumable recovery records live under $XDG_STATE_HOME/linear-axi/uploads or ~/.local/state/linear-axi/uploads. Deprecated base64 creation is excluded.
+Options:
+  --help
+  --issue <issue> (required)
+  --file <path> (required)
+  --title <title>
+  --subtitle <text>
+  --media-type <type>
+  --allow-large
+Example:
+  linear-axi attachments upload --issue ENG-123 --file ./trace.txt
+```
+
 ## teams list
 
 ```text

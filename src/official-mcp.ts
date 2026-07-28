@@ -245,7 +245,7 @@ export const makeOfficialMcpClient = (
     yield* ensureInitialized()
     let id = ++requestId
     let result = yield* post(method, { jsonrpc: "2.0", id, method, params })
-    if (result.response.status === 404 && sessionId !== undefined && !isSaveToolCall(method, params)) {
+    if (result.response.status === 404 && sessionId !== undefined && !isNonRetryableMutationToolCall(method, params)) {
       void result.response.body?.cancel().catch(() => undefined)
       result.complete()
       initialized = false
@@ -314,7 +314,7 @@ export const makeOfficialMcpToolCaller = (
       .map((block) => block.text!)
       .join("\n") ?? ""
     if (toolResult.isError) {
-      if (name.startsWith("save_")) {
+      if (isNonRetryableMutationTool(name)) {
         return yield* Effect.fail(ambiguousMutationFailure(name, args, new OfficialMcpRequestError({
           operation: "tools/call",
           phase: "response-received",
@@ -328,7 +328,7 @@ export const makeOfficialMcpToolCaller = (
     try {
       return decodeJsonValue(text)
     } catch (cause) {
-      if (name.startsWith("save_")) {
+      if (isNonRetryableMutationTool(name)) {
         return yield* Effect.fail(ambiguousMutationFailure(name, args, new OfficialMcpRequestError({
           operation: "tools/call",
           phase: "response-received",
@@ -472,9 +472,15 @@ const ambiguousMutationFailure = (
   args: Readonly<Record<string, unknown>>,
   error: GatewayError
 ): GatewayError => {
-  if (!tool.startsWith("save_") || !(error instanceof OfficialMcpRequestError) ||
+  if (!isNonRetryableMutationTool(tool) || !(error instanceof OfficialMcpRequestError) ||
     error.operation !== "tools/call" || !error.outcomeUnknown || error.phase === "before-dispatch") {
     return error
+  }
+  if (tool === "prepare_attachment_upload") {
+    return new LinearApiError({
+      message: `Official Linear MCP ${tool} failed after dispatch during ${error.phase}; preparation outcome is unknown`,
+      help: "Retry the same attachment upload command to explicitly prepare a replacement; do not reuse an upload request whose response was lost."
+    })
   }
   const inspectionHelp = officialMutationInspectionHelp(tool, args)
   const createWarning = tool === "save_issue" && !(typeof args.id === "string" && args.id.length > 0)
@@ -486,8 +492,11 @@ const ambiguousMutationFailure = (
   })
 }
 
-const isSaveToolCall = (method: string, params: Readonly<Record<string, unknown>>): boolean =>
-  method === "tools/call" && typeof params.name === "string" && params.name.startsWith("save_")
+const isNonRetryableMutationTool = (name: string): boolean =>
+  name.startsWith("save_") || name === "prepare_attachment_upload" || name === "create_attachment_from_upload"
+
+const isNonRetryableMutationToolCall = (method: string, params: Readonly<Record<string, unknown>>): boolean =>
+  method === "tools/call" && typeof params.name === "string" && isNonRetryableMutationTool(params.name)
 
 const isPreExecutionRpcError = (code: number | undefined): boolean =>
   code === -32600 || code === -32601 || code === -32602

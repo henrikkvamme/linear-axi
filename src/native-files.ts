@@ -1,0 +1,108 @@
+import { constants } from "node:fs"
+import { dlopen } from "bun:ffi"
+
+const loadNativeFiles = () => {
+  if (process.platform !== "darwin" && process.platform !== "linux") {
+    throw new Error("unsupported platform")
+  }
+  const libraryPath = process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6"
+  const base = dlopen(libraryPath, {
+    close: { args: ["i32"], returns: "i32" },
+    flock: { args: ["i32", "i32"], returns: "i32" },
+    fsync: { args: ["i32"], returns: "i32" },
+    linkat: { args: ["i32", "ptr", "i32", "ptr", "i32"], returns: "i32" },
+    openat: { args: ["i32", "ptr", "i32", "u32"], returns: "i32" },
+    unlinkat: { args: ["i32", "ptr", "i32"], returns: "i32" },
+    write: { args: ["i32", "ptr", "usize"], returns: "i64" }
+  } as const)
+  const nativeStatFileAt = process.platform === "darwin" && process.arch === "x64"
+    ? dlopen(libraryPath, {
+        "fstatat$INODE64": { args: ["i32", "ptr", "ptr", "i32"], returns: "i32" }
+      } as const).symbols["fstatat$INODE64"]!
+    : dlopen(libraryPath, {
+        fstatat: { args: ["i32", "ptr", "ptr", "i32"], returns: "i32" }
+      } as const).symbols.fstatat!
+  return { base, nativeStatFileAt }
+}
+
+type NativeFiles = ReturnType<typeof loadNativeFiles>
+
+export class NativeFilesUnavailableError extends Error {
+  constructor() {
+    super(`Safe native file operations are unavailable on ${process.platform}-${process.arch}`)
+    this.name = "NativeFilesUnavailableError"
+  }
+}
+
+let loaded: NativeFiles | NativeFilesUnavailableError | undefined
+
+const nativeFiles = (): NativeFiles => {
+  if (loaded instanceof NativeFilesUnavailableError) throw loaded
+  if (loaded) return loaded
+  try {
+    loaded = loadNativeFiles()
+    return loaded
+  } catch {
+    const error = new NativeFilesUnavailableError()
+    loaded = error
+    throw error
+  }
+}
+
+export const ensureNativeFileSupport = (): void => {
+  nativeFiles()
+}
+
+const nameBuffer = (name: string): Buffer => Buffer.from(`${name}\0`, "utf8")
+
+export interface NativeFileIdentity {
+  readonly dev: bigint
+  readonly ino: bigint
+}
+
+export const openFileAt = (directoryFd: number, name: string, flags: number, mode = 0): number =>
+  nativeFiles().base.symbols.openat!(directoryFd, nameBuffer(name), flags, mode)
+
+export const createPrivateFileAt = (directoryFd: number, name: string): number =>
+  openFileAt(directoryFd, name, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
+
+export const statFileAt = (directoryFd: number, name: string): NativeFileIdentity | null => {
+  const stat = Buffer.alloc(256)
+  const noFollow = process.platform === "darwin" ? 0x0020 : 0x0100
+  if (nativeFiles().nativeStatFileAt(directoryFd, nameBuffer(name), stat, noFollow) !== 0) return null
+  return {
+    dev: process.platform === "darwin" ? BigInt(stat.readUInt32LE(0)) : stat.readBigUInt64LE(0),
+    ino: stat.readBigUInt64LE(8)
+  }
+}
+
+type DescriptorWriter = (fd: number, bytes: Uint8Array, length: number) => number
+
+const nativeWrite: DescriptorWriter = (fd, bytes, length) => Number(nativeFiles().base.symbols.write!(fd, bytes, length))
+
+export const writeFileDescriptor = (fd: number, bytes: Uint8Array, writer: DescriptorWriter = nativeWrite): void => {
+  let offset = 0
+  while (offset < bytes.byteLength) {
+    const written = writer(fd, bytes.subarray(offset), bytes.byteLength - offset)
+    if (written <= 0 || written > bytes.byteLength - offset) throw new Error("write failed")
+    offset += written
+  }
+}
+
+export const syncFileDescriptor = (fd: number): boolean => nativeFiles().base.symbols.fsync!(fd) === 0
+
+export const closeFileDescriptor = (fd: number): void => {
+  if (nativeFiles().base.symbols.close!(fd) !== 0) throw new Error("close failed")
+}
+
+export const tryUnlinkFileAt = (directoryFd: number, name: string): boolean =>
+  nativeFiles().base.symbols.unlinkat!(directoryFd, nameBuffer(name), 0) === 0
+
+export const tryLinkFileAt = (directoryFd: number, source: string, destination: string): boolean =>
+  nativeFiles().base.symbols.linkat!(directoryFd, nameBuffer(source), directoryFd, nameBuffer(destination), 0) === 0
+
+export const tryLockFileDescriptor = (fd: number): boolean => nativeFiles().base.symbols.flock!(fd, 0x02 | 0x04) === 0
+
+export const unlockFileDescriptor = (fd: number): void => {
+  if (nativeFiles().base.symbols.flock!(fd, 0x08) !== 0) throw new Error("unlock failed")
+}

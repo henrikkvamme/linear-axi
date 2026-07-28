@@ -14,9 +14,9 @@ export interface OfficialToolCapability {
 }
 
 const OFFICIAL_TOOL_STATUSES: ReadonlyArray<readonly [string, OfficialCapabilityStatus]> = [
-  ["get_attachment", "needs-decision"],
-  ["prepare_attachment_upload", "needs-decision"],
-  ["create_attachment_from_upload", "needs-decision"],
+  ["get_attachment", "official"],
+  ["prepare_attachment_upload", "official"],
+  ["create_attachment_from_upload", "official"],
   ["create_attachment", "needs-decision"],
   ["delete_attachment", "needs-decision"],
   ["list_agent_skills", "official"],

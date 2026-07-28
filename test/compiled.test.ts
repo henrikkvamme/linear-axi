@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { chmodSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -54,6 +54,11 @@ test("standalone binary runs without a source checkout", () => {
       ["relations", "remove"],
       ["comments", "list"],
       ["comments", "create"],
+      ["attachments", "list"],
+      ["attachments", "view"],
+      ["attachments", "download"],
+      ["attachments", "read"],
+      ["attachments", "upload"],
       ["projects", "list"],
       ["projects", "update"],
       ["documents", "update"],
@@ -101,6 +106,24 @@ test("standalone binary runs without a source checkout", () => {
     expect(new TextDecoder().decode(rejected.stderr)).toBe("")
     expect(new TextDecoder().decode(rejected.stdout)).toContain("unknown flag --bogus")
 
+    for (const [args, message] of [
+      [["attachments", "upload", "--issue", "ENG-123", "--file", root], "regular file"],
+      [["attachments", "read", "--id", "attachment-1", "--max-bytes", "0"], "--max-bytes must be an integer"]
+    ] as const) {
+      const invalidAttachment = Bun.spawnSync({
+        cmd: [binary, ...args],
+        cwd: root,
+        env: { HOME: home, PATH: process.env.PATH ?? "" },
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      const invalidStdout = new TextDecoder().decode(invalidAttachment.stdout)
+      expect(invalidAttachment.exitCode).toBe(2)
+      expect(new TextDecoder().decode(invalidAttachment.stderr)).toBe("")
+      expect(invalidStdout).toContain(message)
+      expect(invalidStdout).not.toContain("Linear credentials are not configured")
+    }
+
     const repeated = Bun.spawnSync({
       cmd: [binary, "projects", "update", "--id", "project-id", "--state", "planned", "--state", "started"],
       cwd: root,
@@ -135,6 +158,40 @@ test("standalone binary runs without a source checkout", () => {
     expect(homeResult.exitCode).toBe(0)
     expect(new TextDecoder().decode(homeResult.stderr)).toBe("")
     expect(homeStdout).toContain(`bin: ${realpathSync(binary)}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 15_000)
+
+test("compiled attachment commands render representative successful output", () => {
+  const root = mkdtempSync(join(tmpdir(), "linear-axi-compiled-attachment-"))
+  const binary = join(root, "attachment-fixture")
+  const source = join(root, "trace.txt")
+  const destination = join(root, "downloaded.txt")
+  try {
+    writeFileSync(source, "hello world\n")
+    const build = Bun.spawnSync({
+      cmd: ["bun", "build", "--compile", "--no-compile-autoload-dotenv", "--outfile", binary, "test/compiled-attachment-fixture.ts"],
+      cwd: repoRoot,
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    expect(build.exitCode).toBe(0)
+    for (const [args, expected] of [
+      [["attachments", "list", "--issue", "ENG-123"], "attachments[1]"],
+      [["attachments", "view", "--id", "attachment-1"], "authenticated-signed-https"],
+      [["attachments", "read", "--id", "attachment-1"], "hello world"],
+      [["attachments", "download", "--id", "attachment-1", "--output", destination], "downloaded.txt"],
+      [["attachments", "upload", "--issue", "ENG-123", "--file", source], "attachment uploaded and verified"]
+    ] as const) {
+      const result = Bun.spawnSync({ cmd: [binary, ...args], cwd: root, stdout: "pipe", stderr: "pipe" })
+      const stdout = new TextDecoder().decode(result.stdout)
+      expect(result.exitCode).toBe(0)
+      expect(new TextDecoder().decode(result.stderr)).toBe("")
+      expect(stdout).toContain(expected)
+      expect(stdout).not.toContain("uploads.linear.app")
+    }
+    expect(readFileSync(destination, "utf8")).toBe("hello world\n")
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

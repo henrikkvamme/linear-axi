@@ -13,9 +13,9 @@
     "No initiative list, get, or save tool appeared in the authenticated 47-tool inventory; initiative selectors remain available where observed tools accept them."
   ],
   "tools": [
-    { "tool": "get_attachment", "status": "needs-decision", "commands": [], "rationale": "Binary download needs a bounded file-output contract; recommend attachments download --id --output with checksum and overwrite protection." },
-    { "tool": "prepare_attachment_upload", "status": "needs-decision", "commands": [], "rationale": "Binary upload needs a resumable local-file boundary; recommend attachments upload --issue --file with size, type, checksum, and verified finalize." },
-    { "tool": "create_attachment_from_upload", "status": "needs-decision", "commands": [], "rationale": "Must be designed with prepare_attachment_upload as one resumable upload workflow." },
+    { "tool": "get_attachment", "status": "official", "commands": ["attachments view", "attachments download", "attachments read"] },
+    { "tool": "prepare_attachment_upload", "status": "official", "commands": ["attachments upload"] },
+    { "tool": "create_attachment_from_upload", "status": "official", "commands": ["attachments upload"] },
     { "tool": "create_attachment", "status": "needs-decision", "commands": [], "rationale": "Deprecated base64 transport is binary-heavy and token-unsafe; recommend intentionally excluding it in favor of file upload." },
     { "tool": "delete_attachment", "status": "needs-decision", "commands": [], "rationale": "Destructive deletion needs an exact confirmation and readback design." },
     { "tool": "list_agent_skills", "status": "official", "commands": ["agent-skills list"] },
@@ -28,7 +28,7 @@
     { "tool": "list_documents", "status": "official", "commands": ["documents list"] },
     { "tool": "save_document", "status": "partial-needs-decision", "commands": ["documents update"], "rationale": "Updates are exposed. Official creation accepts no caller id; recommend a parent-scoped exact-title preflight and conflict contract before enabling create." },
     { "tool": "extract_images", "status": "needs-decision", "commands": [], "rationale": "Image extraction is binary-heavy; recommend markdown-file input, bounded metadata output, and explicit output directory." },
-    { "tool": "get_issue", "status": "native+official", "commands": ["issues view", "issues inspect"] },
+    { "tool": "get_issue", "status": "native+official", "commands": ["issues view", "issues inspect", "attachments list", "attachments upload"] },
     { "tool": "list_issues", "status": "native+official", "commands": ["issues list", "issues search"] },
     { "tool": "save_issue", "status": "native+official", "commands": ["issues create", "issues update", "issues assign", "issues unassign", "issues state", "issues parent set", "issues parent clear", "labels add", "labels remove", "labels replace", "relations create", "relations remove"] },
     { "tool": "list_issue_statuses", "status": "native", "commands": ["workflow-states list"] },

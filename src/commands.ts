@@ -56,6 +56,7 @@ import { indeterminateOfficialMutation, officialMutationInspectionCommand } from
 import { fetchOfficialRows } from "./official-pagination"
 import { renderCandidateIds, resolveExactOfficialId as uniqueOfficialId } from "./official-selector"
 import { validateFrontierCursor } from "./wayfinder"
+import { runAttachmentCommand } from "./attachments"
 
 const ISSUE_FIELD_SET: ReadonlySet<string> = new Set(ISSUE_FIELDS)
 const LABEL_FIELD_SET: ReadonlySet<string> = new Set(LABEL_FIELDS)
@@ -129,7 +130,7 @@ const dispatchCommand = (
     case "comments list": return commentsList(parsed, gateway)
     case "comments create": return commentsCreate(parsed, gateway)
     case "wayfinder frontier": return wayfinderFrontier(parsed, gateway)
-    default: return runOfficialCommand(parsed, gateway) ?? Effect.fail(new UsageError({ message: `unknown command ${path}`, help: topLevelHelp }))
+    default: return runAttachmentCommand(parsed, gateway) ?? runOfficialCommand(parsed, gateway) ?? Effect.fail(new UsageError({ message: `unknown command ${path}`, help: topLevelHelp }))
   }
 }
 

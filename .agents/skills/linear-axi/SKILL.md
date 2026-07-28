@@ -1,6 +1,6 @@
 ---
 name: linear-axi
-description: Linear AXI CLI workflow. Use when agents need to inspect or safely mutate Linear issues, projects, documents, releases, milestones, status updates, labels, relations, comments, teams, or users, or project a Wayfinder frontier.
+description: Linear AXI CLI workflow. Use when agents need to inspect or safely mutate Linear issues, attachments, projects, documents, releases, milestones, status updates, labels, relations, comments, teams, or users, or project a Wayfinder frontier.
 ---
 
 # Linear AXI
@@ -49,6 +49,11 @@ linear-axi relations list --issue <issue> --type blocks --direction both
 linear-axi relations remove --issue <blocked> --blocked-by <blocker>
 linear-axi comments list --issue <issue> --limit 50 --full
 linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
+linear-axi attachments list --issue <issue> --limit 100
+linear-axi attachments view --id <attachment-id>
+linear-axi attachments read --id <attachment-id> --max-bytes 32768
+linear-axi attachments download --id <attachment-id> --output ./attachment.bin
+linear-axi attachments upload --issue <issue> --file ./attachment.txt --title "Attachment"
 linear-axi wayfinder frontier --map <map-issue> --first 20
 linear-axi teams search --query <name>
 linear-axi teams view --query <id-key-or-name>
@@ -121,7 +126,7 @@ Conditional official command contracts:
    Completion criterion: start `linear-axi auth login --notify` in a persistent exec session, copy the exact authorize URL from stderr, use `chrome-devtools-axi open <authorize-url>`, and verify the snapshot shows `axi-cli is requesting access`. Hand the browser to the user so they can select the intended workspace and click Authorize. The live WebRTC URL mirrors the shared browser's current tab and does not navigate by itself.
 
 4. Treat every mutating command as a live mutation.
-   Completion criterion: run any `create`, `update`, `assign`, `unassign`, `state`, `close`, `set`, `clear`, `add`, `remove`, or `replace` command only after explicit user intent identifies the target and desired change. Auth status and `list`, `view`, `inspect`, `search`, `threads`, and Wayfinder frontier commands remain read-only.
+   Completion criterion: run any `create`, `update`, `assign`, `unassign`, `state`, `close`, `set`, `clear`, `add`, `remove`, `replace`, or attachment `upload` command only after explicit user intent identifies the target and desired change. Every live attachment upload requires an explicit issue and local file intent. Auth status and `list`, `view`, `inspect`, `search`, `threads`, attachment `read` and `download`, and Wayfinder frontier commands remain read-only with respect to Linear.
 
 5. Interpret state filters and resolve ambiguity explicitly.
    Completion criterion: treat completed, canceled, and duplicate as the three terminal workflow types. `issues list --state open` excludes all three, while `--state closed` includes all three. Treat missing, archived, and ambiguous identity errors as authoritative. Never pick the first team, issue, label, workflow state, or user candidate. Retry with the intended UUID. Official details must exactly match the requested immutable ID or documented stable alias. Product updates canonicalize selectors, reject archived targets and additions, and verify scoped ownership; removals may resolve archived associations for cleanup. Assign only to an active, unarchived, assignable user. Issue summaries retain attached archived label names, so use `labels list --issue <issue> --include-archived --fields id,name,parentId,archivedAt` when label status or group matters.
@@ -154,13 +159,16 @@ Conditional official command contracts:
     Completion criterion: never encode clearing as an empty selector or empty value. Use the matching `--clear-*` flag and never combine it with its set flag. Product rich-text clears still require the latest `--if-updated-at`. The same canonical team, initiative, release, or issue relation cannot appear in both add and remove sets. Use `labels add` or `labels remove` when unrelated labels must survive; `labels replace` deliberately removes labels omitted from its JSON array, and `[]` clears all labels. Issue label selections accept ordinary labels only and at most one child from each label group. Create a top-level group with `labels create --group`, or an ordinary child under a same-scope top-level group with `--parent`; never combine those flags.
 
 15. Follow every list cursor exactly.
-    Completion criterion: for issue, label, relation, and comment lists, replay the same filters with the returned `page.endCursor` as `--after`. For Wayfinder frontier, use `pageInfo.endCursor`. Never construct or edit a cursor. Relation pages and issue-scoped exact-name label pages are current-state projections, so restart without `--after` when current membership matters.
+    Completion criterion: for issue, label, relation, comment, and attachment lists, replay the same filters with the returned `page.endCursor` as `--after`. For Wayfinder frontier, use `pageInfo.endCursor`. Never construct or edit a cursor. Attachment continuation fails if membership or order changed, so restart without `--after`. Relation pages and issue-scoped exact-name label pages are current-state projections, so restart without `--after` when current membership matters.
 
 16. Validate the Wayfinder projection before claiming.
     Completion criterion: require exactly one active production `wayfinder:map` label, or for isolated verification one `WF-VERIFY-<run>:map` label whose type labels use the same prefix. Before candidate loading, require all four active, ordinary, non-group labels to resolve uniquely among workspace and map-team labels, even when the map has no candidates: `<prefix>:research`, `<prefix>:prototype`, `<prefix>:grilling`, and `<prefix>:task`. Then require exactly one of those labels on every direct open, unblocked, unassigned child. Treat any projection error as a metadata repair task, not as an empty frontier.
 
 17. Treat frontier pages as current-state projections.
-    Completion criterion: restart without `--after` when current membership or ordering matters. Frontier pagination does not provide snapshot isolation.
+   Completion criterion: restart without `--after` when current membership or ordering matters. Frontier pagination does not provide snapshot isolation.
+
+18. Keep attachment content at safe file boundaries.
+   Completion criterion: use `attachments read` only for bounded allowed UTF-8 text; `--max-bytes` and `--full` are mutually exclusive and cannot exceed 1 MiB. Download images and other binary files for inspection with an appropriate local tool, except allowed textual SVG; never print binary bytes or base64. Downloads default to 1 GiB, require an existing non-symlink destination directory, and always refuse existing destinations because atomic expected-file replacement is unavailable; `--overwrite` fails closed when a destination exists. Uploads accept a stable non-empty non-symlink regular file, default to 100 MiB, and require `--allow-large` up to the 2 GiB-minus-one-byte ceiling. Use a supported inferred media type, or pass a supported parameter-free `--media-type`. Upload retries must reuse the same issue, unchanged file, media type, title, and subtitle so private recovery records under `$XDG_STATE_HOME/linear-axi/uploads`, or `~/.local/state/linear-axi/uploads`, can reconcile before finalize. Safe local upload and download require macOS or Linux. The deprecated base64 `create_attachment` path and attachment deletion are not exposed.
 
 ## Updating The CLI
 
