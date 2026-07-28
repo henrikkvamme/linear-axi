@@ -772,12 +772,13 @@ describe("resumable attachment upload", () => {
     writeFileSync(source, "hello world\n")
     let finalized = false
     let finalizeCalls = 0
+    let issueIdentifier = "ENG-123"
     const uploadGateway = {
       ...gateway({}),
       callOfficialTool: (name: string) => {
         if (name === "get_issue") return Effect.succeed({
           id: "issue-1",
-          identifier: "ENG-123",
+          identifier: issueIdentifier,
           attachments: finalized ? [{ ...detail(), url: "https://uploads.linear.app/assets/stable-1" }] : []
         })
         if (name === "prepare_attachment_upload") return Effect.succeed({
@@ -790,7 +791,7 @@ describe("resumable attachment upload", () => {
           return Effect.fail(new LinearApiError({ message: "response lost", help: "retry" }))
         }
         if (name === "get_attachment") return Effect.succeed(detail({
-          issue: { id: "issue-1", identifier: "ENG-123" },
+          issue: { id: "issue-1", identifier: issueIdentifier },
           assetUrl: "https://uploads.linear.app/assets/stable-1",
           sha256: "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
         }))
@@ -806,12 +807,20 @@ describe("resumable attachment upload", () => {
     }
 
     await expect(runUpload(source, uploadGateway, runtime)).rejects.toThrow("outcome is unknown")
-    const output = await runUpload(source, uploadGateway, runtime)
-    const repeated = await runUpload(source, uploadGateway, runtime)
+    issueIdentifier = "OPS-123"
+    const output = await runUpload(source, uploadGateway, runtime, issueIdentifier)
+    const repeated = await runUpload(source, uploadGateway, runtime, issueIdentifier)
 
     expect(finalizeCalls).toBe(1)
-    expect(output).toMatchObject({ attachmentId: "attachment-1", changed: false, recovery: "finalized attachment verified" })
+    expect(output).toMatchObject({
+      attachmentId: "attachment-1",
+      issue: { id: "issue-1", identifier: "OPS-123" },
+      changed: false,
+      recovery: "finalized attachment verified"
+    })
     expect(repeated).toMatchObject({ attachmentId: "attachment-1", changed: false, recovery: "finalized attachment verified" })
+    const recoveryPath = join(root, "state", readdirSync(join(root, "state")).find((name) => name.endsWith(".json"))!)
+    expect(JSON.parse(readFileSync(recoveryPath, "utf8"))).toMatchObject({ issueId: "issue-1", issueIdentifier: "OPS-123" })
   })
 
   test("rejects a finalized upload whose subtitle differs from the intent", async () => {
@@ -1120,9 +1129,10 @@ const runEffect = (
 const runUpload = (
   source: string,
   linearGateway: LinearGateway,
-  runtime: Partial<AttachmentRuntime>
+  runtime: Partial<AttachmentRuntime>,
+  issue = "ENG-123"
 ) => {
-  const parsed = parseArgs(["attachments", "upload", "--issue", "ENG-123", "--file", source], commandSpecs)
+  const parsed = parseArgs(["attachments", "upload", "--issue", issue, "--file", source], commandSpecs)
   const effect = runAttachmentCommand(parsed, linearGateway, runtime)
   if (!effect) throw new Error("attachment upload was not dispatched")
   return Effect.runPromise(effect)

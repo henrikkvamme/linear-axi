@@ -136,6 +136,10 @@ const uploadAttachment = Effect.fn("Attachments.upload")(function*(
           if (recovery && !recoveryMatches(recovery, issue, source, title, subtitle)) {
             return yield* domain("Upload recovery metadata conflicts with this file intent", "Remove only the named private recovery record after inspecting it, then retry.")
           }
+          if (recovery && recovery.issueIdentifier !== issue.identifier) {
+            recovery = { ...recovery, issueIdentifier: issue.identifier }
+            yield* persistRecovery(recoveryPath, recovery)
+          }
 
           if (recovery?.stage === "finalized" && recovery.attachmentId) {
             const verified = yield* verifyUploadedAttachment(
@@ -770,8 +774,8 @@ const recoveryMatches = (
   source: UploadSource,
   title: string | null,
   subtitle: string | null
-): boolean => recovery.issueId === issue.id && recovery.issueIdentifier === issue.identifier &&
-  recovery.filename === source.filename && recovery.size === source.size && recovery.mediaType === source.mediaType &&
+): boolean => recovery.issueId === issue.id && recovery.filename === source.filename &&
+  recovery.size === source.size && recovery.mediaType === source.mediaType &&
   recovery.sha256 === source.sha256 && recovery.title === title && recovery.subtitle === subtitle
 
 interface UploadIntentLock {
