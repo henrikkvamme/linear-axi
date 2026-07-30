@@ -234,6 +234,7 @@ test("compiled revisions are injected immutably at build time", () => {
       })
       expect(extracted.exitCode).toBe(0)
       symlinkSync(join(repoRoot, "node_modules"), join(snapshot, "node_modules"), "dir")
+      writeFileSync(join(snapshot, "SOURCE_REVISION"), `${revision}\n`)
       const binary = join(root, `linear-axi-${index}`)
       const build = Bun.spawnSync({
         cmd: ["bun", "scripts/build.ts", "--revision", revision, "--outfile", binary],

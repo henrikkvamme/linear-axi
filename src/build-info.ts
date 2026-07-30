@@ -9,6 +9,7 @@ declare const __LINEAR_AXI_BUNDLED_SKILL_SHA256__: string
 
 const packageRoot = resolve(import.meta.dir, "..")
 const packagedRevisionPath = resolve(packageRoot, "SOURCE_REVISION")
+const gitMetadataPath = resolve(packageRoot, ".git")
 const bundledSkillFiles = [
   ".agents/skills/linear-axi/COMMANDS.md",
   ".agents/skills/linear-axi/SKILL.md"
@@ -38,7 +39,7 @@ const hashBundledSkill = (): string => {
 }
 
 const packagedRevision =
-  typeof __LINEAR_AXI_BUILD_REVISION__ === "undefined"
+  typeof __LINEAR_AXI_BUILD_REVISION__ === "undefined" && !existsSync(gitMetadataPath)
     ? readSourceRevision()
     : undefined
 

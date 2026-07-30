@@ -315,7 +315,7 @@ export const makeOfficialMcpToolCaller = (
       .map((block) => block.text!)
       .join("\n") ?? ""
     if (toolResult.isError) {
-      if (isNonRetryableMutationTool(name)) {
+      if (isOfficialMutationTool(name)) {
         return yield* Effect.fail(ambiguousMutationFailure(name, args, new OfficialMcpRequestError({
           operation: "tools/call",
           phase: "response-received",
@@ -329,7 +329,7 @@ export const makeOfficialMcpToolCaller = (
     try {
       return decodeJsonValue(text)
     } catch (cause) {
-      if (isNonRetryableMutationTool(name)) {
+      if (isOfficialMutationTool(name)) {
         return yield* Effect.fail(ambiguousMutationFailure(name, args, new OfficialMcpRequestError({
           operation: "tools/call",
           phase: "response-received",
@@ -473,7 +473,7 @@ const ambiguousMutationFailure = (
   args: Readonly<Record<string, unknown>>,
   error: GatewayError
 ): GatewayError => {
-  if (!isNonRetryableMutationTool(tool) || !(error instanceof OfficialMcpRequestError) ||
+  if (!isOfficialMutationTool(tool) || !(error instanceof OfficialMcpRequestError) ||
     error.operation !== "tools/call" || !error.outcomeUnknown || error.phase === "before-dispatch") {
     return error
   }
@@ -493,11 +493,11 @@ const ambiguousMutationFailure = (
   })
 }
 
-const isNonRetryableMutationTool = (name: string): boolean =>
+export const isOfficialMutationTool = (name: string): boolean =>
   name.startsWith("save_") || name === "prepare_attachment_upload" || name === "create_attachment_from_upload"
 
 const isNonRetryableMutationToolCall = (method: string, params: Readonly<Record<string, unknown>>): boolean =>
-  method === "tools/call" && typeof params.name === "string" && isNonRetryableMutationTool(params.name)
+  method === "tools/call" && typeof params.name === "string" && isOfficialMutationTool(params.name)
 
 const isPreExecutionRpcError = (code: number | undefined): boolean =>
   code === -32600 || code === -32601 || code === -32602

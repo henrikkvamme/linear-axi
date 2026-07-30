@@ -55,6 +55,7 @@ import {
   type OfficialEntityIdentity
 } from "./official-identity"
 import { indeterminateOfficialMutation, officialMutationInspectionCommand } from "./official-inspection"
+import { isOfficialMutationTool } from "./official-mcp"
 import { fetchOfficialRows } from "./official-pagination"
 import { renderCandidateIds, resolveExactOfficialId as uniqueOfficialId } from "./official-selector"
 import { validateFrontierCursor } from "./wayfinder"
@@ -256,17 +257,66 @@ const mutationIdentityGuard = Effect.fn("Commands.mutationIdentityGuard")(functi
   }
 })
 
+const gatewayMethodSafety = {
+  close: "local",
+  mutationIdentity: "identity",
+  callOfficialTool: "official",
+  authStatus: "read",
+  listTeams: "read",
+  resolveProjectUpdateAssociations: "read",
+  listWorkflowStates: "read",
+  listIssues: "read",
+  viewIssue: "read",
+  createIssue: "mutation",
+  assignIssue: "mutation",
+  unassignIssue: "mutation",
+  closeIssue: "mutation",
+  changeIssueState: "mutation",
+  setIssueParent: "mutation",
+  clearIssueFields: "mutation",
+  updateIssueDescription: "mutation",
+  listLabels: "read",
+  createLabel: "mutation",
+  applyLabel: "mutation",
+  removeLabel: "mutation",
+  replaceLabels: "mutation",
+  listRelations: "read",
+  createRelation: "mutation",
+  removeRelation: "mutation",
+  listComments: "read",
+  createComment: "mutation",
+  frontier: "read"
+} as const satisfies Readonly<Record<keyof LinearGateway, "local" | "identity" | "official" | "read" | "mutation">>
+
+const isGatewayMutationDispatch = (
+  property: PropertyKey,
+  args: ReadonlyArray<unknown>
+): boolean => {
+  const safety = typeof property === "string"
+    ? gatewayMethodSafety[property as keyof typeof gatewayMethodSafety]
+    : undefined
+  if (safety === undefined || safety === "mutation") return true
+  return safety === "official" &&
+    typeof args[0] === "string" &&
+    isOfficialMutationTool(args[0])
+}
+
 const mutationGuardedGateway = (
   parsed: ParsedArgs,
   gateway: LinearGateway,
   spec: NonNullable<ReturnType<typeof findSpec>>
 ): LinearGateway => {
-  const guardOnce = Effect.runSync(Effect.cached(mutationIdentityGuard(parsed, gateway, spec)))
+  let identityVerified = false
+  const guard = () => mutationIdentityGuard(parsed, gateway, spec).pipe(
+    Effect.tap(() => Effect.sync(() => { identityVerified = true }))
+  )
   return new Proxy(gateway, {
     get(target, property, receiver) {
       const value: unknown = Reflect.get(target, property, receiver)
       if (typeof value !== "function" || property === "mutationIdentity" || property === "close") return value
-      return (...args: ReadonlyArray<unknown>) => guardOnce.pipe(
+      return (...args: ReadonlyArray<unknown>) => (
+        isGatewayMutationDispatch(property, args) || !identityVerified ? guard() : Effect.succeed(undefined)
+      ).pipe(
         Effect.flatMap(() => Effect.suspend(() =>
           (value as (...callArgs: ReadonlyArray<unknown>) => Effect.Effect<unknown, CliError>)(...args)))
       )

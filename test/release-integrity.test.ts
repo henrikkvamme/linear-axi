@@ -372,6 +372,48 @@ describe("release integrity", () => {
     expect(mutationCalls).toBe(0)
   })
 
+  test("team identity is revalidated after official mutation preflights", async () => {
+    let identityReads = 0
+    let issueReads = 0
+    let mutationCalls = 0
+    const gateway = {
+      close: () => Effect.void,
+      mutationIdentity: () => Effect.succeed({
+        workspace: { id: "11111111-1111-4111-8111-111111111111", urlKey: "bender", name: "Bender" },
+        team: identityReads++ === 0
+          ? { id: "22222222-2222-4222-8222-222222222222", key: "BEN", name: "Bender" }
+          : { id: "33333333-3333-4333-8333-333333333333", key: "SAM", name: "Sambu" }
+      }),
+      callOfficialTool: (name: string) => {
+        if (name === "save_issue") {
+          mutationCalls += 1
+          return Effect.succeed({ id: "issue-id" })
+        }
+        issueReads += 1
+        return Effect.succeed({
+          id: "issue-id",
+          identifier: "BEN-123",
+          teamId: "22222222-2222-4222-8222-222222222222",
+          title: issueReads === 1 ? "Old" : "Renamed",
+          archivedAt: null
+        })
+      }
+    } as unknown as LinearGateway
+    const parsed = parseArgs([
+      "issues", "update",
+      "--id", "BEN-123",
+      "--title", "Renamed",
+      "--expect-workspace", "bender",
+      "--expect-team", "BEN"
+    ], commandSpecs)
+
+    const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/tmp/linear-axi")))
+
+    expect(error).toMatchObject({ code: "team_mismatch", actual: { key: "SAM" } })
+    expect(identityReads).toBe(2)
+    expect(mutationCalls).toBe(0)
+  })
+
   test("only team-resolvable official mutations accept a team expectation", () => {
     const officialMutations = commandSpecs.filter((spec) =>
       spec.operation === "mutation" && spec.officialTools?.some((tool) => officialMutationTools.has(tool)))
@@ -515,6 +557,27 @@ describe("release integrity", () => {
       expect(result.exitCode).toBe(1)
       expect(result.stderr.toString()).toContain("does not match packaged source revision")
       expect(existsSync(join(root, "linear-axi"))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("Git checkout source ignores stale packaged revision metadata", () => {
+    const { root } = createReleaseFixture()
+    writeFileSync(join(root, "SOURCE_REVISION"), "1111111111111111111111111111111111111111\n")
+
+    try {
+      const capabilities = Bun.spawnSync({
+        cmd: ["bun", "src/main.ts", "capabilities"],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+
+      expect(capabilities.exitCode).toBe(0)
+      expect(capabilities.stdout.toString()).toContain("revision: development")
+      expect(capabilities.stdout.toString()).toContain("contentSha256: development")
+      expect(capabilities.stdout.toString()).not.toContain("1111111111111111111111111111111111111111")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
