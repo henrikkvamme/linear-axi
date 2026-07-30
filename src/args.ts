@@ -179,6 +179,17 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
     }
   }
 
+  if (
+    flags.has("expect-team") &&
+    !spec.mutationTargets?.some((target) => flags.has(target.flag))
+  ) {
+    const targetFlags = spec.mutationTargets?.map((target) => `--${target.flag}`).join(" or ")
+    throw new UsageError({
+      message: `--expect-team requires a team-resolvable target${targetFlags ? ` (${targetFlags})` : ""}`,
+      help: spec.help
+    })
+  }
+
   return { command: path, flags, repeatedFlags }
 }
 
@@ -250,7 +261,8 @@ export const topLevelHelp = [
   "  linear-axi issues parent clear --id <issue> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi issues update --id <issue> [issue properties and explicit --clear-* flags] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi labels list [--workspace | --team <team>] [--name <exact-name>] [--issue <issue>] [--include-archived] [--after <cursor>] [--limit 100] [--fields <fields>]",
-  "  linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <team>) [--group] [--parent <group>] [--id <uuid-v4>] [--if-absent] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi labels create --name <name> --color <#RRGGBB> --workspace [--group] [--parent <group>] [--id <uuid-v4>] [--if-absent] --expect-workspace <workspace-uuid-or-url-key>",
+  "  linear-axi labels create --name <name> --color <#RRGGBB> --team <team> [--group] [--parent <group>] [--id <uuid-v4>] [--if-absent] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi labels apply --issue <issue> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi labels add --issue <issue> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi labels remove --issue <issue> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
@@ -467,7 +479,7 @@ const rawCommandSpecs: ReadonlyArray<RawCommandSpec> = [
     flags: new Set(["help", "name", "color", "workspace", "team", "description", "id", "if-absent", "group", "parent"]),
     valueFlags: new Set(["name", "color", "team", "description", "id", "parent"]),
     required: new Set(["name", "color"]),
-    help: "Usage: linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <key-or-id>) [--description \"...\"] [--group] [--parent <group-id-or-name>] [--id <uuid-v4>] [--if-absent]\n--parent creates a child under an existing group. --group creates a label group. Caller UUID and --if-absent provide idempotent retries."
+    help: "Usage: linear-axi labels create --name <name> --color <#RRGGBB> --workspace [--description \"...\"] [--group] [--parent <group-id-or-name>] [--id <uuid-v4>] [--if-absent]\n   or: linear-axi labels create --name <name> --color <#RRGGBB> --team <key-or-id> [--description \"...\"] [--group] [--parent <group-id-or-name>] [--id <uuid-v4>] [--if-absent]\n--parent creates a child under an existing group. --group creates a label group. Caller UUID and --if-absent provide idempotent retries."
   },
   {
     path: ["labels", "apply"],
@@ -624,6 +636,7 @@ const completeHelp = (spec: CommandSpec): CommandSpec => {
   if (spec.path[0] === "home") {
     return spec
   }
+  const teamTargetFlags = spec.mutationTargets?.map((target) => `--${target.flag}`).join(" or ") ?? ""
   const options = [...spec.flags].map((flag) => {
     const optionValue = flag === "fields" && spec.fields
       ? `<${spec.fields.join(",")}>`
@@ -632,7 +645,10 @@ const completeHelp = (spec: CommandSpec): CommandSpec => {
         : (optionValues[flag] ?? "<value>")
     const value = spec.valueFlags?.has(flag) ? ` ${optionValue}` : ""
     const required = spec.required?.has(flag) ? " (required)" : ""
-    return `  --${flag}${value}${required}`
+    const targetRequirement = flag === "expect-team" && teamTargetFlags.length > 0
+      ? ` (requires ${teamTargetFlags})`
+      : ""
+    return `  --${flag}${value}${required}${targetRequirement}`
   })
   const examples = commandExamples[spec.path.join(" ")] ?? []
   const guardedExamples = examples.map((example) =>
@@ -642,7 +658,7 @@ const completeHelp = (spec: CommandSpec): CommandSpec => {
   const help = spec.operation === "mutation"
     ? spec.help.split("\n").map((line) =>
         /^(?:Usage:\s+|\s+or:\s+)linear-axi /.test(line)
-          ? `${line} --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]`
+          ? `${line} --expect-workspace <workspace-uuid-or-url-key>${spec.mutationTargets?.some((target) => line.includes(`--${target.flag}`)) ? " [--expect-team <team-key-or-uuid>]" : ""}`
           : line
       ).join("\n")
     : spec.help

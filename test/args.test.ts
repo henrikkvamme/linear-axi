@@ -69,11 +69,17 @@ describe("parseArgs", () => {
     expect(blockedBy.flags.get("blocked-by")).toBe("ENG-1")
   })
 
-  test("renders labels create parent as a label-group selector", () => {
+  test("renders labels create parent and conditional team guards", () => {
     const help = commandSpecs.find((spec) => spec.path.join(" ") === "labels create")!.help
+    const [workspaceUsage, teamUsage] = help.split("\n")
 
     expect(help).toContain("--parent <group-id-or-name>")
     expect(help).not.toContain("--parent <issue>")
+    expect(workspaceUsage).toContain("--workspace")
+    expect(workspaceUsage).not.toContain("--expect-team")
+    expect(teamUsage).toContain("--team <key-or-id>")
+    expect(teamUsage).toContain("--expect-team <team-key-or-uuid>")
+    expect(help).toContain("--expect-team <team-key-or-uuid> (requires --team)")
   })
 
   test("parses additive, subtractive, and explicit replacement label commands", () => {
@@ -96,6 +102,35 @@ describe("parseArgs", () => {
     expect(() => parseArgs([
       "capabilities", "require", "--capability", "--capability", "mutation-identity-v1"
     ], commandSpecs)).toThrow("--capability requires a value")
+  })
+
+  test("rejects team expectations without a team-resolvable target", () => {
+    for (const args of [
+      [
+        "labels", "create", "--name", "Bug", "--color", "#123456", "--workspace",
+        "--expect-workspace", "engineering", "--expect-team", "ENG"
+      ],
+      [
+        "documents", "update", "--id", "document-id", "--title", "Updated",
+        "--expect-workspace", "engineering", "--expect-team", "ENG"
+      ]
+    ]) {
+      expect(() => parseArgs(args, commandSpecs)).toThrow("--expect-team requires a team-resolvable target")
+    }
+  })
+
+  test("accepts team expectations with compatible targets", () => {
+    const label = parseArgs([
+      "labels", "create", "--name", "Bug", "--color", "#123456", "--team", "ENG",
+      "--expect-workspace", "engineering", "--expect-team", "ENG"
+    ], commandSpecs)
+    const document = parseArgs([
+      "documents", "update", "--id", "document-id", "--issue", "ENG-123", "--title", "Updated",
+      "--expect-workspace", "engineering", "--expect-team", "ENG"
+    ], commandSpecs)
+
+    expect(label.flags.get("expect-team")).toBe("ENG")
+    expect(document.flags.get("expect-team")).toBe("ENG")
   })
 
   test("rejects missing required flags", () => {

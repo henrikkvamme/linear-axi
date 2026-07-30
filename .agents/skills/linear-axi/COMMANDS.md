@@ -154,7 +154,7 @@ Options:
   --media-type <type>
   --allow-large
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --issue)
 Example:
   linear-axi attachments upload --issue ENG-123 --file ./trace.txt --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -244,7 +244,7 @@ Options:
   --related-to-json <value>
   --duplicate-of <value>
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --team)
 Example:
   linear-axi issues create --team ENG --title "Fix auth bug" --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -259,7 +259,7 @@ Options:
   --assignee <assignee> (required)
   --replace
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --id)
 Example:
   linear-axi issues assign --id ENG-123 --assignee me --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -273,7 +273,7 @@ Options:
   --id <id> (required)
   --if-assignee <assignee>
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --id)
 Example:
   linear-axi issues unassign --id ENG-123 --if-assignee me --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -287,7 +287,7 @@ Options:
   --id <id> (required)
   --state <state>
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --id)
 Example:
   linear-axi issues close --id ENG-123 --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -301,7 +301,7 @@ Options:
   --id <id> (required)
   --state <state> (required)
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --id)
 Example:
   linear-axi issues state --id ENG-123 --state "In Progress" --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -315,7 +315,7 @@ Options:
   --id <id> (required)
   --parent <issue> (required)
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --id)
 Example:
   linear-axi issues parent set --id ENG-124 --parent ENG-123 --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -328,7 +328,7 @@ Options:
   --help
   --id <id> (required)
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --id)
 Example:
   linear-axi issues parent clear --id ENG-124 --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -378,7 +378,7 @@ Options:
   --remove-blocked-by-json <value>
   --remove-related-to-json <value>
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --id)
 Example:
   linear-axi issues update --id ENG-123 --description-file issue.md --if-updated-at 2026-07-13T12:00:00.000Z --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -405,7 +405,8 @@ Example:
 ## labels create
 
 ```text
-Usage: linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <key-or-id>) [--description "..."] [--group] [--parent <group-id-or-name>] [--id <uuid-v4>] [--if-absent] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
+Usage: linear-axi labels create --name <name> --color <#RRGGBB> --workspace [--description "..."] [--group] [--parent <group-id-or-name>] [--id <uuid-v4>] [--if-absent] --expect-workspace <workspace-uuid-or-url-key>
+   or: linear-axi labels create --name <name> --color <#RRGGBB> --team <key-or-id> [--description "..."] [--group] [--parent <group-id-or-name>] [--id <uuid-v4>] [--if-absent] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
 --parent creates a child under an existing group. --group creates a label group. Caller UUID and --if-absent provide idempotent retries.
 Options:
   --help
@@ -419,7 +420,7 @@ Options:
   --group
   --parent <group-id-or-name>
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --team)
 Example:
   linear-axi labels create --team ENG --name wayfinder:task --color '#123456' --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -433,7 +434,7 @@ Options:
   --issue <issue> (required)
   --label <label> (required)
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --issue)
 Example:
   linear-axi labels apply --issue ENG-123 --label wayfinder:task --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -447,7 +448,7 @@ Options:
   --issue <issue> (required)
   --label <label> (required)
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --issue)
 Example:
   linear-axi labels add --issue ENG-123 --label Bug --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -461,7 +462,7 @@ Options:
   --issue <issue> (required)
   --label <label> (required)
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --issue)
 Example:
   linear-axi labels remove --issue ENG-123 --label Bug --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -476,7 +477,7 @@ Options:
   --issue <issue> (required)
   --labels-json <JSON string array> (required)
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --issue)
 Example:
   linear-axi labels replace --issue ENG-123 --labels-json '["Bug","Urgent"]' --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -515,7 +516,7 @@ Options:
   --type <type>
   --id <id>
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --blocked-by or --issue)
 Example:
   linear-axi relations create --issue ENG-124 --blocked-by ENG-123 --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
   linear-axi relations create --issue ENG-123 --related-issue ENG-124 --type blocks --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
@@ -535,7 +536,7 @@ Options:
   --related-issue <issue>
   --type <type>
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --id or --blocked-by or --issue)
 Example:
   linear-axi relations remove --issue ENG-124 --blocked-by ENG-123 --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
   linear-axi relations remove --id <relation-id> --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
@@ -566,7 +567,7 @@ Options:
   --body-file <path|->
   --id <id>
   --expect-workspace <workspace-uuid-or-url-key> (required)
-  --expect-team <team-key-or-uuid>
+  --expect-team <team-key-or-uuid> (requires --issue)
 Example:
   linear-axi comments create --issue ENG-123 --body "Implemented in PR." --expect-workspace <workspace-uuid-or-url-key> --expect-team <team-key-or-uuid>
 ```
@@ -683,7 +684,7 @@ Example:
 ## documents update
 
 ```text
-Usage: linear-axi documents update --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
+Usage: linear-axi documents update --id <id> --expect-workspace <workspace-uuid-or-url-key>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
@@ -700,7 +701,7 @@ Options (single-use unless marked repeatable):
   --color <#RRGGBB> - Six-digit hexadecimal color.
   --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --expect-workspace <workspace-uuid-or-url-key> (required) - Fail closed unless the authenticated workspace matches.
-  --expect-team <team-key-or-uuid> - Fail closed unless the resolved target team matches.
+  --expect-team <team-key-or-uuid> - Requires --issue; fail closed unless the resolved target team matches.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:

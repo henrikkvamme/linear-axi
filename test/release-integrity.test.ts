@@ -75,6 +75,13 @@ describe("release integrity", () => {
   test("every command is explicitly classified and every mutation requires workspace identity", () => {
     for (const spec of commandSpecs) {
       expect(spec.operation, spec.path.join(" ")).toMatch(/^(read|mutation|local)$/)
+      if (spec.flags.has("expect-team")) {
+        expect(spec.mutationTargets?.length, spec.path.join(" ")).toBeGreaterThan(0)
+        for (const target of spec.mutationTargets ?? []) {
+          expect(spec.flags.has(target.flag), `${spec.path.join(" ")}: --${target.flag}`).toBe(true)
+          expect(spec.valueFlags?.has(target.flag), `${spec.path.join(" ")}: --${target.flag}`).toBe(true)
+        }
+      }
       if (spec.operation === "mutation") {
         expect(spec.flags.has("expect-workspace"), spec.path.join(" ")).toBe(true)
         expect(spec.valueFlags?.has("expect-workspace"), spec.path.join(" ")).toBe(true)
@@ -297,7 +304,8 @@ describe("release integrity", () => {
 
     expect(documentUpdate.flags.has("expect-team")).toBe(true)
     expect(documentUpdate.valueFlags?.has("expect-team")).toBe(true)
-    expect(documentUpdate.help).toContain("[--expect-team <team-key-or-uuid>]")
+    expect(documentUpdate.help.split("\n")[0]).not.toContain("--expect-team")
+    expect(documentUpdate.help).toContain("--expect-team <team-key-or-uuid> - Requires --issue")
     for (const spec of officialMutations.filter((candidate) => candidate !== documentUpdate)) {
       expect(spec.flags.has("expect-team"), spec.path.join(" ")).toBe(false)
       expect(spec.valueFlags?.has("expect-team"), spec.path.join(" ")).toBe(false)

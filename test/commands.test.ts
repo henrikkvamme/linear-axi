@@ -163,7 +163,9 @@ const parseArgs: typeof parseProductionArgs = (argv, specs) => {
       ? [
           ...argv,
           "--expect-workspace", "engineering",
-          ...(spec.flags.has("expect-team") ? ["--expect-team", "ENG"] : [])
+          ...(spec.mutationTargets?.some((target) => argv.includes(`--${target.flag}`))
+            ? ["--expect-team", "ENG"]
+            : [])
         ]
       : argv,
     specs

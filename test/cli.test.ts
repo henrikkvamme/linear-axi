@@ -122,6 +122,27 @@ describe("linear-axi process", () => {
     expect(stdout).toContain("redirectUri: \"http://127.0.0.1:14582/oauth/callback\"")
   })
 
+  test("rejects targetless team expectations before gateway access", () => {
+    for (const args of [
+      [
+        "labels", "create", "--name", "Bug", "--color", "#123456", "--workspace",
+        "--expect-workspace", "engineering", "--expect-team", "ENG"
+      ],
+      [
+        "documents", "update", "--id", "document-id", "--title", "Updated",
+        "--expect-workspace", "engineering", "--expect-team", "ENG"
+      ]
+    ]) {
+      const result = runCli(...args)
+      const stdout = stdoutText(result)
+
+      expect(result.exitCode).toBe(2)
+      expect(stderrText(result)).toBe("")
+      expect(stdout).toContain("--expect-team requires a team-resolvable target")
+      expect(stdout).not.toContain("Linear credentials are not configured")
+    }
+  })
+
   test("rejects unknown flags with usage exit", () => {
     const result = runCli("teams", "list", "--bogus")
 

@@ -226,7 +226,7 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
       ? [
           "  --expect-workspace <workspace-uuid-or-url-key> (required) - Fail closed unless the authenticated workspace matches.",
           ...(mutationTargets.length > 0
-            ? ["  --expect-team <team-key-or-uuid> - Fail closed unless the resolved target team matches."]
+            ? [`  --expect-team <team-key-or-uuid> - Requires ${mutationTargets.map((target) => `--${target.flag}`).join(" or ")}; fail closed unless the resolved target team matches.`]
             : [])
         ]
       : [])
@@ -245,7 +245,7 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
     mutationTargets: mutationTargets.length > 0 ? mutationTargets : undefined,
     help: [
       operation === "mutation"
-        ? `${usage} --expect-workspace <workspace-uuid-or-url-key>${mutationTargets.length > 0 ? " [--expect-team <team-key-or-uuid>]" : ""}`
+        ? `${usage} --expect-workspace <workspace-uuid-or-url-key>${mutationTargets.some((target) => entry.flags[target.flag]?.required) ? " [--expect-team <team-key-or-uuid>]" : ""}`
         : usage,
       "Options (single-use unless marked repeatable):",
       ...options,
@@ -260,7 +260,7 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
 
 export const officialTopLevelHelp: ReadonlyArray<string> = commands.map((entry) =>
   `  linear-axi ${entry.path.join(" ")}${officialMutationTools.has(entry.tool)
-    ? ` --expect-workspace <workspace-uuid-or-url-key>${entry.mutationTargets?.length ? " [--expect-team <team-key-or-uuid>]" : ""}`
+    ? ` --expect-workspace <workspace-uuid-or-url-key>${entry.mutationTargets?.some((target) => entry.flags[target.flag]?.required) ? " [--expect-team <team-key-or-uuid>]" : ""}`
     : ""}`)
 
 export const runOfficialCommand = (
