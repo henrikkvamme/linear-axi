@@ -6,6 +6,9 @@ Agent-friendly Linear from your shell.
 
 `linear-axi` is a Bun CLI for Linear workspaces. It is built for agents: compact [AXI](https://axi.md/) output in TOON, strict exit codes, self-correcting errors, a standalone executable, and browser-based OAuth login.
 
+> [!IMPORTANT]
+> **Maintenance status:** This project is maintenance-only because the maintainer currently lacks capacity for active maintenance. For general Linear integrations, prefer the official Linear MCP. Issues and pull requests may not receive timely responses. `linear-axi` remains useful when its agent-oriented CLI, compact TOON output, fail-closed mutation identity checks, or local file attachment workflows fit your needs, but it does not promise parity with the official Linear MCP.
+
 ## Install
 
 Build and install a standalone executable from source:
