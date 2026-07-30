@@ -1,6 +1,6 @@
 {
   "name": "linear-axi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AXI-friendly Linear CLI for agents",
   "license": "MIT",
   "type": "module",
@@ -9,6 +9,12 @@
   },
   "files": [
     "src",
+    "scripts/build.ts",
+    "scripts/package-release.ts",
+    "scripts/package-revision.ts",
+    "scripts/release-provenance.ts",
+    "SOURCE_REVISION",
+    "docs/linear-mcp-parity.json",
     ".agents/skills/linear-axi",
     "assets/linear-axi-banner.png",
     ".env.example",
@@ -35,7 +41,10 @@
     "bun": ">=1.2.0"
   },
   "scripts": {
-    "build": "bun build --compile --no-compile-autoload-dotenv --outfile dist/linear-axi src/main.ts",
+    "build": "bun scripts/build.ts",
+    "package:release": "bun scripts/package-release.ts",
+    "prepack": "bun scripts/package-revision.ts prepare",
+    "postpack": "bun scripts/package-revision.ts cleanup",
     "check": "bun run parity:check && bun run typecheck && bun run test && bun run build",
     "parity:check": "bun scripts/check-parity.ts",
     "parity:capture": "bun scripts/capture-official-mcp.ts",

@@ -2,6 +2,7 @@ import { Effect, Predicate, Schema } from "effect"
 import { LinearApiError } from "./errors"
 import type { Credentials, GatewayError } from "./linear"
 import { officialMutationInspectionHelp } from "./official-inspection"
+import { PACKAGE_VERSION } from "./build-info"
 
 export const OFFICIAL_MCP_URL = "https://mcp.linear.app/mcp"
 export const OFFICIAL_MCP_PROTOCOL_VERSION = "2025-03-26"
@@ -177,7 +178,7 @@ export const makeOfficialMcpClient = (
       params: {
         protocolVersion: OFFICIAL_MCP_PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: "linear-axi", version: "0.1.0" }
+        clientInfo: { name: "linear-axi", version: PACKAGE_VERSION }
       }
     })
     sessionId = initializedResponse.response.headers.get("mcp-session-id") ?? undefined
@@ -314,7 +315,7 @@ export const makeOfficialMcpToolCaller = (
       .map((block) => block.text!)
       .join("\n") ?? ""
     if (toolResult.isError) {
-      if (isNonRetryableMutationTool(name)) {
+      if (isOfficialMutationTool(name)) {
         return yield* Effect.fail(ambiguousMutationFailure(name, args, new OfficialMcpRequestError({
           operation: "tools/call",
           phase: "response-received",
@@ -328,7 +329,7 @@ export const makeOfficialMcpToolCaller = (
     try {
       return decodeJsonValue(text)
     } catch (cause) {
-      if (isNonRetryableMutationTool(name)) {
+      if (isOfficialMutationTool(name)) {
         return yield* Effect.fail(ambiguousMutationFailure(name, args, new OfficialMcpRequestError({
           operation: "tools/call",
           phase: "response-received",
@@ -472,7 +473,7 @@ const ambiguousMutationFailure = (
   args: Readonly<Record<string, unknown>>,
   error: GatewayError
 ): GatewayError => {
-  if (!isNonRetryableMutationTool(tool) || !(error instanceof OfficialMcpRequestError) ||
+  if (!isOfficialMutationTool(tool) || !(error instanceof OfficialMcpRequestError) ||
     error.operation !== "tools/call" || !error.outcomeUnknown || error.phase === "before-dispatch") {
     return error
   }
@@ -492,11 +493,11 @@ const ambiguousMutationFailure = (
   })
 }
 
-const isNonRetryableMutationTool = (name: string): boolean =>
+export const isOfficialMutationTool = (name: string): boolean =>
   name.startsWith("save_") || name === "prepare_attachment_upload" || name === "create_attachment_from_upload"
 
 const isNonRetryableMutationToolCall = (method: string, params: Readonly<Record<string, unknown>>): boolean =>
-  method === "tools/call" && typeof params.name === "string" && isNonRetryableMutationTool(params.name)
+  method === "tools/call" && typeof params.name === "string" && isOfficialMutationTool(params.name)
 
 const isPreExecutionRpcError = (code: number | undefined): boolean =>
   code === -32600 || code === -32601 || code === -32602

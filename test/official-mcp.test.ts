@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { collectOfficialMcpTools, decodeStreamableHttpMessage, makeOfficialMcpToolCaller } from "../src/official-mcp"
+import { PACKAGE_VERSION } from "../src/build-info"
 
 const initializedFetcher = (
   respond: (request: Record<string, unknown>, headers: Headers) => Response,
@@ -44,7 +45,7 @@ describe("official Linear MCP tool boundary", () => {
         params: {
           protocolVersion: "2025-03-26",
           capabilities: {},
-          clientInfo: { name: "linear-axi", version: "0.1.0" }
+          clientInfo: { name: "linear-axi", version: PACKAGE_VERSION }
         }
       },
       { jsonrpc: "2.0", method: "notifications/initialized" },

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import type { Comment, Issue, IssueLabel, LinearClient, User } from "@linear/sdk"
+import type { Comment, Issue, IssueLabel, IssueRelation, LinearClient, User } from "@linear/sdk"
 import { Effect } from "effect"
+import { commandSpecs, parseArgs } from "../src/args"
+import { runCommand } from "../src/commands"
 import { makeLinearGateway } from "../src/linear"
 import type { ConnectionLike } from "../src/linear-pagination"
 
@@ -27,7 +29,7 @@ const issue = (overrides: Record<string, unknown> = {}): Issue => ({
   state: Promise.resolve({ id: "state", name: "Todo", type: "unstarted" }),
   assignee: undefined,
   parent: undefined,
-  team: Promise.resolve({ id: "22222222-2222-4222-8222-222222222222", key: "BEN" }),
+  team: Promise.resolve({ id: "22222222-2222-4222-8222-222222222222", key: "BEN", name: "Bender" }),
   labels: async () => page([]),
   ...overrides
 } as unknown as Issue)
@@ -78,6 +80,147 @@ const issueLabel = (overrides: Record<string, unknown> = {}): IssueLabel => ({
 } as unknown as IssueLabel)
 
 describe("SDK LinearGateway conflict contracts", () => {
+  test("reports authenticated workspace from viewer organization stable identity", async () => {
+    const viewer = {
+      id: user().id,
+      name: "Henrik",
+      organization: Promise.resolve({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        urlKey: "bender",
+        name: "Bender"
+      })
+    }
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([issue()], { viewer: Promise.resolve(viewer) })
+    })
+
+    const auth = await Effect.runPromise(gateway.authStatus())
+    const identity = await Effect.runPromise(gateway.mutationIdentity({ expectedWorkspace: "bender", issue: "BEN-1" }))
+
+    expect(auth.workspace).toEqual({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      urlKey: "bender",
+      name: "Bender"
+    })
+    expect(identity).toEqual({
+      workspace: auth.workspace!,
+      team
+    })
+  })
+
+  test("resolves a mutation team from an immutable relation id", async () => {
+    const viewer = {
+      organization: Promise.resolve({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        urlKey: "bender",
+        name: "Bender"
+      })
+    }
+    const source = issue()
+    const relation = {
+      id: "33333333-3333-4333-8333-333333333333",
+      issue: Promise.resolve(source)
+    } as unknown as IssueRelation
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        viewer: Promise.resolve(viewer),
+        issueRelation: async () => relation
+      })
+    })
+
+    const identity = await Effect.runPromise(gateway.mutationIdentity({ expectedWorkspace: "bender", relation: relation.id }))
+
+    expect(identity).toMatchObject({ workspace: { urlKey: "bender" }, team })
+  })
+
+  test("workspace expectations are checked before mutation target resolution", async () => {
+    let issueLookups = 0
+    const viewer = {
+      organization: Promise.resolve({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        urlKey: "sambu",
+        name: "Sambu"
+      })
+    }
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        viewer: Promise.resolve(viewer),
+        issues: async () => {
+          issueLookups += 1
+          return page([])
+        }
+      })
+    })
+    const identityInput = { issue: "BEN-404", expectedWorkspace: "bender" }
+
+    const error = await Effect.runPromise(Effect.flip(gateway.mutationIdentity(identityInput)))
+
+    expect(error).toMatchObject({
+      _tag: "LinearDomainError",
+      code: "workspace_mismatch",
+      expected: { idOrUrlKey: "bender" },
+      actual: { urlKey: "sambu", name: "Sambu" }
+    })
+    expect(issueLookups).toBe(0)
+  })
+
+  test("mutation identity lookup failures retry the original guarded command", async () => {
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([], { viewer: Promise.reject(new Error("forbidden")) })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.mutationIdentity({ expectedWorkspace: "bender", issue: "BEN-1" })))
+
+    expect(error.help).toContain("retry the original guarded command")
+    expect(error.help).not.toContain("linear-axi mutation identity")
+  })
+
+  test("revalidates an immutable issue team after native mutation preflights", async () => {
+    const movedTeam = {
+      id: "66666666-6666-4666-8666-666666666666",
+      key: "OPS",
+      name: "Operations"
+    }
+    const before = issue()
+    const moved = issue({ teamId: movedTeam.id, team: Promise.resolve(movedTeam) })
+    const viewer = {
+      organization: Promise.resolve({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        urlKey: "bender",
+        name: "Bender"
+      })
+    }
+    let issueReads = 0
+    let updates = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        viewer: Promise.resolve(viewer),
+        issues: async () => page([issueReads++ < 2 ? before : moved]),
+        users: async () => page([user()]),
+        updateIssue: async () => {
+          updates += 1
+          return { success: true }
+        }
+      })
+    })
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "assign",
+      "--id", "BEN-1",
+      "--assignee", user().id,
+      "--expect-workspace", "bender",
+      "--expect-team", team.id
+    ], commandSpecs), gateway, "/repo/src/main.ts")))
+
+    expect(error).toMatchObject({
+      _tag: "LinearDomainError",
+      code: "team_mismatch",
+      expected: { idOrKey: team.id },
+      actual: movedTeam
+    })
+    expect(issueReads).toBe(3)
+    expect(updates).toBe(0)
+  })
+
   test("resolves human issue identifiers by exact team key and issue number", async () => {
     const filters: unknown[] = []
     const client = clientWithIssues([], {
@@ -2192,6 +2335,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     })))
 
     expect(error.message).toContain("Ambiguous directed relation")
+    expect(error).toMatchObject({ code: "ambiguous_relation" })
     expect(error.help).toContain("showing 10 of 15")
     expect(error.help).not.toContain("relation-11")
   })
@@ -2492,7 +2636,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(connectionReads).toBe(0)
   })
 
-  test("frontier loads only map labels and resolves type labels concurrently", async () => {
+  test("frontier resolves claim identity from the viewer workspace and candidate team", async () => {
     const typeLabels = ["research", "prototype", "grilling", "task"].map((type, index) => issueLabel({
       id: `55555555-5555-4555-8555-55555555555${index + 1}`,
       name: `wayfinder:${type}`
@@ -2519,10 +2663,13 @@ describe("SDK LinearGateway conflict contracts", () => {
       parent: { configurable: true, get: () => { throw new Error("frontier must not load map parent") } },
       team: { configurable: true, get: () => { throw new Error("frontier must use the map team ID") } }
     })
+    const candidateTeamId = "88888888-8888-4888-8888-888888888888"
     const candidate = issue({
       id: "77777777-7777-4777-8777-777777777777",
-      identifier: "BEN-2",
+      identifier: "OPS-2",
       title: "Ready task",
+      teamId: candidateTeamId,
+      team: Promise.resolve({ id: candidateTeamId, key: "OPS", name: "Operations" }),
       labelIds: [typeLabels[3]!.id]
     })
     let activeLabelReads = 0
@@ -2536,7 +2683,14 @@ describe("SDK LinearGateway conflict contracts", () => {
         await Bun.sleep(5)
         activeLabelReads -= 1
         return page(typeLabels.filter((label) => label.name === variables.filter.name.eqIgnoreCase))
-      }
+      },
+      viewer: Promise.resolve({
+        organization: Promise.resolve({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          urlKey: "bender",
+          name: "Bender"
+        })
+      })
     })
 
     const result = await Effect.runPromise(makeLinearGateway({}, { client }).frontier({
@@ -2550,6 +2704,11 @@ describe("SDK LinearGateway conflict contracts", () => {
       title: candidate.title,
       type: "task"
     }])
+    expect(result.claimIdentity).toEqual({
+      issueId: candidate.id,
+      workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      teamId: candidateTeamId
+    })
     expect(mapLabelOptions).toEqual([false])
     expect(maxActiveLabelReads).toBe(4)
   })

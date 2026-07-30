@@ -37,6 +37,9 @@ import type {
   ListRelationsInput,
   ListWorkflowStatesInput,
   MutationResult,
+  MutationExpectation,
+  MutationIdentity,
+  MutationIdentityInput,
   PageResult,
   RelationDirection,
   RelationSummary,
@@ -51,6 +54,7 @@ import type {
 } from "./linear"
 import { decodeLocalCursorOffset, fetchAllPages, type ConnectionLike, type LocalCursorKind } from "./linear-pagination"
 import { labelGroupSelectionError } from "./label-validation"
+import { mutationIdentityMismatch, workspaceIdentityMatches, workspaceMismatchError } from "./mutation-identity"
 import { makeOfficialMcpToolCaller } from "./official-mcp"
 import { renderCandidateIds } from "./official-selector"
 import { normalizeRichText, richTextEqual } from "./rich-text"
@@ -108,7 +112,11 @@ export const makeSdkLinearGateway = (
     )
   }
 
-  const call = <Value>(name: string, run: (client: LinearClient) => Promise<Value>): Effect.Effect<Value, GatewayError> =>
+  const call = <Value>(
+    name: string,
+    run: (client: LinearClient) => Promise<Value>,
+    failureHelp = `Retry \`linear-axi ${name}\` after checking Linear access.`
+  ): Effect.Effect<Value, GatewayError> =>
     Effect.gen(function*() {
       const client = yield* getClient()
       return yield* Effect.tryPromise({
@@ -119,7 +127,7 @@ export const makeSdkLinearGateway = (
           }
           return new LinearApiError({
             message: readableError(cause),
-            help: `Retry \`linear-axi ${name}\` after checking Linear access.`
+            help: failureHelp
           })
         }
       })
@@ -127,6 +135,11 @@ export const makeSdkLinearGateway = (
 
   return {
     close: () => callOfficialTool?.close() ?? Effect.void,
+    mutationIdentity: (input) => call(
+      "mutation identity",
+      (client) => mutationIdentity(client, input),
+      "Check Linear access, then retry the original guarded command."
+    ),
     callOfficialTool: (name, args) => callOfficialTool
       ? callOfficialTool(name, args)
       : Effect.fail(new AuthError({
@@ -138,10 +151,16 @@ export const makeSdkLinearGateway = (
         ? Effect.succeed({ authenticated: false, method: "none" })
         : call("auth status", async (client): Promise<AuthStatus> => {
             const viewer = await client.viewer
+            const organization = await viewer.organization
             return {
               authenticated: true,
               method: credentials?.kind ?? "apiKey",
-              viewer: { id: viewer.id, name: viewer.name }
+              viewer: { id: viewer.id, name: viewer.name },
+              workspace: {
+                id: organization.id,
+                urlKey: organization.urlKey,
+                name: organization.name
+              }
             }
           }),
 
@@ -163,26 +182,78 @@ export const makeSdkLinearGateway = (
 
     listIssues: (input) => call("issues list", (client) => listIssues(client, input)),
     viewIssue: (id) => call("issues view", async (client) => issueDetail(await resolveIssue(client, id))),
-    createIssue: (input) => call("issues create", (client) => createIssue(client, input)),
-    assignIssue: (input) => call("issues assign", (client) => assignIssue(client, input)),
-    unassignIssue: (input) => call("issues unassign", (client) => unassignIssue(client, input)),
-    closeIssue: (input) => call("issues close", (client) => closeIssue(client, input)),
-    changeIssueState: (input) => call("issues state", (client) => changeIssueState(client, input)),
-    setIssueParent: (input) => call("issues parent", (client) => setIssueParent(client, input)),
-    clearIssueFields: (input) => call("issues update clear", (client) => clearIssueFields(client, input)),
-    updateIssueDescription: (input) => call("issues update", (client) => updateIssueDescription(client, input)),
+    createIssue: (input, expectation) => call("issues create", (client) => createIssue(client, input, expectation)),
+    assignIssue: (input, expectation) => call("issues assign", (client) => assignIssue(client, input, expectation)),
+    unassignIssue: (input, expectation) => call("issues unassign", (client) => unassignIssue(client, input, expectation)),
+    closeIssue: (input, expectation) => call("issues close", (client) => closeIssue(client, input, expectation)),
+    changeIssueState: (input, expectation) => call("issues state", (client) => changeIssueState(client, input, expectation)),
+    setIssueParent: (input, expectation) => call("issues parent", (client) => setIssueParent(client, input, expectation)),
+    clearIssueFields: (input, expectation) => call("issues update clear", (client) => clearIssueFields(client, input, expectation)),
+    updateIssueDescription: (input, expectation) => call("issues update", (client) => updateIssueDescription(client, input, expectation)),
     listLabels: (input) => call("labels list", (client) => listLabels(client, input)),
-    createLabel: (input) => call("labels create", (client) => createLabel(client, input)),
-    applyLabel: (input) => call("labels apply", (client) => applyLabel(client, input)),
-    removeLabel: (input) => call("labels remove", (client) => removeLabel(client, input)),
-    replaceLabels: (input) => call("labels replace", (client) => replaceLabels(client, input)),
+    createLabel: (input, expectation) => call("labels create", (client) => createLabel(client, input, expectation)),
+    applyLabel: (input, expectation) => call("labels apply", (client) => applyLabel(client, input, expectation)),
+    removeLabel: (input, expectation) => call("labels remove", (client) => removeLabel(client, input, expectation)),
+    replaceLabels: (input, expectation) => call("labels replace", (client) => replaceLabels(client, input, expectation)),
     listRelations: (input) => call("relations list", (client) => listRelations(client, input)),
-    createRelation: (input) => call("relations create", (client) => createRelation(client, input)),
-    removeRelation: (input) => call("relations remove", (client) => removeRelation(client, input)),
+    createRelation: (input, expectation) => call("relations create", (client) => createRelation(client, input, expectation)),
+    removeRelation: (input, expectation) => call("relations remove", (client) => removeRelation(client, input, expectation)),
     listComments: (input) => call("comments list", (client) => listComments(client, input)),
-    createComment: (input) => call("comments create", (client) => createComment(client, input)),
+    createComment: (input, expectation) => call("comments create", (client) => createComment(client, input, expectation)),
     frontier: (input) => call("wayfinder frontier", (client) => frontier(client, input.map, input.first, input.after))
   }
+}
+
+const mutationIdentity = async (
+  client: LinearClient,
+  input: MutationIdentityInput
+): Promise<MutationIdentity> => {
+  const viewer = await client.viewer
+  const organization = await viewer.organization
+  const workspace = {
+    id: organization.id,
+    urlKey: organization.urlKey,
+    name: organization.name
+  }
+  if (!workspaceIdentityMatches(workspace, input.expectedWorkspace)) {
+    throw workspaceMismatchError(workspace, input.expectedWorkspace)
+  }
+  let team: Team | undefined
+  if (input.issue) {
+    team = await (await resolveIssue(client, input.issue)).team
+  } else if (input.team) {
+    team = await resolveTeam(client, input.team)
+  } else if (input.relation) {
+    const relation = await lookupRelationByUuid(client, input.relation)
+    if (relation) {
+      const source = await relation.issue
+      if (source) {
+        team = await source.team
+      }
+    }
+  }
+  return {
+    workspace,
+    ...(team ? { team: teamSummary(team) } : {})
+  }
+}
+
+const verifyNativeMutationDispatch = async (
+  client: LinearClient,
+  expectation: MutationExpectation | undefined,
+  target: Omit<MutationIdentityInput, "expectedWorkspace">
+): Promise<void> => {
+  if (!expectation) return
+  const actual = await mutationIdentity(client, {
+    expectedWorkspace: expectation.expectedWorkspace,
+    ...target
+  })
+  const mismatch = mutationIdentityMismatch(
+    actual,
+    expectation.expectedWorkspace,
+    expectation.expectedTeam
+  )
+  if (mismatch) throw mismatch
 }
 
 const listWorkflowStates = async (client: LinearClient, input: ListWorkflowStatesInput) => {
@@ -204,7 +275,11 @@ const listWorkflowStates = async (client: LinearClient, input: ListWorkflowState
     .sort((left, right) => left.position - right.position || compareText(left.id, right.id))
 }
 
-const changeIssueState = async (client: LinearClient, input: ChangeIssueStateInput): Promise<MutationResult<IssueSummary>> => {
+const changeIssueState = async (
+  client: LinearClient,
+  input: ChangeIssueStateInput,
+  expectation?: MutationExpectation
+): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.id)
   const target = await resolveWorkflowState(client, input.state, requireTeamId(issue))
   const current = await issue.state
@@ -214,6 +289,7 @@ const changeIssueState = async (client: LinearClient, input: ChangeIssueStateInp
   return executeVerifiedIssueMutation(
     client,
     issue,
+    expectation,
     "workflow state update",
     async () => {
       const payload = await client.updateIssue(issue.id, { stateId: target.id })
@@ -227,7 +303,11 @@ const changeIssueState = async (client: LinearClient, input: ChangeIssueStateInp
   )
 }
 
-const setIssueParent = async (client: LinearClient, input: SetIssueParentInput): Promise<MutationResult<IssueSummary>> => {
+const setIssueParent = async (
+  client: LinearClient,
+  input: SetIssueParentInput,
+  expectation?: MutationExpectation
+): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.id)
   const parent = input.parent === null ? undefined : await resolveIssue(client, input.parent)
   if (parent && uuidEqual(issue.id, parent.id)) {
@@ -243,6 +323,7 @@ const setIssueParent = async (client: LinearClient, input: SetIssueParentInput):
   return executeVerifiedIssueMutation(
     client,
     issue,
+    expectation,
     "parent update",
     async () => {
       const payload = await client.updateIssue(issue.id, { parentId: desiredParentId })
@@ -253,7 +334,11 @@ const setIssueParent = async (client: LinearClient, input: SetIssueParentInput):
   )
 }
 
-const clearIssueFields = async (client: LinearClient, input: ClearIssueFieldsInput): Promise<MutationResult<IssueSummary>> => {
+const clearIssueFields = async (
+  client: LinearClient,
+  input: ClearIssueFieldsInput,
+  expectation?: MutationExpectation
+): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.id)
   const dueDateAlreadyClear = !input.dueDate || issue.dueDate === undefined || issue.dueDate === null
   const milestoneAlreadyClear = !input.milestone || issue.projectMilestoneId === undefined || issue.projectMilestoneId === null
@@ -263,6 +348,7 @@ const clearIssueFields = async (client: LinearClient, input: ClearIssueFieldsInp
   return executeVerifiedIssueMutation(
     client,
     issue,
+    expectation,
     "field clear",
     async () => {
       const payload = await client.updateIssue(issue.id, {
@@ -323,7 +409,8 @@ const listIssues = async (client: LinearClient, input: ListIssuesInput): Promise
 
 const createIssue = async (
   client: LinearClient,
-  input: CreateIssueInput
+  input: CreateIssueInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<IssueSummary>> => {
   const callerId = input.id ? normalizeUuid(input.id) : undefined
   const team = await resolveTeam(client, input.team)
@@ -356,6 +443,7 @@ const createIssue = async (
     }
   }
 
+  await verifyNativeMutationDispatch(client, expectation, { team: team.id })
   try {
     const payload = await client.createIssue({
       teamId: team.id,
@@ -380,7 +468,8 @@ const createIssue = async (
 
 const assignIssue = async (
   client: LinearClient,
-  input: AssignIssueInput
+  input: AssignIssueInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.id)
   const assignee = await resolveAssignableUser(client, input.assignee)
@@ -395,6 +484,7 @@ const assignIssue = async (
     )
   }
 
+  await verifyNativeMutationDispatch(client, expectation, { issue: issue.id })
   const payload = await client.updateIssue(issue.id, { assigneeId: assignee.id })
   await requirePayload(payload.success, payload.issue, "assign the issue")
   const verified = await resolveIssue(client, issue.id)
@@ -409,7 +499,8 @@ const assignIssue = async (
 
 const unassignIssue = async (
   client: LinearClient,
-  input: UnassignIssueInput
+  input: UnassignIssueInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.id)
   if (!issue.assigneeId) {
@@ -426,6 +517,7 @@ const unassignIssue = async (
     }
   }
 
+  await verifyNativeMutationDispatch(client, expectation, { issue: issue.id })
   const payload = await client.updateIssue(issue.id, { assigneeId: null })
   await requirePayload(payload.success, payload.issue, "unassign the issue")
   const verified = await resolveIssue(client, issue.id)
@@ -437,7 +529,8 @@ const unassignIssue = async (
 
 const closeIssue = async (
   client: LinearClient,
-  input: CloseIssueInput
+  input: CloseIssueInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.id)
   const teamId = requireTeamId(issue)
@@ -476,6 +569,7 @@ const closeIssue = async (
     target = states[0]!
   }
 
+  await verifyNativeMutationDispatch(client, expectation, { issue: issue.id })
   const payload = await client.updateIssue(issue.id, { stateId: target.id })
   await requirePayload(payload.success, payload.issue, "close the issue")
   const verified = await resolveIssue(client, issue.id)
@@ -488,7 +582,8 @@ const closeIssue = async (
 
 const updateIssueDescription = async (
   client: LinearClient,
-  input: UpdateIssueDescriptionInput
+  input: UpdateIssueDescriptionInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<IssueDetail>> => {
   const issue = await resolveIssue(client, input.id)
   const currentDescription = issue.description ?? ""
@@ -510,6 +605,7 @@ const updateIssueDescription = async (
     )
   }
 
+  await verifyNativeMutationDispatch(client, expectation, { issue: issue.id })
   const payload = await client.updateIssue(issue.id, { description: desiredDescription })
   const accepted = await requirePayload(payload.success, payload.issue, "update the issue description")
   const acceptedDescription = accepted.description ?? ""
@@ -581,7 +677,8 @@ const listLabels = async (client: LinearClient, input: ListLabelsInput): Promise
 
 const createLabel = async (
   client: LinearClient,
-  input: CreateLabelInput
+  input: CreateLabelInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<LabelSummary>> => {
   if (input.isGroup && input.parent) {
     throw conflict(
@@ -698,6 +795,7 @@ const createLabel = async (
   }
 
   let created: IssueLabel
+  await verifyNativeMutationDispatch(client, expectation, team ? { team: team.id } : {})
   try {
     const payload = await client.createIssueLabel({
       name: input.name,
@@ -737,7 +835,8 @@ const createLabel = async (
 
 const applyLabel = async (
   client: LinearClient,
-  input: ApplyLabelInput
+  input: ApplyLabelInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.issue)
   const label = await resolveLabelForTeam(client, input.label, requireTeamId(issue))
@@ -753,6 +852,7 @@ const applyLabel = async (
   return executeVerifiedIssueMutation(
     client,
     issue,
+    expectation,
     "label add",
     async () => {
       const payload = await client.issueAddLabel(issue.id, label.id)
@@ -766,7 +866,8 @@ const applyLabel = async (
 
 const removeLabel = async (
   client: LinearClient,
-  input: ApplyLabelInput
+  input: ApplyLabelInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.issue)
   const label = await resolveLabelForRemoval(issue, input.label, requireTeamId(issue))
@@ -778,6 +879,7 @@ const removeLabel = async (
   return executeVerifiedIssueMutation(
     client,
     issue,
+    expectation,
     "label removal",
     async () => {
       const payload = await client.issueRemoveLabel(issue.id, label.id)
@@ -790,7 +892,8 @@ const removeLabel = async (
 
 const replaceLabels = async (
   client: LinearClient,
-  input: ReplaceLabelsInput
+  input: ReplaceLabelsInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<IssueSummary>> => {
   const issue = await resolveIssue(client, input.issue)
   const labels = await Promise.all(input.labels.map((selector) =>
@@ -805,6 +908,7 @@ const replaceLabels = async (
   return executeVerifiedIssueMutation(
     client,
     issue,
+    expectation,
     "label replacement",
     async () => {
       const payload = await client.updateIssue(issue.id, { labelIds: desiredIds })
@@ -851,7 +955,8 @@ const listRelations = async (
 
 const createRelation = async (
   client: LinearClient,
-  input: CreateRelationInput
+  input: CreateRelationInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<RelationSummary>> => {
   const callerId = input.id ? normalizeUuid(input.id) : undefined
   const source = await resolveIssue(client, input.issue)
@@ -903,6 +1008,7 @@ const createRelation = async (
     return existing
   }
 
+  await verifyNativeMutationDispatch(client, expectation, { issue: source.id })
   try {
     const payload = await client.createIssueRelation({
       issueId: source.id,
@@ -923,7 +1029,8 @@ const createRelation = async (
 
 const removeRelation = async (
   client: LinearClient,
-  input: RemoveRelationInput
+  input: RemoveRelationInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<RelationRemovalSummary>> => {
   let relation: IssueRelation | undefined
   let desired: RelationRemovalSummary
@@ -937,10 +1044,11 @@ const removeRelation = async (
     const relations = await fetchAllPages(await source.relations({ first: 100, includeArchived: true }))
     const matches = relations.filter((candidate) => !candidate.archivedAt && relationMatches(candidate, source.id, target.id, type))
     if (matches.length > 1) {
-      throw conflict(
-        "Ambiguous directed relation",
-        `${renderCandidateIds(matches.map((candidate) => ({ id: candidate.id })))} Retry with \`relations remove --id <relation-id>\`.`
-      )
+      throw new LinearDomainError({
+        message: "Ambiguous directed relation",
+        code: "ambiguous_relation",
+        help: `${renderCandidateIds(matches.map((candidate) => ({ id: candidate.id })))} Retry with \`linear-axi relations remove --id <relation-id>\`.`
+      })
     }
     relation = matches[0]
     desired = { id: relation?.id ?? null, type, sourceId: source.id, targetId: target.id }
@@ -951,7 +1059,7 @@ const removeRelation = async (
   if (typeof relation.issueId !== "string" || relation.issueId.length === 0) {
     throw conflict(`relation ${relation.id} has no source issue`, "Inspect the relation in Linear before removing it.")
   }
-  return executeVerifiedRelationRemoval(client, relation, {
+  return executeVerifiedRelationRemoval(client, relation, expectation, {
     id: relation.id,
     type: relation.type as RelationType,
     sourceId: relation.issueId,
@@ -970,7 +1078,8 @@ const listComments = async (
 
 const createComment = async (
   client: LinearClient,
-  input: CreateCommentInput
+  input: CreateCommentInput,
+  expectation?: MutationExpectation
 ): Promise<MutationResult<CommentSummary>> => {
   const callerId = input.id ? normalizeUuid(input.id) : undefined
   const issue = await resolveIssue(client, input.issue)
@@ -987,6 +1096,7 @@ const createComment = async (
     }
   }
 
+  await verifyNativeMutationDispatch(client, expectation, { issue: issue.id })
   try {
     const payload = await client.createComment({ issueId: issue.id, body: input.body, id: callerId })
     const comment = await requirePayload(payload.success, payload.comment, "create the comment")
@@ -1057,10 +1167,30 @@ const frontier = async (
     labelIds: issue.labelIds
   }))
   const result = paginateFrontier(frontierCandidates, typeLabels, first, after)
+  const firstItem = result.items[0]
+  const firstCandidate = firstItem === undefined
+    ? undefined
+    : candidates.find((candidate) => uuidEqual(candidate.id, firstItem.id))
+  if (firstItem !== undefined && firstCandidate === undefined) {
+    throw new LinearDomainError({
+      message: "frontier claim identity could not be resolved",
+      help: "Rerun `linear-axi wayfinder frontier` for current Linear state."
+    })
+  }
+  const organization = firstCandidate === undefined
+    ? undefined
+    : await (await client.viewer).organization
   return {
     map: { id: map.id, identifier: map.identifier, title: map.title },
     total: frontierCandidates.length,
     items: result.items,
+    claimIdentity: firstCandidate === undefined || organization === undefined
+      ? null
+      : {
+          issueId: firstCandidate.id,
+          workspaceId: organization.id,
+          teamId: requireTeamId(firstCandidate)
+        },
     pageInfo: result.pageInfo
   }
 }
@@ -1267,12 +1397,14 @@ type IssueMutationOutcome = "accepted" | "rejected" | "indeterminate"
 const executeVerifiedIssueMutation = async (
   client: LinearClient,
   issue: Issue,
+  expectation: MutationExpectation | undefined,
   operation: string,
   mutate: () => Promise<IssueMutationOutcome>,
   desiredState: (candidate: Issue) => boolean | Promise<boolean>,
   result: string,
   inspection = `linear-axi issues view --id ${issue.identifier} --full`
 ): Promise<MutationResult<IssueSummary>> => {
+  await verifyNativeMutationDispatch(client, expectation, { issue: issue.id })
   let mutationFailed = false
   let mutationCause: unknown
   let outcome: IssueMutationOutcome = "indeterminate"
@@ -1319,8 +1451,10 @@ const indeterminateIssueMutation = (
 const executeVerifiedRelationRemoval = async (
   client: LinearClient,
   relation: IssueRelation,
+  expectation: MutationExpectation | undefined,
   desired: RelationRemovalSummary
 ): Promise<MutationResult<RelationRemovalSummary>> => {
+  await verifyNativeMutationDispatch(client, expectation, { issue: relation.issueId })
   let mutationFailed = false
   let mutationCause: unknown
   let accepted = false

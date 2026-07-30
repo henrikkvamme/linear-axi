@@ -1,16 +1,23 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, watch, writeFileSync } from "node:fs"
+import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHash } from "node:crypto"
 import { Effect } from "effect"
-import { commandSpecs, parseArgs } from "../src/args"
+import { commandSpecs, parseArgs as parseCommandArgs } from "../src/args"
 import { runAttachmentCommand, syncDirectory, type AttachmentRuntime } from "../src/attachments"
 import { statFileAt, writeFileDescriptor } from "../src/native-files"
 import { LinearApiError } from "../src/errors"
 import type { LinearGateway } from "../src/linear"
 
 const roots: Array<string> = []
+const parseArgs = (argv: ReadonlyArray<string>, specs = commandSpecs) =>
+  parseCommandArgs(
+    argv[0] === "attachments" && argv[1] === "upload" && !argv.includes("--expect-workspace")
+      ? [...argv, "--expect-workspace", "engineering", "--expect-team", "ENG"]
+      : argv,
+    specs
+  )
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -25,6 +32,22 @@ const run = (argv: ReadonlyArray<string>, result: unknown, runtime?: Partial<Att
   const effect = runAttachmentCommand(parsed, gateway(result), runtime)
   if (!effect) throw new Error("attachment command was not dispatched")
   return Effect.runPromise(effect)
+}
+
+const spawnConcurrentFsMutation = async (script: string) => {
+  const child = Bun.spawn({
+    cmd: [process.execPath, "-e", script],
+    stdout: "pipe",
+    stderr: "pipe"
+  })
+  const reader = child.stdout.getReader()
+  const ready = await reader.read()
+  reader.releaseLock()
+  if (new TextDecoder().decode(ready.value) !== "ready\n") {
+    child.kill()
+    throw new Error("concurrent filesystem mutation did not become ready")
+  }
+  return child
 }
 
 const detail = (overrides: Readonly<Record<string, unknown>> = {}) => ({
@@ -339,14 +362,15 @@ describe("attachment content boundary", () => {
     mkdirSync(outputDir)
     const outputPath = join(outputDir, "trace.txt")
     const bytes = new TextEncoder().encode("hello world\n")
-    let swapped = false
-    const watcher = watch(outputDir, (_event, filename) => {
-      if (!swapped && filename === "trace.txt") {
-        swapped = true
-        renameSync(outputDir, moved)
-        mkdirSync(outputDir)
-      }
-    })
+    const mover = await spawnConcurrentFsMutation(`
+      import { existsSync, mkdirSync, renameSync } from "node:fs";
+      const deadline = Date.now() + 5000;
+      console.log("ready");
+      while (!existsSync(${JSON.stringify(outputPath)}) && Date.now() < deadline) {}
+      if (!existsSync(${JSON.stringify(outputPath)})) process.exit(2);
+      renameSync(${JSON.stringify(outputDir)}, ${JSON.stringify(moved)});
+      mkdirSync(${JSON.stringify(outputDir)});
+    `)
 
     try {
       const error = await Effect.runPromise(Effect.flip(runEffect(
@@ -354,11 +378,12 @@ describe("attachment content boundary", () => {
         detail({ size: bytes.length }),
         { fetcher: async () => new Response(bytes) }
       )))
+      expect(await mover.exited).toBe(0)
       expect(error.message).toContain("directory changed")
       expect(existsSync(outputPath)).toBe(false)
       expect(existsSync(join(moved, "trace.txt"))).toBe(true)
     } finally {
-      watcher.close()
+      mover.kill()
     }
   })
 
@@ -368,14 +393,15 @@ describe("attachment content boundary", () => {
     const outputPath = join(root, "trace.txt")
     const displacedPath = join(root, "verified.txt")
     const bytes = new TextEncoder().encode("hello world\n")
-    let replaced = false
-    const watcher = watch(root, (_event, filename) => {
-      if (!replaced && filename === "trace.txt" && existsSync(outputPath)) {
-        replaced = true
-        renameSync(outputPath, displacedPath)
-        writeFileSync(outputPath, "concurrent replacement")
-      }
-    })
+    const replacer = await spawnConcurrentFsMutation(`
+      import { existsSync, renameSync, writeFileSync } from "node:fs";
+      const deadline = Date.now() + 5000;
+      console.log("ready");
+      while (!existsSync(${JSON.stringify(outputPath)}) && Date.now() < deadline) {}
+      if (!existsSync(${JSON.stringify(outputPath)})) process.exit(2);
+      renameSync(${JSON.stringify(outputPath)}, ${JSON.stringify(displacedPath)});
+      writeFileSync(${JSON.stringify(outputPath)}, "concurrent replacement");
+    `)
 
     try {
       const error = await Effect.runPromise(Effect.flip(runEffect(
@@ -383,12 +409,12 @@ describe("attachment content boundary", () => {
         detail({ size: bytes.length }),
         { fetcher: async () => new Response(bytes) }
       )))
-      expect(replaced).toBe(true)
+      expect(await replacer.exited).toBe(0)
       expect(error.message).toContain("destination changed")
       expect(readFileSync(displacedPath)).toEqual(Buffer.from(bytes))
       expect(readFileSync(outputPath, "utf8")).toBe("concurrent replacement")
     } finally {
-      watcher.close()
+      replacer.kill()
     }
   })
 
@@ -1042,6 +1068,57 @@ describe("resumable attachment upload", () => {
     expect(error.message).toContain("bytes changed during transfer")
     expect(finalized).toBe(false)
   })
+
+  test("unknown finalize retry preserves workspace and team expectations", async () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))
+    roots.push(root)
+    const source = join(root, "trace.txt")
+    writeFileSync(source, "hello world\n")
+    const uploadGateway = {
+      ...gateway({}),
+      callOfficialTool: (name: string) => {
+        if (name === "get_issue") return Effect.succeed({ id: "issue-1", identifier: "ENG-123", attachments: [] })
+        if (name === "prepare_attachment_upload") return Effect.succeed({
+          assetUrl: "https://uploads.linear.app/assets/stable-1",
+          uploadRequest: { url: "https://storage.googleapis.com/put", headers: { "content-type": "text/plain" } }
+        })
+        if (name === "create_attachment_from_upload") {
+          return Effect.fail(new LinearApiError({ message: "response lost", help: "retry" }))
+        }
+        return Effect.die(`unexpected ${name}`)
+      }
+    } as LinearGateway
+    const parsedWithExpectations = parseArgs([
+      "attachments", "upload",
+      "--issue", "ENG-123",
+      "--file", source,
+      "--expect-workspace", "bender",
+      "--expect-team", "ENG"
+    ], commandSpecs)
+    const parsed = {
+      ...parsedWithExpectations,
+      flags: new Map([...parsedWithExpectations.flags].filter(([name]) =>
+        name !== "expect-workspace" && name !== "expect-team")),
+      repeatedFlags: new Map([...parsedWithExpectations.repeatedFlags].filter(([name]) =>
+        name !== "expect-workspace" && name !== "expect-team")),
+      mutationExpectations: { workspace: "bender", team: "ENG" }
+    }
+
+    const error = await Effect.runPromise(Effect.flip(runAttachmentCommand(
+      parsed,
+      uploadGateway,
+      {
+        stateRoot: join(root, "state"),
+        fetcher: async (_url, init) => {
+          await new Response(init?.body).arrayBuffer()
+          return new Response(null, { status: 200 })
+        }
+      }
+    )!))
+
+    expect(error.help).toContain("--expect-workspace='bender'")
+    expect(error.help).toContain("--expect-team='ENG'")
+  }, 15_000)
 
   test("upload refuses cross-origin redirects before finalize", async () => {
     const root = mkdtempSync(join(tmpdir(), "linear-axi-upload-"))

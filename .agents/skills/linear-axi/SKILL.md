@@ -5,176 +5,73 @@ description: Linear AXI CLI workflow. Use when agents need to inspect or safely 
 
 # Linear AXI
 
-Use `linear-axi` as the Linear interface for agents. It prints data and errors as TOON on stdout and uses AXI exits: `0` success, empty, or no-op; `1` runtime, auth, API, not-found, ambiguity, or conflict error; `2` pre-dependency usage error.
+Use `linear-axi` as the Linear interface for agents. It prints compact TOON on stdout and uses AXI exits: `0` success, empty, or no-op; `1` runtime or domain failure; `2` usage failure before mutation dispatch.
 
-Invoke it as `linear-axi <command>` when the binary is on PATH. If you are working inside the source checkout before installing a binary, use `bun src/main.ts <command>`.
+Read `COMMANDS.md` when you need exact flags, examples, retry mechanics, or command-specific safety. Keep this file loaded for the ordered workflow and trust boundaries.
 
-## Commands
+## Ordered workflow
 
-Read `COMMANDS.md` for the exact generated command, flag, usage, example, and command-specific safety reference.
+1. Resolve the intended workspace and team from the task context.
+   Completion criterion: you have the workspace URL key or UUID and, for team-scoped work, the team key or UUID. Names are display-only and never workspace authorization evidence.
 
-```sh
-linear-axi
-linear-axi auth status
-linear-axi auth login
-linear-axi auth login --notify
-linear-axi auth login --no-open
-linear-axi teams list --limit 50
-linear-axi issues list --assignee me --limit 20
-linear-axi issues list --team <key-or-id> --limit 20
-linear-axi issues list --parent <issue-id-or-key> --label <id-or-name> --assignee none --state open --limit 100
-linear-axi issues list --fields id,identifier,title,assignee,labels,updatedAt --after <cursor>
-linear-axi issues view --id <issue-id-or-key> --full
-linear-axi issues create --team <key-or-id> --title "..." --description-file <path> --parent <issue> --label <label>
-linear-axi issues assign --id <issue-id-or-key> --assignee me
-linear-axi issues unassign --id <issue-id-or-key> --if-assignee me
-linear-axi issues close --id <issue-id-or-key>
-linear-axi workflow-states list --team <key-or-id>
-linear-axi issues state --id <issue> --state <id-or-unambiguous-name>
-linear-axi issues parent set --id <child> --parent <parent>
-linear-axi issues parent clear --id <child>
-linear-axi issues update --id <issue-id-or-key> --description-file <path> --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ>
-linear-axi issues update --id <issue> --priority 2 --due-date 2026-08-01 --project <project> --cycle <cycle>
-linear-axi labels list --workspace --name <exact-name>
-linear-axi labels list --team <key-or-id> --name <exact-name>
-linear-axi labels list --issue <issue-id-or-key> --include-archived --fields id,name,archivedAt
-linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
-linear-axi labels add --issue <issue> --label <label>
-linear-axi labels remove --issue <issue> --label <label>
-linear-axi labels replace --issue <issue> --labels-json '["Bug","Urgent"]'
-linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue>
-linear-axi relations list --issue <blocked-issue> --blocked-by
-linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks
-linear-axi relations list --issue <issue> --type blocks --direction both
-linear-axi relations remove --issue <blocked> --blocked-by <blocker>
-linear-axi comments list --issue <issue> --limit 50 --full
-linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
-linear-axi attachments list --issue <issue> --limit 100
-linear-axi attachments view --id <attachment-id>
-linear-axi attachments read --id <attachment-id> --max-bytes 32768
-linear-axi attachments download --id <attachment-id> --output ./attachment.bin
-linear-axi attachments upload --issue <issue> --file ./attachment.txt --title "Attachment"
-linear-axi wayfinder frontier --map <map-issue> --first 20
-linear-axi teams search --query <name>
-linear-axi teams view --query <id-key-or-name>
-linear-axi users list --query <name-or-email>
-linear-axi users view --query <id-name-or-email>
-linear-axi issues search --team <team> --query <text>
-linear-axi issues inspect --id <issue> --relations --full
-linear-axi comments search --project-id <project-id>
-linear-axi cycles list --team-id <team-id> --type current
-linear-axi documents list --query <text>
-linear-axi documents view --id <id-or-slug> --full
-linear-axi documents update --id <document-id> --title "New title"
-linear-axi projects list --team <team>
-linear-axi projects view --query <id-name-or-slug> --full
-linear-axi projects update --id <project-id> --state <state>
-linear-axi project-labels list --name <name>
-linear-axi milestones list --project <project>
-linear-axi milestones view --project <project> --query <id-or-name>
-linear-axi milestones update --project <project> --id <milestone-id> --target-date YYYY-MM-DD
-linear-axi release-pipelines list --team <team>
-linear-axi releases list --pipeline <pipeline>
-linear-axi releases view --id <id-or-slug>
-linear-axi releases update --id <release-id> --stage <stage>
-linear-axi release-notes list --pipeline <pipeline>
-linear-axi release-notes view --id <id-or-slug> --full
-linear-axi release-notes update --id <note-id> --title "New title"
-linear-axi diffs list --repo <repository>
-linear-axi diffs view --id <url-or-id> --full
-linear-axi diffs threads --id <url-or-id>
-linear-axi status-updates list --type project --project <project>
-linear-axi status-updates view --type project --id <update-id>
-linear-axi status-updates update --type project --id <update-id> --health onTrack
-linear-axi agent-skills list
-linear-axi agent-skills view --id <skill-id> --full
-linear-axi docs search --query <question>
-```
+2. Prove the installed generation before any live work.
+   Completion criterion:
 
-Official MCP intent mapping:
+   ```sh
+   linear-axi capabilities require \
+     --api-level 2 \
+     --capability mutation-identity-v1 \
+     --capability attachment-files-v1
+   ```
 
-- Find richer issues or relations: `issues search`, then `issues inspect --relations --full`.
-- Find or change workflow: `workflow-states list`, then `issues state`.
-- Manage labels safely: `labels list`, then `labels add`, `labels remove`, or explicit `labels replace`.
-- Manage hierarchy and dependencies: `issues parent set|clear`, `issues list --parent`, and `relations create|list|remove` with `--blocked-by`.
-- Resolve members: `users list|view`; assignment accepts `me`, id, email, name, or display name and rejects ambiguous matches.
-- Inspect product work: `projects list|view`, `milestones list|view`, `documents list|view`, `cycles list`, and `project-labels list`.
-- Update existing product objects: `projects update`, `milestones update`, `documents update`, `status-updates update`, `releases update`, and `release-notes update`.
-- Inspect releases and engineering context: `release-pipelines list`, `releases list|view`, `release-notes list|view`, and `diffs list|view|threads`.
-- Inspect comments on any official parent: `comments search`; use `comments list` for the richer native issue view.
-- Discover official guidance: `agent-skills list|view` and `docs search`.
+   Exit `0` is required. Exit `1` names missing capabilities and the managed update action. Exit `2` means the binary predates capability introspection and must be updated before live work.
 
-The checked `docs/linear-mcp-parity.json` records all 47 observed official tools and every intentional decision status. `official` commands use the hosted tool, `native` commands use the SDK equivalent, and `native+official` combines both routes. Official-backed commands use the one credential selected by the CLI's documented precedence and need no separate MCP configuration. Do not improvise raw GraphQL or retry an unavailable create, delete, or binary operation. Ask for the scoped decision named in that manifest.
+3. Verify authentication against the intended workspace and team.
+   Completion criterion: `linear-axi auth status` reports the expected workspace stable ID or URL key, and `linear-axi teams list --limit 50` contains the expected team key or UUID.
 
-Conditional official command contracts:
+   If unauthenticated or connected to the wrong workspace, run `linear-axi auth login` on the user's machine and keep the process alive. Select the workspace already resolved from the task and authorize it. For a remote CLI, use `linear-axi auth login --notify`, open the exact authorize URL in the shared browser, and complete only human-required authentication there. If that browser reaches the expected unreachable `127.0.0.1` callback, paste the full callback URL into the waiting CLI. Do not restart auth blindly because its one-use listener may remain active. After login, repeat both verification commands. A different workspace or missing expected team is an incomplete login, so restart OAuth with the intended workspace.
 
-- `comments search` requires exactly one parent flag; `--status-update-type` requires `--status-update-id`.
-- `documents update` accepts at most one new parent among project, issue, initiative, and cycle. `--team` may accompany `--cycle` to identify its team; otherwise team participates in the one-parent constraint.
-- `release-notes update --range-from` and `--range-to` must be provided together and cannot combine with `--releases-json`.
-- `status-updates update` accepts at most one of project and initiative, and the parent flag must match `--type`.
-- Every official `update` needs at least one property. Dates, timestamps, numeric ranges, and JSON arrays are validated before dispatch.
+4. Read the target and establish exact selectors before mutation.
+   Completion criterion: every target resolves uniquely and the requested state is understood. Treat not-found, archived, ambiguous, truncated, and conflict results as stop conditions. Fetch full rich text before replacing it and carry its canonical `updatedAt` into the mutation.
 
-## Rules
+5. Mutate only with explicit identity expectations.
+   Completion criterion: every mutation carries `--expect-workspace <workspace-uuid-or-url-key>` and team-scoped mutations also carry `--expect-team <team-key-or-uuid>`.
 
-1. Check auth before live work when credentials are uncertain.
-   Completion criterion: `auth status` returns `authenticated: true`, or immediately start the OAuth flow below. Never ask the user to paste a token.
+   ```sh
+   linear-axi issues state \
+     --id BEN-123 \
+     --state Done \
+     --expect-workspace bender \
+     --expect-team BEN
 
-2. Use the zero-configuration OAuth login when unauthenticated.
-   Completion criterion: run `linear-axi auth login` on the user's machine. It opens the default browser. Ask the user to select the intended Linear workspace and click Authorize, keep the CLI process alive, then verify `linear-axi auth status` reports `authenticated: true`. The token is stored with private permissions in `$XDG_CONFIG_HOME/linear-axi/credentials.env`, or `~/.config/linear-axi/credentials.env` when `XDG_CONFIG_HOME` is unset. If `LINEAR_AXI_ENV_FILE` is set in the process environment, that file is used instead. No OAuth app registration or token paste is required. Use `--no-open` only when the authorize URL should be opened manually.
+   linear-axi attachments upload \
+     --issue BEN-123 \
+     --file ./result.md \
+     --expect-workspace bender \
+     --expect-team BEN
+   ```
 
-3. Use the shared browser flow when the CLI runs remotely.
-   Completion criterion: start `linear-axi auth login --notify` in a persistent exec session, copy the exact authorize URL from stderr, use `chrome-devtools-axi open <authorize-url>`, and verify the snapshot shows `axi-cli is requesting access`. Hand the browser to the user so they can select the intended workspace and click Authorize. The live WebRTC URL mirrors the shared browser's current tab and does not navigate by itself.
+   An initial `workspace_mismatch` or `team_mismatch` means no mutation was sent; a later attachment-stage mismatch means that stage was blocked. Correct the credential or target and re-evaluate intent. Do not substitute a workspace name for its stable ID or URL key. Relation mutations check the source issue team: the blocker for `--blocked-by`, `--issue` for the generic form, and the stored source for `relations remove --id`, including for cross-team relations.
 
-4. Treat every mutating command as a live mutation.
-   Completion criterion: run any `create`, `update`, `assign`, `unassign`, `state`, `close`, `set`, `clear`, `add`, `remove`, `replace`, or attachment `upload` command only after explicit user intent identifies the target and desired change. Every live attachment upload requires an explicit issue and local file intent. Auth status and `list`, `view`, `inspect`, `search`, `threads`, attachment `read` and `download`, and Wayfinder frontier commands remain read-only with respect to Linear.
+6. Verify completion in Linear and verify intended GitHub linkage.
+   Completion criterion:
 
-5. Interpret state filters and resolve ambiguity explicitly.
-   Completion criterion: treat completed, canceled, and duplicate as the three terminal workflow types. `issues list --state open` excludes all three, while `--state closed` includes all three. Treat missing, archived, and ambiguous identity errors as authoritative. Never pick the first team, issue, label, workflow state, or user candidate. Retry with the intended UUID. Official details must exactly match the requested immutable ID or documented stable alias. Product updates canonicalize selectors, reject archived targets and additions, and verify scoped ownership; removals may resolve archived associations for cleanup. Assign only to an active, unarchived, assignable user. Issue summaries retain attached archived label names, so use `labels list --issue <issue> --include-archived --fields id,name,parentId,archivedAt` when label status or group matters.
+   - Re-read the ticket with `linear-axi issues inspect --id <issue> --full`.
+   - If the task means complete, inspect `linear-axi workflow-states list --team <team>` and set the intended final state with `issues state` or `issues close`, including both identity expectations.
+   - If a GitHub PR or diff was intended, run `linear-axi diffs list --query <issue-identifier> --repo <repo> --full` and inspect the issue's expanded attachment or diff data. Confirm the expected GitHub URL or diff is associated.
+   - Re-read the issue and diff after writes. Missing intended state or linkage means the task is incomplete.
+   - If no GitHub linkage was intended, say so explicitly in the completion result.
 
-6. Read TOON stdout directly.
-   Completion criterion: do not rerun only to confirm an empty state or error; structured output is authoritative unless the command exits non-zero. `--full` disables local projection and text truncation, but associations still require explicit inclusion flags. Before replacing rich text, follow the exact full-view command emitted for every truncated body, content, description, instructions, or text field.
+## Safety rules
 
-7. Let usage errors self-correct.
-   Completion criterion: after exit `2`, use the `help` field from stdout to repair the command in one step.
+- Live mutation requires explicit user intent that identifies the target and desired change. Read commands never authorize a later mutation.
+- Preserve AXI output authority. Read TOON once, use its help after exit `2`, and do not rerun merely to confirm an empty result.
+- Preserve retry safety. Reuse caller-retained UUIDs only for the same intent. Treat unknown mutation outcomes as inspection work and never blindly repeat an official or attachment mutation.
+- Preserve directed relation semantics. In the `--blocked-by` shorthand, `--issue` is blocked and `--blocked-by` is the blocker.
+- Preserve Wayfinder claim ownership. Use frontier's emitted workspace- and team-guarded assignment command. Never use `issues assign --replace` to steal a claim, and release work only with `issues unassign --if-assignee me`.
+- Preserve attachment file boundaries. Read only bounded supported text, inspect downloaded binary files locally, and resume uploads only with the same issue and unchanged file metadata.
+- Preserve current-state pagination. Replay returned cursors exactly and restart without a cursor when membership or ordering may have changed.
 
-8. Do not leave stale OAuth listeners running.
-   Completion criterion: if a browser handoff times out, is interrupted, or the user lands on `This site can't be reached`, stop the old `auth login` process and restart with a fresh authorize URL. OAuth codes and state are one-use.
+## Updating the CLI
 
-9. Handle remote-browser loopback callbacks.
-   Completion criterion: if the user approves Linear OAuth and the live browser lands on `http://127.0.0.1:14582/oauth/callback?...` with `This site can't be reached`, keep the still-running `auth login` process alive and paste that full callback URL into the CLI stdin. Then read the waiting CLI output and verify the configured credentials file was written. Do not paste the callback code or resulting tokens in the final answer.
-
-10. Preserve directed relation semantics.
-    Completion criterion: prefer `relations create --issue <blocked> --blocked-by <blocker>` and `relations list --issue <blocked> --blocked-by` for blocking relationships. Create maps the blocker to the source and the blocked issue to the target, and names both in its output. List maps to incoming `blocks`, reports the query as top-level `blockedIssue`, and names each row's counterpart `blockerIssue`. Do not combine the shorthand with generic relation flags. For the generic `relations create --type blocks` form, pass the source blocker as `--issue` and the target blocked issue as `--related-issue`. Treat source, target, and type as the relation identity; a reverse relation is distinct. Never create a self-block, including through two references that resolve to the same issue.
-
-11. Treat assignment as a non-atomic claim convention.
-    Completion criterion: claim only an unassigned issue, never pass `--replace` for a Wayfinder claim, and release with `--if-assignee me`. Read-after-write verification narrows but cannot eliminate concurrent claim races.
-
-12. Replace rich text only from the latest version.
-    Completion criterion: fetch the full object, merge locally, then pass the exact canonical `updatedAt` emitted by the CLI to the update command's `--if-updated-at`. This applies to issue descriptions, document and release-note content, project, release, and milestone descriptions, status-update bodies, and their clear flags. On conflict, refetch and merge again. Linear has no atomic compare-and-swap, so do not claim that the final read/write race is eliminated.
-
-13. Reuse caller-retained mutation UUIDs safely.
-    Completion criterion: pass a UUID v4 with `--id` when issue, label, relation, or comment creation must be retryable. Reuse it only for the same intended content and scope. Rich-text comparisons tolerate normalized newlines and Linear's angle-bracket form for HTTP(S) Markdown links. Treat `changed: false` as a successful no-op and any UUID/content conflict as a stop condition. Issue state, parent, label add/remove/replace, and relation removal mutations read back the requested state; if reconciliation remains indeterminate, run the exact read-only inspection command and do not repeat the mutation.
-
-14. Use explicit set and clear semantics.
-    Completion criterion: never encode clearing as an empty selector or empty value. Use the matching `--clear-*` flag and never combine it with its set flag. Product rich-text clears still require the latest `--if-updated-at`. The same canonical team, initiative, release, or issue relation cannot appear in both add and remove sets. Use `labels add` or `labels remove` when unrelated labels must survive; `labels replace` deliberately removes labels omitted from its JSON array, and `[]` clears all labels. Issue label selections accept ordinary labels only and at most one child from each label group. Create a top-level group with `labels create --group`, or an ordinary child under a same-scope top-level group with `--parent`; never combine those flags.
-
-15. Follow every list cursor exactly.
-    Completion criterion: for issue, label, relation, comment, and attachment lists, replay the same filters with the returned `page.endCursor` as `--after`. For Wayfinder frontier, use `pageInfo.endCursor`. Never construct or edit a cursor. Attachment continuation fails if membership or order changed, so restart without `--after`. Relation pages and issue-scoped exact-name label pages are current-state projections, so restart without `--after` when current membership matters.
-
-16. Validate the Wayfinder projection before claiming.
-    Completion criterion: require exactly one active production `wayfinder:map` label, or for isolated verification one `WF-VERIFY-<run>:map` label whose type labels use the same prefix. Before candidate loading, require all four active, ordinary, non-group labels to resolve uniquely among workspace and map-team labels, even when the map has no candidates: `<prefix>:research`, `<prefix>:prototype`, `<prefix>:grilling`, and `<prefix>:task`. Then require exactly one of those labels on every direct open, unblocked, unassigned child. Treat any projection error as a metadata repair task, not as an empty frontier.
-
-17. Treat frontier pages as current-state projections.
-   Completion criterion: restart without `--after` when current membership or ordering matters. Frontier pagination does not provide snapshot isolation.
-
-18. Keep attachment content at safe file boundaries.
-   Completion criterion: use `attachments read` only for bounded allowed UTF-8 text; `--max-bytes` and `--full` are mutually exclusive and cannot exceed 1 MiB. Download images and other binary files for inspection with an appropriate local tool, except allowed textual SVG; never print binary bytes or base64. Downloads default to 1 GiB, require an existing non-symlink destination directory, and always refuse existing destinations because atomic expected-file replacement is unavailable; `--overwrite` fails closed when a destination exists. Uploads accept a stable non-empty non-symlink regular file, default to 100 MiB, and require `--allow-large` up to the 2 GiB-minus-one-byte ceiling. Use a supported inferred media type, or pass a supported parameter-free `--media-type`. Upload retries must reuse the same issue, unchanged file, media type, title, and subtitle so private recovery records under `$XDG_STATE_HOME/linear-axi/uploads`, or `~/.local/state/linear-axi/uploads`, can reconcile before finalize. Safe local upload and download require macOS or Linux. The deprecated base64 `create_attachment` path and attachment deletion are not exposed.
-
-## Updating The CLI
-
-- Use `$axi` for output and process-boundary decisions.
-- Use `$effect-v4` for Effect code changes.
-- Add regression tests for new commands, especially unknown flags, missing required flags, truncation, and live-mutation guards.
-- Run `bun run skill:generate` after changing command specs or help.
-- To refresh the frozen official inventory, authenticate locally and run `bun run parity:capture --date YYYY-MM-DD`, then update the manifest observation date, hash, mappings, and rationales. Never hand-edit the generated inventory.
-- Verify with `bun run check`.
+Use `$axi` for the process boundary, `$effect-v4` for Effect code, and `bun run skill:generate` after command-spec changes. Keep mechanics generated in `COMMANDS.md`. Verify with `bun run check`.

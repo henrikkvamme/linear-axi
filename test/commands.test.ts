@@ -3,9 +3,9 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
-import { commandSpecs, parseArgs } from "../src/args"
+import { commandSpecs, parseArgs as parseProductionArgs } from "../src/args"
 import { runCommand } from "../src/commands"
-import { LinearApiError, UsageError } from "../src/errors"
+import { LinearApiError, LinearDomainError, UsageError } from "../src/errors"
 import type { IssueDetail, IssueSummary, LinearGateway } from "../src/linear"
 import { encodeFrontierCursor } from "../src/wayfinder"
 
@@ -100,6 +100,10 @@ const fakeGateway = (
 ): LinearGateway => {
   const gateway: LinearGateway = {
     close: () => Effect.void,
+    mutationIdentity: () => Effect.succeed({
+      workspace: { id: "workspace-id", urlKey: "engineering", name: "Engineering" },
+      team: { id: "team-id", key: "ENG", name: "Engineering" }
+    }),
     callOfficialTool: () => Effect.succeed({}),
     authStatus: () => Effect.succeed({
       authenticated: true,
@@ -133,6 +137,7 @@ const fakeGateway = (
       map: { id: "map-id", identifier: "ENG-100", title: "Map" },
       total: 1,
       items: [{ id: baseIssue.id, identifier: baseIssue.identifier, title: baseIssue.title, type: "task" }],
+      claimIdentity: { issueId: baseIssue.id, workspaceId: "workspace-id", teamId: "team-id" },
       pageInfo: { hasNextPage: false, endCursor: null }
     }),
     ...overrides
@@ -144,6 +149,27 @@ const fakeGateway = (
       Effect.map((value) => normalizeActiveOfficialOutput(name, value, args))
     )
   }
+}
+
+const parseArgs: typeof parseProductionArgs = (argv, specs) => {
+  const path: Array<string> = []
+  for (const value of argv) {
+    if (value.startsWith("--")) break
+    path.push(value)
+  }
+  const spec = specs.find((candidate) => candidate.path.join("\0") === path.join("\0"))
+  return parseProductionArgs(
+    spec?.operation === "mutation" && !argv.includes("--help") && !argv.includes("--expect-workspace")
+      ? [
+          ...argv,
+          "--expect-workspace", "engineering",
+          ...(spec.mutationTargets?.some((target) => argv.includes(`--${target.flag}`))
+            ? ["--expect-team", "ENG"]
+            : [])
+        ]
+      : argv,
+    specs
+  )
 }
 
 const run = async (argv: ReadonlyArray<string>, gateway = fakeGateway()) => {
@@ -4301,6 +4327,21 @@ describe("runCommand", () => {
     expect(calls).toBe(0)
   })
 
+  test("native mutations carry parsed identity expectations to dispatch", async () => {
+    const expectations: unknown[] = []
+    await run(["issues", "assign", "--id", "ENG-123", "--assignee", "me"], fakeGateway({
+      assignIssue: (_input, expectation) => {
+        expectations.push(expectation)
+        return Effect.succeed(mutation(baseIssue))
+      }
+    }))
+
+    expect(expectations).toEqual([{
+      expectedWorkspace: "engineering",
+      expectedTeam: "ENG"
+    }])
+  })
+
   test("assignment, release, close, and update pass conflict-aware inputs", async () => {
     const assignee = "55555555-5555-4555-8555-555555555555"
     const calls: unknown[] = []
@@ -4514,6 +4555,29 @@ describe("runCommand", () => {
     expect(calls).toHaveLength(2)
   })
 
+  test("ambiguous relation removal retries preserve mutation expectations", async () => {
+    const gateway = fakeGateway({
+      removeRelation: () => Effect.fail(new LinearDomainError({
+        message: "Ambiguous directed relation",
+        code: "ambiguous_relation",
+        help: "candidate IDs: relation-1, relation-2. Retry with `linear-axi relations remove --id <relation-id>`."
+      }))
+    })
+
+    const error = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs([
+        "relations", "remove",
+        "--issue", "ENG-124",
+        "--blocked-by", "ENG-123"
+      ], commandSpecs),
+      gateway,
+      "/repo/src/main.ts"
+    )))
+
+    expect(error.help).toContain("candidate IDs: relation-1, relation-2")
+    expect(error.help).toContain("linear-axi relations remove --id <relation-id> --expect-workspace 'engineering' --expect-team 'ENG'")
+  })
+
   test("blocked-by list normalizes to incoming blocks centered on the blocked issue", async () => {
     const gateway = fakeGateway({
       listRelations: (input) => {
@@ -4647,6 +4711,11 @@ describe("runCommand", () => {
           map: { id: "map-id", identifier: "ENG-100", title: "Map" },
           total: 101,
           items: [{ id: baseIssue.id, identifier: baseIssue.identifier, title: baseIssue.title, type: "task" }],
+          claimIdentity: {
+            issueId: baseIssue.id,
+            workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            teamId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+          },
           pageInfo: { hasNextPage: true, endCursor: nextCursor }
         })
       }
@@ -4654,7 +4723,15 @@ describe("runCommand", () => {
     const found = await run(["wayfinder", "frontier", "--map", "ENG-100", "--first", "100", "--after", previousCursor], gateway)
     expect(calls).toEqual([{ map: "ENG-100", first: 100, after: previousCursor }])
     expect(found.pageInfo).toEqual({ hasNextPage: true, endCursor: nextCursor })
-    expect((found.help as string[])[0]).toContain("issues assign --id ENG-123 --assignee me")
+    expect(found).not.toHaveProperty("claimIdentity")
+    expect((found.help as string[])[0]).toBe(
+      "Run `linear-axi issues assign --id ENG-123 --assignee me --expect-workspace aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa --expect-team bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb` to claim the first frontier issue."
+    )
+    expect(() => parseProductionArgs([
+      "issues", "assign", "--id", "ENG-123", "--assignee", "me",
+      "--expect-workspace", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "--expect-team", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    ], commandSpecs)).not.toThrow()
     expect((found.help as string[])[1]).toContain(`--after '${nextCursor}'`)
 
     const empty = await run(["wayfinder", "frontier", "--map", "ENG-100", "--after", previousCursor], fakeGateway({
@@ -4662,11 +4739,35 @@ describe("runCommand", () => {
         map: { id: "map-id", identifier: "ENG-100", title: "Map" },
         total: 100,
         items: [],
+        claimIdentity: null,
         pageInfo: { hasNextPage: false, endCursor: null }
       })
     }))
     expect(empty.frontier).toBe("0 frontier issues found after the supplied cursor for ENG-100")
     expect(empty.pageInfo).toEqual({ hasNextPage: false, endCursor: null })
+  })
+
+  test("frontier rejects claim identity for a different issue", async () => {
+    const error = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["wayfinder", "frontier", "--map", "ENG-100"], commandSpecs),
+      fakeGateway({
+        frontier: () => Effect.succeed({
+          map: { id: "map-id", identifier: "ENG-100", title: "Map" },
+          total: 1,
+          items: [{ id: baseIssue.id, identifier: baseIssue.identifier, title: baseIssue.title, type: "task" }],
+          claimIdentity: {
+            issueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            teamId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+          },
+          pageInfo: { hasNextPage: false, endCursor: null }
+        })
+      }),
+      "/repo/src/main.ts"
+    )))
+
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toBe("frontier claim identity could not be resolved")
   })
 
   test("noncanonical update timestamps fail before gateway access", async () => {
@@ -4707,6 +4808,7 @@ describe("runCommand", () => {
           map: { id: "map-id", identifier: "ENG-100", title: "Map" },
           total: 0,
           items: [],
+          claimIdentity: null,
           pageInfo: { hasNextPage: false, endCursor: null }
         })
       }

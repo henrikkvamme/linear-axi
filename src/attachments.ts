@@ -158,7 +158,7 @@ const uploadAttachment = Effect.fn("Attachments.upload")(function*(
               yield* persistRecovery(recoveryPath, recovery)
               return uploadOutput(verified, issue, source, false, "finalized attachment verified")
             }
-            return yield* finalizeUpload(gateway, recoveryPath, recovery, issue, source)
+            return yield* finalizeUpload(parsed, gateway, recoveryPath, recovery, issue, source)
           }
 
           yield* assertSourceUnchanged(source)
@@ -190,7 +190,7 @@ const uploadAttachment = Effect.fn("Attachments.upload")(function*(
           yield* assertSourceUnchanged(source)
           recovery = { ...recovery, stage: "transferred" }
           yield* persistRecovery(recoveryPath, recovery)
-          return yield* finalizeUpload(gateway, recoveryPath, recovery, issue, source)
+          return yield* finalizeUpload(parsed, gateway, recoveryPath, recovery, issue, source)
         }),
         releaseUploadIntentLock
       )
@@ -983,6 +983,7 @@ const uploadRequestHeaders = Effect.fn("Attachments.uploadRequestHeaders")(funct
 })
 
 const finalizeUpload = Effect.fn("Attachments.finalizeUpload")(function*(
+  parsed: ParsedArgs,
   gateway: LinearGateway,
   recoveryPath: string,
   recovery: UploadRecovery,
@@ -997,7 +998,7 @@ const finalizeUpload = Effect.fn("Attachments.finalizeUpload")(function*(
     ...(recovery.subtitle === null ? {} : { subtitle: recovery.subtitle })
   }).pipe(Effect.mapError(() => new LinearApiError({
     message: "Attachment finalize response was lost or failed after dispatch; mutation outcome is unknown",
-    help: `Retry \`linear-axi attachments upload --issue=${shellQuote(issue.identifier)} --file <same-file>\`; recovery will verify before finalizing again.`
+    help: `Retry \`linear-axi attachments upload --issue=${shellQuote(issue.identifier)} --file <same-file>${mutationExpectationArguments(parsed)}\`; recovery will verify before finalizing again.`
   })))
   let finalized: FinalizedUploadWire | undefined
   try { finalized = decodeFinalizedUpload(result) } catch {}
@@ -1079,6 +1080,14 @@ const firstNumber = (...values: ReadonlyArray<unknown>): number | null =>
   values.find((value): value is number => Predicate.isNumber(value) && Number.isSafeInteger(value) && value >= 0) ?? null
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
+
+const mutationExpectationArguments = (parsed: ParsedArgs): string => {
+  const workspace = parsed.mutationExpectations?.workspace ?? readStringFlag(parsed.flags, "expect-workspace")
+  const team = parsed.mutationExpectations?.team ?? readStringFlag(parsed.flags, "expect-team")
+  return workspace === undefined
+    ? ""
+    : ` --expect-workspace=${shellQuote(workspace)}${team === undefined ? "" : ` --expect-team=${shellQuote(team)}`}`
+}
 
 const attachmentSnapshot = (attachments: ReadonlyArray<AttachmentWire>): string =>
   digestSha256(new TextEncoder().encode(JSON.stringify(attachments.map((attachment) => attachment.id))))

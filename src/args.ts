@@ -1,3 +1,4 @@
+import { Schema } from "effect"
 import { UsageError } from "./errors"
 import { buildOfficialToolCapabilities } from "./official-capabilities"
 import { officialCommandSpecs, officialTopLevelHelp } from "./official-commands"
@@ -5,17 +6,29 @@ import { officialCommandSpecs, officialTopLevelHelp } from "./official-commands"
 export interface ParsedArgs {
   command: ReadonlyArray<string>
   flags: ReadonlyMap<string, string | boolean>
+  repeatedFlags: ReadonlyMap<string, ReadonlyArray<string | boolean>>
+  mutationExpectations?: {
+    readonly workspace: string
+    readonly team?: string
+  }
 }
 
 export interface CommandSpec {
   path: ReadonlyArray<string>
+  operation: "read" | "mutation" | "local"
   flags: ReadonlySet<string>
   valueFlags?: ReadonlySet<string>
   required?: ReadonlySet<string>
   fields?: ReadonlyArray<string>
   officialTools?: ReadonlyArray<string>
   repeatableFlags?: ReadonlySet<string>
+  mutationTargets?: ReadonlyArray<MutationTarget>
   help: string
+}
+
+export interface MutationTarget {
+  readonly kind: "issue" | "team" | "relation"
+  readonly flag: string
 }
 
 export const ISSUE_FIELDS = [
@@ -26,13 +39,23 @@ export const LABEL_FIELDS = ["id", "name", "scope", "color", "description", "isG
 export const DEFAULT_LABEL_FIELDS: ReadonlyArray<string> = ["id", "name", "scope"]
 
 const isFlag = (value: string): boolean => value.startsWith("--")
+const decodeWorkspaceExpectation = Schema.decodeUnknownSync(
+  Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z0-9][a-z0-9-]{0,62})$/i))
+)
+const decodeTeamExpectation = Schema.decodeUnknownSync(
+  Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9-]{0,31})$/i))
+)
 
 export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<CommandSpec>): ParsedArgs => {
   const command: Array<string> = []
   const flags = new Map<string, string | boolean>()
   const duplicates = new Set<string>()
+  const repeatedFlags = new Map<string, Array<string | boolean>>()
   const setFlag = (flag: string, value: string | boolean): void => {
     if (flags.has(flag)) duplicates.add(flag)
+    const values = repeatedFlags.get(flag) ?? []
+    values.push(value)
+    repeatedFlags.set(flag, values)
     flags.set(flag, value)
   }
 
@@ -91,27 +114,48 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
     }
 
     const expectsValue = spec.valueFlags?.has(flag) ?? false
-    const value = flags.get(flag)
-    if (expectsValue && value === true) {
-      throw new UsageError({
-        message: `--${flag} requires a value`,
-        help: spec.help
-      })
-    }
-    if (expectsValue && value === "") {
-      throw new UsageError({
-        message: flag === "after" ? "invalid --after cursor: value cannot be empty" : `--${flag} cannot be empty`,
-        help: spec.help
-      })
-    }
-    if (!expectsValue && value !== true) {
-      throw new UsageError({
-        message: `--${flag} does not take a value`,
-        help: spec.help
-      })
-    }
-    if (flag === "limit" || flag === "first") {
-      validatePageSize(flag, value, spec.help)
+    for (const value of repeatedFlags.get(flag) ?? []) {
+      if (expectsValue && value === true) {
+        throw new UsageError({
+          message: `--${flag} requires a value`,
+          help: spec.help
+        })
+      }
+      if (expectsValue && value === "") {
+        throw new UsageError({
+          message: flag === "after" ? "invalid --after cursor: value cannot be empty" : `--${flag} cannot be empty`,
+          help: spec.help
+        })
+      }
+      if (!expectsValue && value !== true) {
+        throw new UsageError({
+          message: `--${flag} does not take a value`,
+          help: spec.help
+        })
+      }
+      if (flag === "limit" || flag === "first") {
+        validatePageSize(flag, value, spec.help)
+      }
+      if (flag === "expect-workspace" && typeof value === "string") {
+        try {
+          decodeWorkspaceExpectation(value)
+        } catch {
+          throw new UsageError({
+            message: "--expect-workspace must be a workspace UUID or URL key",
+            help: spec.help
+          })
+        }
+      }
+      if (flag === "expect-team" && typeof value === "string") {
+        try {
+          decodeTeamExpectation(value)
+        } catch {
+          throw new UsageError({
+            message: "--expect-team must be a team key or UUID",
+            help: spec.help
+          })
+        }
+      }
     }
   }
 
@@ -135,7 +179,18 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
     }
   }
 
-  return { command: path, flags }
+  if (
+    flags.has("expect-team") &&
+    !spec.mutationTargets?.some((target) => flags.has(target.flag))
+  ) {
+    const targetFlags = spec.mutationTargets?.map((target) => `--${target.flag}`).join(" or ")
+    throw new UsageError({
+      message: `--expect-team requires a team-resolvable target${targetFlags ? ` (${targetFlags})` : ""}`,
+      help: spec.help
+    })
+  }
+
+  return { command: path, flags, repeatedFlags }
 }
 
 export const findSpec = (
@@ -160,6 +215,9 @@ export const readStringFlag = (
 export const readBooleanFlag = (flags: ReadonlyMap<string, string | boolean>, name: string): boolean =>
   flags.get(name) === true
 
+export const readRepeatedStringFlags = (parsed: ParsedArgs, name: string): ReadonlyArray<string> =>
+  (parsed.repeatedFlags.get(name) ?? []).filter((value): value is string => typeof value === "string")
+
 export const readLimitFlag = (flags: ReadonlyMap<string, string | boolean>, fallback: number): number => {
   const raw = readStringFlag(flags, "limit")
   if (raw === undefined) {
@@ -183,6 +241,9 @@ export const topLevelHelp = [
   "linear-axi",
   "Commands:",
   "  linear-axi",
+  "  linear-axi --version",
+  "  linear-axi capabilities",
+  "  linear-axi capabilities require [--api-level <integer>] [--capability <name>]...",
   "  linear-axi auth status",
   "  linear-axi auth login [--notify] [--no-open]",
   "  linear-axi auth oauth setup [--notify]",
@@ -191,42 +252,57 @@ export const topLevelHelp = [
   "  linear-axi workflow-states list --team <key-or-id>",
   "  linear-axi issues list [--team <key-or-id>] [--label <id-or-name>] [--parent <issue>] [--assignee me|none|<user-uuid>] [--state open|closed] [--after <cursor>] [--limit 20] [--fields <fields>]",
   "  linear-axi issues view --id <issue-id-or-key> [--full]",
-  "  linear-axi issues create --team <key-or-id> --title \"...\" [issue properties] [--id <uuid-v4> | --if-absent]",
-  "  linear-axi issues assign --id <issue> --assignee me|<id-email-or-name> [--replace]",
-  "  linear-axi issues unassign --id <issue> [--if-assignee me|<id-email-or-name>]",
-  "  linear-axi issues close --id <issue> [--state <state-uuid>]",
-  "  linear-axi issues state --id <issue> --state <state-id-or-name>",
-  "  linear-axi issues parent set --id <issue> --parent <parent-issue>",
-  "  linear-axi issues parent clear --id <issue>",
-  "  linear-axi issues update --id <issue> [issue properties and explicit --clear-* flags]",
+  "  linear-axi issues create --team <key-or-id> --title \"...\" [issue properties] [--id <uuid-v4> | --if-absent] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues assign --id <issue> --assignee me|<id-email-or-name> [--replace] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues unassign --id <issue> [--if-assignee me|<id-email-or-name>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues close --id <issue> [--state <state-uuid>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues state --id <issue> --state <state-id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues parent set --id <issue> --parent <parent-issue> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues parent clear --id <issue> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi issues update --id <issue> [issue properties and explicit --clear-* flags] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi labels list [--workspace | --team <team>] [--name <exact-name>] [--issue <issue>] [--include-archived] [--after <cursor>] [--limit 100] [--fields <fields>]",
-  "  linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <team>) [--group] [--parent <group>] [--id <uuid-v4>] [--if-absent]",
-  "  linear-axi labels apply --issue <issue> --label <id-or-name>",
-  "  linear-axi labels add --issue <issue> --label <id-or-name>",
-  "  linear-axi labels remove --issue <issue> --label <id-or-name>",
-  "  linear-axi labels replace --issue <issue> --labels-json '[\"Bug\",\"Urgent\"]'",
+  "  linear-axi labels create --name <name> --color <#RRGGBB> --workspace [--group] [--parent <group>] [--id <uuid-v4>] [--if-absent] --expect-workspace <workspace-uuid-or-url-key>",
+  "  linear-axi labels create --name <name> --color <#RRGGBB> --team <team> [--group] [--parent <group>] [--id <uuid-v4>] [--if-absent] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi labels apply --issue <issue> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi labels add --issue <issue> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi labels remove --issue <issue> --label <id-or-name> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi labels replace --issue <issue> --labels-json '[\"Bug\",\"Urgent\"]' --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi relations list --issue <blocked-issue> --blocked-by [--after <cursor>] [--limit 100]",
   "  linear-axi relations list --issue <issue> [--type <type>] [--direction outgoing|incoming|both] [--after <cursor>] [--limit 100]",
-  "  linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> [--id <uuid-v4>]",
-  "  linear-axi relations create --issue <source> --related-issue <target> --type <type> [--id <uuid-v4>]",
-  "  linear-axi relations remove --id <relation-id>",
-  "  linear-axi relations remove --issue <blocked> --blocked-by <blocker>",
+  "  linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> [--id <uuid-v4>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi relations create --issue <source> --related-issue <target> --type <type> [--id <uuid-v4>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi relations remove --id <relation-id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
+  "  linear-axi relations remove --issue <blocked> --blocked-by <blocker> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi comments list --issue <issue> [--after <cursor>] [--limit 50] [--full]",
-  "  linear-axi comments create --issue <issue> (--body \"...\" | --body-file <path|->) [--id <uuid-v4>]",
+  "  linear-axi comments create --issue <issue> (--body \"...\" | --body-file <path|->) [--id <uuid-v4>] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi attachments list --issue <issue> [--after <cursor>] [--limit 100]",
   "  linear-axi attachments view --id <attachment-id>",
   "  linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]",
   "  linear-axi attachments read --id <attachment-id> [--max-bytes <n>] [--full]",
-  "  linear-axi attachments upload --issue <issue> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large]",
+  "  linear-axi attachments upload --issue <issue> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large] --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]",
   "  linear-axi wayfinder frontier --map <issue> [--first 20] [--after <cursor>]",
   ...officialTopLevelHelp
 ].join("\n")
 
-const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
+type RawCommandSpec = Omit<CommandSpec, "operation">
+
+const rawCommandSpecs: ReadonlyArray<RawCommandSpec> = [
   {
     path: ["home"],
-    flags: new Set(["help"]),
+    flags: new Set(["help", "version"]),
     help: topLevelHelp
+  },
+  {
+    path: ["capabilities"],
+    flags: new Set(["help"]),
+    help: "Usage: linear-axi capabilities"
+  },
+  {
+    path: ["capabilities", "require"],
+    flags: new Set(["help", "api-level", "capability"]),
+    valueFlags: new Set(["api-level", "capability"]),
+    repeatableFlags: new Set(["capability"]),
+    help: "Usage: linear-axi capabilities require [--api-level <integer>] [--capability <name>]..."
   },
   {
     path: ["auth", "status"],
@@ -403,7 +479,7 @@ const rawCommandSpecs: ReadonlyArray<CommandSpec> = [
     flags: new Set(["help", "name", "color", "workspace", "team", "description", "id", "if-absent", "group", "parent"]),
     valueFlags: new Set(["name", "color", "team", "description", "id", "parent"]),
     required: new Set(["name", "color"]),
-    help: "Usage: linear-axi labels create --name <name> --color <#RRGGBB> (--workspace | --team <key-or-id>) [--description \"...\"] [--group] [--parent <group-id-or-name>] [--id <uuid-v4>] [--if-absent]\n--parent creates a child under an existing group. --group creates a label group. Caller UUID and --if-absent provide idempotent retries."
+    help: "Usage: linear-axi labels create --name <name> --color <#RRGGBB> --workspace [--description \"...\"] [--group] [--parent <group-id-or-name>] [--id <uuid-v4>] [--if-absent]\n   or: linear-axi labels create --name <name> --color <#RRGGBB> --team <key-or-id> [--description \"...\"] [--group] [--parent <group-id-or-name>] [--id <uuid-v4>] [--if-absent]\n--parent creates a child under an existing group. --group creates a label group. Caller UUID and --if-absent provide idempotent retries."
   },
   {
     path: ["labels", "apply"],
@@ -513,6 +589,10 @@ const commandExamples: Readonly<Record<string, ReadonlyArray<string>>> = {
 }
 
 const optionValues: Readonly<Record<string, string>> = {
+  "api-level": "<integer>",
+  capability: "<name>",
+  "expect-workspace": "<workspace-uuid-or-url-key>",
+  "expect-team": "<team-key-or-uuid>",
   "client-id": "<id>",
   "redirect-uri": "<url>",
   scope: "<scopes>",
@@ -556,6 +636,7 @@ const completeHelp = (spec: CommandSpec): CommandSpec => {
   if (spec.path[0] === "home") {
     return spec
   }
+  const teamTargetFlags = spec.mutationTargets?.map((target) => `--${target.flag}`).join(" or ") ?? ""
   const options = [...spec.flags].map((flag) => {
     const optionValue = flag === "fields" && spec.fields
       ? `<${spec.fields.join(",")}>`
@@ -564,12 +645,26 @@ const completeHelp = (spec: CommandSpec): CommandSpec => {
         : (optionValues[flag] ?? "<value>")
     const value = spec.valueFlags?.has(flag) ? ` ${optionValue}` : ""
     const required = spec.required?.has(flag) ? " (required)" : ""
-    return `  --${flag}${value}${required}`
+    const targetRequirement = flag === "expect-team" && teamTargetFlags.length > 0
+      ? ` (requires ${teamTargetFlags})`
+      : ""
+    return `  --${flag}${value}${required}${targetRequirement}`
   })
   const examples = commandExamples[spec.path.join(" ")] ?? []
+  const guardedExamples = examples.map((example) =>
+    spec.operation === "mutation"
+      ? `${example} --expect-workspace <workspace-uuid-or-url-key>${spec.mutationTargets?.some((target) => example.includes(`--${target.flag}`)) ? " --expect-team <team-key-or-uuid>" : ""}`
+      : example)
+  const help = spec.operation === "mutation"
+    ? spec.help.split("\n").map((line) =>
+        /^(?:Usage:\s+|\s+or:\s+)linear-axi /.test(line)
+          ? `${line} --expect-workspace <workspace-uuid-or-url-key>${spec.mutationTargets?.some((target) => line.includes(`--${target.flag}`)) ? " [--expect-team <team-key-or-uuid>]" : ""}`
+          : line
+      ).join("\n")
+    : spec.help
   return {
     ...spec,
-    help: [spec.help, "Options:", ...options, "Example:", ...examples.map((example) => `  ${example}`)].join("\n")
+    help: [help, "Options:", ...options, "Example:", ...guardedExamples.map((example) => `  ${example}`)].join("\n")
   }
 }
 
@@ -601,11 +696,83 @@ const nativeOfficialToolsByCommand: Readonly<Record<string, ReadonlyArray<string
   "attachments upload": ["get_issue", "prepare_attachment_upload", "create_attachment_from_upload"]
 }
 
+const nativeCommandSafety = {
+  home: { operation: "local" },
+  capabilities: { operation: "local" },
+  "capabilities require": { operation: "local" },
+  "auth status": { operation: "local" },
+  "auth login": { operation: "local" },
+  "auth oauth setup": { operation: "local" },
+  "auth oauth connect": { operation: "local" },
+  "attachments list": { operation: "read" },
+  "attachments view": { operation: "read" },
+  "attachments download": { operation: "read" },
+  "attachments read": { operation: "read" },
+  "attachments upload": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "teams list": { operation: "read" },
+  "workflow-states list": { operation: "read" },
+  "issues list": { operation: "read" },
+  "issues view": { operation: "read" },
+  "issues create": { operation: "mutation", mutationTargets: [{ kind: "team", flag: "team" }] },
+  "issues assign": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues unassign": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues close": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues state": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues parent set": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues parent clear": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "issues update": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "id" }] },
+  "labels list": { operation: "read" },
+  "labels create": { operation: "mutation", mutationTargets: [{ kind: "team", flag: "team" }] },
+  "labels apply": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "labels add": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "labels remove": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "labels replace": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "relations list": { operation: "read" },
+  "relations create": {
+    operation: "mutation",
+    mutationTargets: [{ kind: "issue", flag: "blocked-by" }, { kind: "issue", flag: "issue" }]
+  },
+  "relations remove": {
+    operation: "mutation",
+    mutationTargets: [
+      { kind: "relation", flag: "id" },
+      { kind: "issue", flag: "blocked-by" },
+      { kind: "issue", flag: "issue" }
+    ]
+  },
+  "comments list": { operation: "read" },
+  "comments create": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "wayfinder frontier": { operation: "read" }
+} as const satisfies Readonly<Record<string, {
+  readonly operation: CommandSpec["operation"]
+  readonly mutationTargets?: ReadonlyArray<MutationTarget>
+}>>
+
+const classifyNativeSpec = (spec: RawCommandSpec): CommandSpec => {
+  const path = spec.path.join(" ")
+  const safety = nativeCommandSafety[path as keyof typeof nativeCommandSafety]
+  if (!safety) throw new Error(`Command ${path} has no explicit safety classification`)
+  if (safety.operation !== "mutation") return { ...spec, operation: safety.operation }
+  if (!("mutationTargets" in safety)) {
+    throw new Error(`Native mutation ${path} has no mutation identity target`)
+  }
+  return {
+    ...spec,
+    operation: safety.operation,
+    flags: new Set([...spec.flags, "expect-workspace", "expect-team"]),
+    valueFlags: new Set([...(spec.valueFlags ?? []), "expect-workspace", "expect-team"]),
+    required: new Set([...(spec.required ?? []), "expect-workspace"]),
+    mutationTargets: safety.mutationTargets
+  }
+}
+
 export const commandSpecs: ReadonlyArray<CommandSpec> = [
-  ...rawCommandSpecs.map((spec) => completeHelp({
+  ...rawCommandSpecs.map((raw) => {
+    const spec = classifyNativeSpec(raw)
+    return completeHelp({
     ...spec,
     officialTools: nativeOfficialToolsByCommand[spec.path.join(" ")]
-  })),
+  })}),
   ...officialCommandSpecs
 ]
 

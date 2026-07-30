@@ -9,6 +9,7 @@ import {
   type ParsedArgs,
   readBooleanFlag,
   readLimitFlag,
+  readRepeatedStringFlags,
   readStringFlag,
   topLevelHelp
 } from "./args"
@@ -23,6 +24,7 @@ import type {
 } from "./linear"
 import { DESCRIPTION_CONCURRENCY_WARNING } from "./linear"
 import { labelGroupSelectionError } from "./label-validation"
+import { mutationIdentityMismatch } from "./mutation-identity"
 import { decodeLocalCursorOffset } from "./linear-pagination"
 import { connectOAuth, setupOAuth } from "./oauth"
 import { truncateDetail, truncateText, type OutputValue } from "./output"
@@ -53,10 +55,12 @@ import {
   type OfficialEntityIdentity
 } from "./official-identity"
 import { indeterminateOfficialMutation, officialMutationInspectionCommand } from "./official-inspection"
+import { isOfficialMutationTool } from "./official-mcp"
 import { fetchOfficialRows } from "./official-pagination"
 import { renderCandidateIds, resolveExactOfficialId as uniqueOfficialId } from "./official-selector"
 import { validateFrontierCursor } from "./wayfinder"
 import { runAttachmentCommand } from "./attachments"
+import { API_LEVEL, buildCapabilities, CAPABILITIES } from "./build-info"
 
 const ISSUE_FIELD_SET: ReadonlySet<string> = new Set(ISSUE_FIELDS)
 const LABEL_FIELD_SET: ReadonlySet<string> = new Set(LABEL_FIELDS)
@@ -67,6 +71,9 @@ const decodeLinkArray = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Ar
   url: Schema.String.check(Schema.isPattern(/^https?:\/\//)),
   title: Schema.NonEmptyString
 }))))
+const decodePositiveApiLevel = Schema.decodeUnknownSync(
+  Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan(0))
+)
 
 export const runCommand = (
   parsed: ParsedArgs,
@@ -76,11 +83,32 @@ export const runCommand = (
   credentialPathEnv: Env = process.env
 ): Effect.Effect<OutputValue, CliError> =>
   Effect.try({
-    try: () => dispatchCommand(parsed, gateway, binPath, env, credentialPathEnv),
+    try: () => {
+      const commandParsed = withoutMutationExpectations(parsed)
+      const spec = findSpec(parsed.command, commandSpecs)
+      const commandGateway = spec?.operation === "mutation" && parsed.flags.get("help") !== true
+        ? mutationGuardedGateway(parsed, gateway, spec)
+        : gateway
+      return dispatchCommand(commandParsed, commandGateway, binPath, env, credentialPathEnv)
+    },
     catch: (cause): CliError => cause instanceof UsageError
       ? cause
       : new LinearDomainError({ message: "Command validation failed", help: helpFor(parsed.command) })
   }).pipe(Effect.flatten)
+
+const withoutMutationExpectations = (parsed: ParsedArgs): ParsedArgs => ({
+  ...parsed,
+  mutationExpectations: readStringFlag(parsed.flags, "expect-workspace") === undefined
+    ? undefined
+    : {
+        workspace: readStringFlag(parsed.flags, "expect-workspace")!,
+        ...(readStringFlag(parsed.flags, "expect-team") === undefined
+          ? {}
+          : { team: readStringFlag(parsed.flags, "expect-team") })
+      },
+  flags: new Map([...parsed.flags].filter(([name]) => name !== "expect-workspace" && name !== "expect-team")),
+  repeatedFlags: new Map([...parsed.repeatedFlags].filter(([name]) => name !== "expect-workspace" && name !== "expect-team"))
+})
 
 const dispatchCommand = (
   parsed: ParsedArgs,
@@ -96,7 +124,11 @@ const dispatchCommand = (
   }
 
   switch (path) {
-    case "home": return home(gateway, binPath)
+    case "home": return parsed.flags.get("version") === true
+      ? Effect.succeed(buildCapabilities())
+      : home(gateway, binPath)
+    case "capabilities": return Effect.succeed(buildCapabilities())
+    case "capabilities require": return capabilitiesRequire(parsed)
     case "auth status":
       return gateway.authStatus().pipe(Effect.map((auth) => ({
         auth,
@@ -132,6 +164,150 @@ const dispatchCommand = (
     case "wayfinder frontier": return wayfinderFrontier(parsed, gateway)
     default: return runAttachmentCommand(parsed, gateway) ?? runOfficialCommand(parsed, gateway) ?? Effect.fail(new UsageError({ message: `unknown command ${path}`, help: topLevelHelp }))
   }
+}
+
+const capabilitiesRequire = Effect.fn("Commands.capabilitiesRequire")(function*(parsed: ParsedArgs) {
+  const rawApiLevel = readStringFlag(parsed.flags, "api-level")
+  let apiLevel: number | undefined
+  if (rawApiLevel !== undefined) {
+    try {
+      apiLevel = decodePositiveApiLevel(rawApiLevel)
+    } catch {
+      return yield* usage("--api-level must be a positive integer", parsed.command)
+    }
+  }
+  const requestedCapabilities = readRepeatedStringFlags(parsed, "capability")
+  const missingCapabilities = requestedCapabilities.filter((capability) =>
+    !(CAPABILITIES as ReadonlyArray<string>).includes(capability))
+  const missing = {
+    ...(apiLevel !== undefined && apiLevel > API_LEVEL ? { apiLevel } : {}),
+    ...(missingCapabilities.length > 0 ? { capabilities: missingCapabilities } : {})
+  }
+  if (Object.keys(missing).length > 0) {
+    return yield* Effect.fail(new LinearDomainError({
+      message: "The installed linear-axi does not satisfy the requested capability contract",
+      code: "capability_requirements_unsatisfied",
+      expected: {
+        ...(apiLevel === undefined ? {} : { apiLevel }),
+        capabilities: requestedCapabilities
+      },
+      current: {
+        apiLevel: API_LEVEL,
+        capabilities: [...CAPABILITIES]
+      },
+      missing,
+      help: "Run `nixus config apply --yes --update tools` in the managed dotfiles environment, then rerun this exact capability requirement."
+    }))
+  }
+  return {
+    satisfied: true,
+    requirements: {
+      ...(apiLevel === undefined ? {} : { apiLevel }),
+      capabilities: requestedCapabilities
+    },
+    ...buildCapabilities()
+  }
+})
+
+const mutationIdentityGuard = Effect.fn("Commands.mutationIdentityGuard")(function*(
+  parsed: ParsedArgs,
+  gateway: LinearGateway,
+  spec: NonNullable<ReturnType<typeof findSpec>>
+) {
+  const expectedWorkspace = readStringFlag(parsed.flags, "expect-workspace")!
+  const expectedTeam = readStringFlag(parsed.flags, "expect-team")
+  const target = spec.mutationTargets?.map((candidate) => ({
+    ...candidate,
+    value: readStringFlag(parsed.flags, candidate.flag)
+  })).find((candidate) => candidate.value !== undefined)
+  const identityInput = target?.kind === "issue"
+    ? { expectedWorkspace, issue: target.value }
+    : target?.kind === "team"
+      ? { expectedWorkspace, team: target.value }
+      : target?.kind === "relation"
+        ? { expectedWorkspace, relation: target.value }
+        : { expectedWorkspace }
+  const actual = yield* gateway.mutationIdentity(identityInput)
+  const mismatch = mutationIdentityMismatch(actual, expectedWorkspace, expectedTeam)
+  if (mismatch) return yield* Effect.fail(mismatch)
+})
+
+const gatewayMethodSafety = {
+  close: "local",
+  mutationIdentity: "identity",
+  callOfficialTool: "official",
+  authStatus: "read",
+  listTeams: "read",
+  resolveProjectUpdateAssociations: "read",
+  listWorkflowStates: "read",
+  listIssues: "read",
+  viewIssue: "read",
+  createIssue: "mutation",
+  assignIssue: "mutation",
+  unassignIssue: "mutation",
+  closeIssue: "mutation",
+  changeIssueState: "mutation",
+  setIssueParent: "mutation",
+  clearIssueFields: "mutation",
+  updateIssueDescription: "mutation",
+  listLabels: "read",
+  createLabel: "mutation",
+  applyLabel: "mutation",
+  removeLabel: "mutation",
+  replaceLabels: "mutation",
+  listRelations: "read",
+  createRelation: "mutation",
+  removeRelation: "mutation",
+  listComments: "read",
+  createComment: "mutation",
+  frontier: "read"
+} as const satisfies Readonly<Record<keyof LinearGateway, "local" | "identity" | "official" | "read" | "mutation">>
+
+const gatewayMethodSafetyFor = (property: PropertyKey) => typeof property === "string"
+  ? gatewayMethodSafety[property as keyof typeof gatewayMethodSafety]
+  : undefined
+
+const isGatewayMutationDispatch = (
+  property: PropertyKey,
+  args: ReadonlyArray<unknown>
+): boolean => {
+  const safety = gatewayMethodSafetyFor(property)
+  if (safety === undefined || safety === "mutation") return true
+  return safety === "official" &&
+    typeof args[0] === "string" &&
+    isOfficialMutationTool(args[0])
+}
+
+const mutationGuardedGateway = (
+  parsed: ParsedArgs,
+  gateway: LinearGateway,
+  spec: NonNullable<ReturnType<typeof findSpec>>
+): LinearGateway => {
+  let identityVerified = false
+  const guard = () => mutationIdentityGuard(parsed, gateway, spec).pipe(
+    Effect.tap(() => Effect.sync(() => { identityVerified = true }))
+  )
+  return new Proxy(gateway, {
+    get(target, property, receiver) {
+      const value: unknown = Reflect.get(target, property, receiver)
+      if (typeof value !== "function" || property === "mutationIdentity" || property === "close") return value
+      return (...args: ReadonlyArray<unknown>) => (
+        isGatewayMutationDispatch(property, args) || !identityVerified ? guard() : Effect.succeed(undefined)
+      ).pipe(
+        Effect.flatMap(() => Effect.suspend(() => {
+          const callArgs = gatewayMethodSafetyFor(property) === "mutation"
+            ? [...args, {
+                expectedWorkspace: readStringFlag(parsed.flags, "expect-workspace")!,
+                ...(readStringFlag(parsed.flags, "expect-team") === undefined
+                  ? {}
+                  : { expectedTeam: readStringFlag(parsed.flags, "expect-team") })
+              }]
+            : args
+          return (value as (...methodArgs: ReadonlyArray<unknown>) => Effect.Effect<unknown, CliError>)(...callArgs)
+        }))
+      )
+    }
+  })
 }
 
 const home = (gateway: LinearGateway, binPath: string) =>
@@ -1207,18 +1383,27 @@ const relationsRemove = (parsed: ParsedArgs, gateway: LinearGateway) => {
     if (!isUuidV4(id)) {
       return usage("--id must be a UUID v4", parsed.command)
     }
-    return gateway.removeRelation({ id }).pipe(Effect.map(relationRemovalOutput))
+    return gateway.removeRelation({ id }).pipe(
+      Effect.map(relationRemovalOutput),
+      Effect.mapError((error) => relationRemovalError(parsed, error))
+    )
   }
   if (blockedBy) {
     if (!issue || relatedIssue || type) {
       return usage("--blocked-by requires --issue and must not combine with --related-issue or --type", parsed.command)
     }
-    return gateway.removeRelation({ issue: blockedBy, relatedIssue: issue, type: "blocks" }).pipe(Effect.map(relationRemovalOutput))
+    return gateway.removeRelation({ issue: blockedBy, relatedIssue: issue, type: "blocks" }).pipe(
+      Effect.map(relationRemovalOutput),
+      Effect.mapError((error) => relationRemovalError(parsed, error))
+    )
   }
   if (!issue || !relatedIssue || !type || !RELATION_TYPES.has(type as RelationType)) {
     return usage("pass --id, or pass --issue, --related-issue, and a valid --type", parsed.command)
   }
-  return gateway.removeRelation({ issue, relatedIssue, type: type as RelationType }).pipe(Effect.map(relationRemovalOutput))
+  return gateway.removeRelation({ issue, relatedIssue, type: type as RelationType }).pipe(
+    Effect.map(relationRemovalOutput),
+    Effect.mapError((error) => relationRemovalError(parsed, error))
+  )
 }
 
 const relationRemovalOutput = (result: { value: unknown; changed: boolean; result: string }): OutputValue => ({
@@ -1226,6 +1411,32 @@ const relationRemovalOutput = (result: { value: unknown; changed: boolean; resul
   changed: result.changed,
   result: result.result
 })
+
+const relationRemovalError = (parsed: ParsedArgs, error: CliError): CliError => {
+  const expectations = parsed.mutationExpectations
+  if (
+    !(error instanceof LinearDomainError) ||
+    error.code !== "ambiguous_relation" ||
+    error.help === undefined ||
+    expectations === undefined
+  ) {
+    return error
+  }
+  const retry = [
+    "linear-axi relations remove --id <relation-id>",
+    `--expect-workspace ${shellQuote(expectations.workspace)}`,
+    ...(expectations.team === undefined ? [] : [`--expect-team ${shellQuote(expectations.team)}`])
+  ].join(" ")
+  return new LinearDomainError({
+    message: error.message,
+    code: error.code,
+    expected: error.expected,
+    actual: error.actual,
+    missing: error.missing,
+    current: error.current,
+    help: error.help.replace("linear-axi relations remove --id <relation-id>", retry)
+  })
+}
 
 const commentsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const full = readBooleanFlag(parsed.flags, "full")
@@ -1294,27 +1505,40 @@ const wayfinderFrontier = (parsed: ParsedArgs, gateway: LinearGateway) => {
     }
   }
   const first = firstFlag === undefined ? readLimitFlag(parsed.flags, 20) : Number(firstFlag)
-  return gateway.frontier({ map, first, after }).pipe(Effect.map((result) => ({
-    map: result.map,
-    count: `${result.items.length} of ${result.total} current frontier issues shown`,
-    pageInfo: result.pageInfo,
-    ...(result.items.length === 0
-      ? {
-          frontier: after
-            ? `0 frontier issues found after the supplied cursor for ${result.map.identifier}`
-            : `0 open, unblocked, unassigned children found for ${result.map.identifier}`,
-          help: []
-        }
-      : {
-          frontier: result.items,
-          help: [
-            `Run \`linear-axi issues assign --id ${result.items[0]!.identifier} --assignee me\` to claim the first frontier issue.`,
-            ...(result.pageInfo.hasNextPage && result.pageInfo.endCursor
-              ? [continuationCommand("wayfinder frontier", parsed, result.pageInfo.endCursor)]
-              : [])
-          ]
-        })
-  })))
+  return gateway.frontier({ map, first, after }).pipe(Effect.flatMap((result): Effect.Effect<OutputValue, LinearDomainError> => {
+    const firstItem = result.items[0]
+    const base = {
+      map: result.map,
+      count: `${result.items.length} of ${result.total} current frontier issues shown`,
+      pageInfo: result.pageInfo
+    }
+    if (firstItem === undefined) {
+      return Effect.succeed({
+        ...base,
+        frontier: after
+          ? `0 frontier issues found after the supplied cursor for ${result.map.identifier}`
+          : `0 open, unblocked, unassigned children found for ${result.map.identifier}`,
+        help: []
+      })
+    }
+    const identity = result.claimIdentity
+    if (identity === null || identity.issueId.toLowerCase() !== firstItem.id.toLowerCase()) {
+      return Effect.fail(new LinearDomainError({
+        message: "frontier claim identity could not be resolved",
+        help: `Rerun \`${replayCommand("wayfinder frontier", parsed)}\` for current Linear state.`
+      }))
+    }
+    return Effect.succeed({
+      ...base,
+      frontier: result.items,
+      help: [
+        `Run \`linear-axi issues assign --id ${firstItem.identifier} --assignee me --expect-workspace ${identity.workspaceId} --expect-team ${identity.teamId}\` to claim the first frontier issue.`,
+        ...(result.pageInfo.hasNextPage && result.pageInfo.endCursor
+          ? [continuationCommand("wayfinder frontier", parsed, result.pageInfo.endCursor)]
+          : [])
+      ]
+    })
+  }))
 }
 
 const authOAuthConnect = (

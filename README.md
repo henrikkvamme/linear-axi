@@ -6,6 +6,9 @@ Agent-friendly Linear from your shell.
 
 `linear-axi` is a Bun CLI for Linear workspaces. It is built for agents: compact [AXI](https://axi.md/) output in TOON, strict exit codes, self-correcting errors, a standalone executable, and browser-based OAuth login.
 
+> [!IMPORTANT]
+> **Maintenance status:** This project is maintenance-only because the maintainer currently lacks capacity for active maintenance. For general Linear integrations, prefer the official Linear MCP. Issues and pull requests may not receive timely responses. `linear-axi` remains useful when its agent-oriented CLI, compact TOON output, fail-closed mutation identity checks, or local file attachment workflows fit your needs, but it does not promise parity with the official Linear MCP.
+
 ## Install
 
 Build and install a standalone executable from source:
@@ -29,6 +32,22 @@ nix profile install github:henrikkvamme/linear-axi#linear-axi
 
 The flake supports Apple silicon macOS and x86-64 Linux.
 
+## Build and capability identity
+
+Every release artifact reports machine-readable provenance without credentials or network access:
+
+```sh
+linear-axi capabilities
+linear-axi capabilities require \
+  --api-level 2 \
+  --capability mutation-identity-v1 \
+  --capability attachment-files-v1
+```
+
+The output includes package version, exact immutable build revision, API level, bundled official-inventory date and SHA-256, named capabilities, and bundled-skill convergence metadata. `--version` is an alias for the same structured output. `package.json` is the runtime package-version source; the official MCP client uses that value, while release checks keep the Nix package version equal to it. Source release builds require a clean checkout without Git index exemptions such as `assume-unchanged` or `skip-worktree`, and an explicit `--revision` must be an exact 40-hex revision equal to checkout `HEAD`. Builds compile an immutable export of that revision. Create npm release tarballs with `bun run package:release`; the destination defaults to the ignored `dist/` directory and can be changed with `--pack-destination <path>`. Direct `npm pack` from a Git checkout is rejected so packaging also consumes an immutable export. Published source invocation reads its exact packaged `SOURCE_REVISION` and bundled-skill hash, while direct development invocation without that metadata identifies its revision as `development`. Nix release builds fetch the exact revision from the canonical repository and fail when it is unavailable or the evaluated source hash differs, so local commits must be pushed before they can produce a provenance-labeled Nix artifact.
+
+`capabilities require` exits `0` when satisfied. Missing API levels or capabilities exit `1` with current and missing values plus the managed update command. It does not require valid credentials or call Linear, although normal CLI startup still reads the configured environment sources, including a repo-local `.env`.
+
 ## Login
 
 ```sh
@@ -42,6 +61,8 @@ For a remote agent using the shared browser, run `linear-axi auth login --notify
 If your browser lands on `127.0.0.1` and says the site cannot be reached, paste the full callback URL into the still-running CLI.
 
 Rerun `linear-axi auth login` to switch workspaces or replace an expired credential. To disconnect completely, revoke the OAuth grant in Linear and delete the configured credentials file.
+
+After login, verify `auth status` reports the intended workspace stable ID or URL key and `teams list` contains the intended team. Workspace names are display-only and are never accepted as the sole mutation security match.
 
 You can also set credentials yourself in the process environment, a repo-local `.env`, or the user credentials file:
 
@@ -67,36 +88,34 @@ linear-axi issues list --assignee me --limit 20
 linear-axi issues list --team BEN --label wayfinder:map --state open --limit 100
 linear-axi issues list --parent BEN-100 --assignee none --state open --limit 100
 linear-axi issues view --id <issue-id-or-key> [--full]
-linear-axi issues create --team <key-or-id> --title "..." --description-file <path> --parent <issue> --label <label>
-linear-axi issues assign --id <issue> --assignee me
-linear-axi issues unassign --id <issue> --if-assignee me
-linear-axi issues close --id <issue>
+linear-axi issues create --team <key-or-id> --title "..." --expect-workspace <workspace> --expect-team <team>
+linear-axi issues assign --id <issue> --assignee me --expect-workspace <workspace> --expect-team <team>
+linear-axi issues unassign --id <issue> --if-assignee me --expect-workspace <workspace> --expect-team <team>
+linear-axi issues close --id <issue> --expect-workspace <workspace> --expect-team <team>
 linear-axi workflow-states list --team <team>
-linear-axi issues state --id <issue> --state "In Progress"
-linear-axi issues parent set --id <child> --parent <parent>
-linear-axi issues parent clear --id <child>
-linear-axi issues update --id <issue> --description-file <path> --if-updated-at <YYYY-MM-DDTHH:mm:ss.sssZ>
-linear-axi issues update --id <issue> --priority 2 --due-date 2026-08-01 --project <project> --cycle <cycle>
-linear-axi issues update --id <issue> --clear-assignee --clear-estimate --clear-project --clear-cycle
-linear-axi issues update --id <issue> --clear-due-date --clear-milestone
+linear-axi issues state --id <issue> --state "In Progress" --expect-workspace <workspace> --expect-team <team>
+linear-axi issues parent set --id <child> --parent <parent> --expect-workspace <workspace> --expect-team <team>
+linear-axi issues parent clear --id <child> --expect-workspace <workspace> --expect-team <team>
+linear-axi issues update --id <issue> --description-file <path> --if-updated-at <timestamp> --expect-workspace <workspace> --expect-team <team>
 linear-axi labels list --workspace --name <exact-name>
 linear-axi labels list --workspace --include-archived --fields id,name,archivedAt
-linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent
-linear-axi labels add --issue <issue> --label <label>
-linear-axi labels remove --issue <issue> --label <label>
-linear-axi labels replace --issue <issue> --labels-json '["Bug","Urgent"]'
-linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue>
+linear-axi labels create --workspace --name <name> --color '#5E6AD2' --if-absent --expect-workspace <workspace>
+linear-axi labels add --issue <issue> --label <label> --expect-workspace <workspace> --expect-team <team>
+linear-axi labels remove --issue <issue> --label <label> --expect-workspace <workspace> --expect-team <team>
+linear-axi labels replace --issue <issue> --labels-json '["Bug","Urgent"]' --expect-workspace <workspace> --expect-team <team>
+linear-axi relations create --issue <blocked-issue> --blocked-by <blocker-issue> --expect-workspace <workspace> --expect-team <team>
 linear-axi relations list --issue <blocked-issue> --blocked-by
-linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks
+linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks --expect-workspace <workspace> --expect-team <team>
 linear-axi relations list --issue <issue> --type blocks --direction both
-linear-axi relations remove --issue <blocked> --blocked-by <blocker>
+linear-axi relations remove --issue <blocked> --blocked-by <blocker> --expect-workspace <workspace> --expect-team <team>
+linear-axi relations remove --id <relation-id> --expect-workspace <workspace> --expect-team <source-team>
 linear-axi comments list --issue <issue> --limit 50
-linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4>
+linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4> --expect-workspace <workspace> --expect-team <team>
 linear-axi attachments list --issue <issue> --limit 100
 linear-axi attachments view --id <attachment-id>
 linear-axi attachments read --id <attachment-id> [--max-bytes <n> | --full]
 linear-axi attachments download --id <attachment-id> --output <path> [--overwrite] [--max-bytes <n>]
-linear-axi attachments upload --issue <issue> --file <path> [--title <title>] [--subtitle <text>] [--media-type <type>] [--allow-large]
+linear-axi attachments upload --issue <issue> --file <path> --expect-workspace <workspace> --expect-team <team>
 linear-axi wayfinder frontier --map <map-issue> --first 20
 linear-axi <command> --help
 ```
@@ -119,7 +138,7 @@ Official create operations without a caller-supplied id, destructive deletes, an
 
 `attachments download` streams to a private temporary file in the destination directory, verifies the expected size and available SHA-256, fsyncs, and installs without replacing another file. The destination directory must already exist and must not resolve through a symlink. Existing destinations are always refused because the supported OS primitives do not provide atomic expected-file replacement; `--overwrite` records explicit intent but fails closed when a destination exists. The default download ceiling is 1 GiB; use `--max-bytes <n>` for a smaller or explicitly larger bound up to 2 GiB minus one byte. Safe local upload and download operations require macOS or Linux.
 
-Every live `attachments upload` requires explicit `--issue` and `--file` intent. The source must be a stable, non-empty, non-symlink regular file. Media type is inferred for `.txt`, `.md`, `.csv`, `.json`, `.yaml`, `.yml`, `.xml`, `.toml`, `.js`, `.mjs`, `.ts`, `.tsx`, `.html`, `.css`, `.sql`, `.svg`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.pdf`, `.zip`, `.gz`, `.mp4`, and `.mov`; `--media-type` may override inference with one of these parameter-free values: `text/plain`, `text/markdown`, `text/csv`, `application/json`, `application/yaml`, `application/xml`, `application/toml`, `application/javascript`, `text/typescript`, `text/tsx`, `text/html`, `text/css`, `application/sql`, `image/svg+xml`, `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `application/pdf`, `application/zip`, `application/gzip`, `video/mp4`, or `video/quicktime`. Uploads default to 100 MiB; `--allow-large` is explicit and raises the ceiling to 2 GiB minus one byte. The CLI hashes and stats the open file before its first Linear request, resolves the exact issue, prepares one short-lived signed PUT, streams bytes without the Linear bearer token, finalizes by the stable asset URL, and verifies the attachment. Private mode-0600 recovery records under `$XDG_STATE_HOME/linear-axi/uploads`, or `~/.local/state/linear-axi/uploads` when `XDG_STATE_HOME` is unset, support interruption and response-loss recovery without storing the source path, bearer token, signed upload URL, or signed headers. Retrying the same issue, unchanged file, media type, title, and subtitle reconciles an already-finalized attachment before any mutation. The deprecated base64-heavy `create_attachment` path and destructive attachment deletion remain excluded.
+Every live `attachments upload` requires explicit `--issue` and `--file` intent. The source must be a stable, non-empty, non-symlink regular file. Media type is inferred for `.txt`, `.md`, `.csv`, `.json`, `.yaml`, `.yml`, `.xml`, `.toml`, `.js`, `.mjs`, `.ts`, `.tsx`, `.html`, `.css`, `.sql`, `.svg`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.pdf`, `.zip`, `.gz`, `.mp4`, and `.mov`; `--media-type` may override inference with one of these parameter-free values: `text/plain`, `text/markdown`, `text/csv`, `application/json`, `application/yaml`, `application/xml`, `application/toml`, `application/javascript`, `text/typescript`, `text/tsx`, `text/html`, `text/css`, `application/sql`, `image/svg+xml`, `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `application/pdf`, `application/zip`, `application/gzip`, `video/mp4`, or `video/quicktime`. Uploads default to 100 MiB; `--allow-large` is explicit and raises the ceiling to 2 GiB minus one byte. The CLI hashes and stats the open file before its first Linear request, resolves the exact issue, prepares one short-lived signed PUT, streams bytes without the Linear bearer token, finalizes by the stable asset URL, and verifies the attachment. Private mode-0600 recovery records under `$XDG_STATE_HOME/linear-axi/uploads`, or `~/.local/state/linear-axi/uploads` when `XDG_STATE_HOME` is unset, support interruption and response-loss recovery without storing the source path, bearer token, signed upload URL, or signed headers. Retrying the same issue, unchanged file, media type, title, and subtitle reconciles an already-finalized attachment before any mutation. If the finalize response is lost, the emitted retry command preserves the supplied workspace and team expectations, and recovery inspects the issue before another finalize. The deprecated base64-heavy `create_attachment` path and destructive attachment deletion remain excluded.
 
 `--description-file -` and `--body-file -` read from stdin. `issues view` truncates descriptions to 1,200 characters by default and reports the original length. Official detail commands apply the same limit to body, content, description, instructions, and text fields, report every truncated field and original length, and provide an exact `--full` command. Pass `--full` before merging or replacing rich text. Data, help, errors, no-ops, and definitive empty states are TOON on stdout. Successful mutations include `changed` and `result`; an already-satisfied mutation is a no-op with exit code `0`.
 
@@ -143,6 +162,8 @@ Team keys, issue identifiers, and label names are matched exactly without case s
 
 ### Mutation safety
 
+Every native, official-backed, and attachment mutation requires `--expect-workspace <workspace-uuid-or-url-key>`. Native mutations with an issue, team, or relation target accept `--expect-team <team-key-or-uuid>`; among official-backed commands, only `documents update --issue` accepts it. The workspace is checked before target resolution, and identity is rechecked at the actual mutation dispatch boundary after read-only preflights. Relation mutations bind the team expectation to the source issue: the blocker for `--blocked-by`, `--issue` for the generic form, and the stored source for `relations remove --id`. Missing workspace expectations are usage exit `2`. A live `workspace_mismatch` or `team_mismatch` is exit `1` and emits expected and actual stable identities. An initial mismatch makes zero mutation calls; a later recheck mismatch blocks that dispatch, including attachment finalize after an earlier prepare. Identity lookup itself is read-only. When tuple-based relation removal is ambiguous, its emitted `--id` retry preserves the supplied identity expectations.
+
 Issue, label, relation, and comment creation accept a caller-retained UUID v4 with `--id`. Repeating the same request with the same UUID is a no-op, while reuse for different content or scope is a conflict. Rich-text retry comparisons tolerate normalized line endings, trailing newlines, and Linear's angle-bracket form for HTTP(S) Markdown links. `labels create --if-absent` also treats a case-insensitive same-name label with matching properties in the requested scope as a no-op. `labels create --group` creates a top-level group; `--parent` creates an ordinary child under a top-level group in the same scope, and the two flags cannot be combined. Attaching or replacing issue labels accepts ordinary labels only and at most one child from each label group. `labels replace --labels-json '[]'` clears all labels. A directed relation is a no-op when its source, target, and type already exist, even without `--id`.
 
 Issue state, parent, label add/remove/replace, and relation removal mutations read back the requested state. If a dispatched mutation cannot be reconciled, follow its exact read-only inspection command and do not repeat the mutation while the outcome is unknown. Within one update, the same canonical team, initiative, release, or issue relation cannot appear in both add and remove sets.
@@ -163,7 +184,7 @@ Comment bodies are truncated to 500 characters in lists unless `--full` is passe
 
 `wayfinder frontier` is the single Wayfinder-specific projection. A production map must have exactly one active `wayfinder:map` label. An isolated verification map may instead use one `WF-VERIFY-<run>:map` label, where `<run>` contains only letters, digits, dots, underscores, or hyphens; its four type labels use that same prefix. Before loading candidates, frontier requires all four active, ordinary, non-group type labels to resolve uniquely among workspace and map-team labels, even when the map has no candidates: `<prefix>:research`, `<prefix>:prototype`, `<prefix>:grilling`, and `<prefix>:task`. Its active, direct children enter the frontier only when they are open, unblocked, and unassigned. Every current frontier candidate must have exactly one of those four type labels.
 
-Results are ordered by Linear's manual sub-issue order with unset order last, then creation time, then UUID. Every page recomputes current Linear state and does not provide snapshot isolation, so membership or ordering changes can move issues across the cursor. Restart without `--after` when a fresh frontier is required.
+Results are ordered by Linear's manual sub-issue order with unset order last, then creation time, then UUID. Every page recomputes current Linear state and does not provide snapshot isolation, so membership or ordering changes can move issues across the cursor. Restart without `--after` when a fresh frontier is required. A non-empty page emits a claim command guarded by the first candidate's exact workspace and team UUIDs; if that claim identity cannot be resolved, the frontier fails instead of suggesting an unguarded mutation.
 
 Exit codes:
 
@@ -187,6 +208,8 @@ Only `linear-axi` is intended to be installable from this repo.
 bun run check
 ```
 
-After changing command specs or help, run `bun run skill:generate` to refresh the bundled command reference. To refresh the frozen official inventory, authenticate locally and run `bun run parity:capture --date YYYY-MM-DD`, then update the parity manifest's observation date, inventory hash, mappings, and rationales. Do not hand-edit the generated inventory. `bun run parity:check` verifies the inventory, manifest, command capabilities, and generated reference agree.
+After changing command specs or help, run `bun run skill:generate` to refresh the bundled command reference. Do not hand-edit `COMMANDS.md`. The command registry explicitly classifies every command as local, read, or mutation; native mutations also declare any issue, team, or relation identity target. Mutation classification adds the identity flags and fail-closed guard, and release-integrity tests reject unclassified commands or mutations that omit the workspace expectation.
+
+To refresh the frozen official inventory, authenticate locally and run `bun run parity:capture --date YYYY-MM-DD`, then update the parity manifest's observation date, inventory hash, mappings, and rationales. Do not hand-edit the generated inventory. `bun run parity:check` verifies the inventory, manifest, command capabilities, and generated reference agree. `bun run build`, and therefore the build phase of `bun run check`, requires a clean checkout; while changes are uncommitted, run the parity check, typecheck, and tests separately.
 
 Effect source is vendored under `repos/effect` as read-only reference material. Application code imports package dependencies, not the vendored source.

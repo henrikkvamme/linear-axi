@@ -1,6 +1,21 @@
 import { describe, expect, test } from "bun:test"
-import { commandSpecs, ISSUE_FIELDS, LABEL_FIELDS, parseArgs } from "../src/args"
+import { commandSpecs, ISSUE_FIELDS, LABEL_FIELDS, parseArgs as parseProductionArgs } from "../src/args"
 import { UsageError } from "../src/errors"
+
+const parseArgs: typeof parseProductionArgs = (argv, specs) => {
+  const path: Array<string> = []
+  for (const value of argv) {
+    if (value.startsWith("--")) break
+    path.push(value)
+  }
+  const spec = specs.find((candidate) => candidate.path.join("\0") === path.join("\0"))
+  return parseProductionArgs(
+    spec?.operation === "mutation" && !argv.includes("--help") && !argv.includes("--expect-workspace")
+      ? [...argv, "--expect-workspace", "engineering"]
+      : argv,
+    specs
+  )
+}
 
 describe("parseArgs", () => {
   test("defaults to home", () => {
@@ -54,11 +69,17 @@ describe("parseArgs", () => {
     expect(blockedBy.flags.get("blocked-by")).toBe("ENG-1")
   })
 
-  test("renders labels create parent as a label-group selector", () => {
+  test("renders labels create parent and conditional team guards", () => {
     const help = commandSpecs.find((spec) => spec.path.join(" ") === "labels create")!.help
+    const [workspaceUsage, teamUsage] = help.split("\n")
 
     expect(help).toContain("--parent <group-id-or-name>")
     expect(help).not.toContain("--parent <issue>")
+    expect(workspaceUsage).toContain("--workspace")
+    expect(workspaceUsage).not.toContain("--expect-team")
+    expect(teamUsage).toContain("--team <key-or-id>")
+    expect(teamUsage).toContain("--expect-team <team-key-or-uuid>")
+    expect(help).toContain("--expect-team <team-key-or-uuid> (requires --team)")
   })
 
   test("parses additive, subtractive, and explicit replacement label commands", () => {
@@ -75,6 +96,41 @@ describe("parseArgs", () => {
     expect(() => parseArgs([
       "projects", "update", "--id", "project-id", "--state", "planned", "--state", "started"
     ], commandSpecs)).toThrow("--state may only be specified once")
+  })
+
+  test("rejects a missing value in any repeatable flag occurrence", () => {
+    expect(() => parseArgs([
+      "capabilities", "require", "--capability", "--capability", "mutation-identity-v1"
+    ], commandSpecs)).toThrow("--capability requires a value")
+  })
+
+  test("rejects team expectations without a team-resolvable target", () => {
+    for (const args of [
+      [
+        "labels", "create", "--name", "Bug", "--color", "#123456", "--workspace",
+        "--expect-workspace", "engineering", "--expect-team", "ENG"
+      ],
+      [
+        "documents", "update", "--id", "document-id", "--title", "Updated",
+        "--expect-workspace", "engineering", "--expect-team", "ENG"
+      ]
+    ]) {
+      expect(() => parseArgs(args, commandSpecs)).toThrow("--expect-team requires a team-resolvable target")
+    }
+  })
+
+  test("accepts team expectations with compatible targets", () => {
+    const label = parseArgs([
+      "labels", "create", "--name", "Bug", "--color", "#123456", "--team", "ENG",
+      "--expect-workspace", "engineering", "--expect-team", "ENG"
+    ], commandSpecs)
+    const document = parseArgs([
+      "documents", "update", "--id", "document-id", "--issue", "ENG-123", "--title", "Updated",
+      "--expect-workspace", "engineering", "--expect-team", "ENG"
+    ], commandSpecs)
+
+    expect(label.flags.get("expect-team")).toBe("ENG")
+    expect(document.flags.get("expect-team")).toBe("ENG")
   })
 
   test("rejects missing required flags", () => {
