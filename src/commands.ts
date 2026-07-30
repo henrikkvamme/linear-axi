@@ -1443,27 +1443,40 @@ const wayfinderFrontier = (parsed: ParsedArgs, gateway: LinearGateway) => {
     }
   }
   const first = firstFlag === undefined ? readLimitFlag(parsed.flags, 20) : Number(firstFlag)
-  return gateway.frontier({ map, first, after }).pipe(Effect.map((result) => ({
-    map: result.map,
-    count: `${result.items.length} of ${result.total} current frontier issues shown`,
-    pageInfo: result.pageInfo,
-    ...(result.items.length === 0
-      ? {
-          frontier: after
-            ? `0 frontier issues found after the supplied cursor for ${result.map.identifier}`
-            : `0 open, unblocked, unassigned children found for ${result.map.identifier}`,
-          help: []
-        }
-      : {
-          frontier: result.items,
-          help: [
-            `Run \`linear-axi issues assign --id ${result.items[0]!.identifier} --assignee me\` to claim the first frontier issue.`,
-            ...(result.pageInfo.hasNextPage && result.pageInfo.endCursor
-              ? [continuationCommand("wayfinder frontier", parsed, result.pageInfo.endCursor)]
-              : [])
-          ]
-        })
-  })))
+  return gateway.frontier({ map, first, after }).pipe(Effect.flatMap((result): Effect.Effect<OutputValue, LinearDomainError> => {
+    const firstItem = result.items[0]
+    const base = {
+      map: result.map,
+      count: `${result.items.length} of ${result.total} current frontier issues shown`,
+      pageInfo: result.pageInfo
+    }
+    if (firstItem === undefined) {
+      return Effect.succeed({
+        ...base,
+        frontier: after
+          ? `0 frontier issues found after the supplied cursor for ${result.map.identifier}`
+          : `0 open, unblocked, unassigned children found for ${result.map.identifier}`,
+        help: []
+      })
+    }
+    const identity = result.claimIdentity
+    if (identity === null || identity.issueId.toLowerCase() !== firstItem.id.toLowerCase()) {
+      return Effect.fail(new LinearDomainError({
+        message: "frontier claim identity could not be resolved",
+        help: `Rerun \`${replayCommand("wayfinder frontier", parsed)}\` for current Linear state.`
+      }))
+    }
+    return Effect.succeed({
+      ...base,
+      frontier: result.items,
+      help: [
+        `Run \`linear-axi issues assign --id ${firstItem.identifier} --assignee me --expect-workspace ${identity.workspaceId} --expect-team ${identity.teamId}\` to claim the first frontier issue.`,
+        ...(result.pageInfo.hasNextPage && result.pageInfo.endCursor
+          ? [continuationCommand("wayfinder frontier", parsed, result.pageInfo.endCursor)]
+          : [])
+      ]
+    })
+  }))
 }
 
 const authOAuthConnect = (

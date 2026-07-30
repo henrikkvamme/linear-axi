@@ -2545,7 +2545,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(connectionReads).toBe(0)
   })
 
-  test("frontier loads only map labels and resolves type labels concurrently", async () => {
+  test("frontier resolves claim identity from the viewer workspace and candidate team", async () => {
     const typeLabels = ["research", "prototype", "grilling", "task"].map((type, index) => issueLabel({
       id: `55555555-5555-4555-8555-55555555555${index + 1}`,
       name: `wayfinder:${type}`
@@ -2572,10 +2572,13 @@ describe("SDK LinearGateway conflict contracts", () => {
       parent: { configurable: true, get: () => { throw new Error("frontier must not load map parent") } },
       team: { configurable: true, get: () => { throw new Error("frontier must use the map team ID") } }
     })
+    const candidateTeamId = "88888888-8888-4888-8888-888888888888"
     const candidate = issue({
       id: "77777777-7777-4777-8777-777777777777",
-      identifier: "BEN-2",
+      identifier: "OPS-2",
       title: "Ready task",
+      teamId: candidateTeamId,
+      team: Promise.resolve({ id: candidateTeamId, key: "OPS", name: "Operations" }),
       labelIds: [typeLabels[3]!.id]
     })
     let activeLabelReads = 0
@@ -2589,7 +2592,14 @@ describe("SDK LinearGateway conflict contracts", () => {
         await Bun.sleep(5)
         activeLabelReads -= 1
         return page(typeLabels.filter((label) => label.name === variables.filter.name.eqIgnoreCase))
-      }
+      },
+      viewer: Promise.resolve({
+        organization: Promise.resolve({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          urlKey: "bender",
+          name: "Bender"
+        })
+      })
     })
 
     const result = await Effect.runPromise(makeLinearGateway({}, { client }).frontier({
@@ -2603,6 +2613,11 @@ describe("SDK LinearGateway conflict contracts", () => {
       title: candidate.title,
       type: "task"
     }])
+    expect(result.claimIdentity).toEqual({
+      issueId: candidate.id,
+      workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      teamId: candidateTeamId
+    })
     expect(mapLabelOptions).toEqual([false])
     expect(maxActiveLabelReads).toBe(4)
   })

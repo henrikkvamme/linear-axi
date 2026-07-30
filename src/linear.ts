@@ -323,6 +323,11 @@ export interface FrontierResult {
   readonly map: Pick<IssueSummary, "id" | "identifier" | "title">
   readonly total: number
   readonly items: ReadonlyArray<FrontierIssue>
+  readonly claimIdentity: {
+    readonly issueId: string
+    readonly workspaceId: string
+    readonly teamId: string
+  } | null
   readonly pageInfo: {
     readonly hasNextPage: boolean
     readonly endCursor: string | null

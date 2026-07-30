@@ -137,6 +137,7 @@ const fakeGateway = (
       map: { id: "map-id", identifier: "ENG-100", title: "Map" },
       total: 1,
       items: [{ id: baseIssue.id, identifier: baseIssue.identifier, title: baseIssue.title, type: "task" }],
+      claimIdentity: { issueId: baseIssue.id, workspaceId: "workspace-id", teamId: "team-id" },
       pageInfo: { hasNextPage: false, endCursor: null }
     }),
     ...overrides
@@ -4670,6 +4671,11 @@ describe("runCommand", () => {
           map: { id: "map-id", identifier: "ENG-100", title: "Map" },
           total: 101,
           items: [{ id: baseIssue.id, identifier: baseIssue.identifier, title: baseIssue.title, type: "task" }],
+          claimIdentity: {
+            issueId: baseIssue.id,
+            workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            teamId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+          },
           pageInfo: { hasNextPage: true, endCursor: nextCursor }
         })
       }
@@ -4677,7 +4683,15 @@ describe("runCommand", () => {
     const found = await run(["wayfinder", "frontier", "--map", "ENG-100", "--first", "100", "--after", previousCursor], gateway)
     expect(calls).toEqual([{ map: "ENG-100", first: 100, after: previousCursor }])
     expect(found.pageInfo).toEqual({ hasNextPage: true, endCursor: nextCursor })
-    expect((found.help as string[])[0]).toContain("issues assign --id ENG-123 --assignee me")
+    expect(found).not.toHaveProperty("claimIdentity")
+    expect((found.help as string[])[0]).toBe(
+      "Run `linear-axi issues assign --id ENG-123 --assignee me --expect-workspace aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa --expect-team bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb` to claim the first frontier issue."
+    )
+    expect(() => parseProductionArgs([
+      "issues", "assign", "--id", "ENG-123", "--assignee", "me",
+      "--expect-workspace", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "--expect-team", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    ], commandSpecs)).not.toThrow()
     expect((found.help as string[])[1]).toContain(`--after '${nextCursor}'`)
 
     const empty = await run(["wayfinder", "frontier", "--map", "ENG-100", "--after", previousCursor], fakeGateway({
@@ -4685,11 +4699,35 @@ describe("runCommand", () => {
         map: { id: "map-id", identifier: "ENG-100", title: "Map" },
         total: 100,
         items: [],
+        claimIdentity: null,
         pageInfo: { hasNextPage: false, endCursor: null }
       })
     }))
     expect(empty.frontier).toBe("0 frontier issues found after the supplied cursor for ENG-100")
     expect(empty.pageInfo).toEqual({ hasNextPage: false, endCursor: null })
+  })
+
+  test("frontier rejects claim identity for a different issue", async () => {
+    const error = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs(["wayfinder", "frontier", "--map", "ENG-100"], commandSpecs),
+      fakeGateway({
+        frontier: () => Effect.succeed({
+          map: { id: "map-id", identifier: "ENG-100", title: "Map" },
+          total: 1,
+          items: [{ id: baseIssue.id, identifier: baseIssue.identifier, title: baseIssue.title, type: "task" }],
+          claimIdentity: {
+            issueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            teamId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+          },
+          pageInfo: { hasNextPage: false, endCursor: null }
+        })
+      }),
+      "/repo/src/main.ts"
+    )))
+
+    expect(error._tag).toBe("LinearDomainError")
+    expect(error.message).toBe("frontier claim identity could not be resolved")
   })
 
   test("noncanonical update timestamps fail before gateway access", async () => {
@@ -4730,6 +4768,7 @@ describe("runCommand", () => {
           map: { id: "map-id", identifier: "ENG-100", title: "Map" },
           total: 0,
           items: [],
+          claimIdentity: null,
           pageInfo: { hasNextPage: false, endCursor: null }
         })
       }

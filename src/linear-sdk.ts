@@ -1096,10 +1096,30 @@ const frontier = async (
     labelIds: issue.labelIds
   }))
   const result = paginateFrontier(frontierCandidates, typeLabels, first, after)
+  const firstItem = result.items[0]
+  const firstCandidate = firstItem === undefined
+    ? undefined
+    : candidates.find((candidate) => uuidEqual(candidate.id, firstItem.id))
+  if (firstItem !== undefined && firstCandidate === undefined) {
+    throw new LinearDomainError({
+      message: "frontier claim identity could not be resolved",
+      help: "Rerun `linear-axi wayfinder frontier` for current Linear state."
+    })
+  }
+  const organization = firstCandidate === undefined
+    ? undefined
+    : await (await client.viewer).organization
   return {
     map: { id: map.id, identifier: map.identifier, title: map.title },
     total: frontierCandidates.length,
     items: result.items,
+    claimIdentity: firstCandidate === undefined || organization === undefined
+      ? null
+      : {
+          issueId: firstCandidate.id,
+          workspaceId: organization.id,
+          teamId: requireTeamId(firstCandidate)
+        },
     pageInfo: result.pageInfo
   }
 }
