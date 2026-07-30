@@ -34,8 +34,8 @@
             };
 
             npmDepsFetcherVersion = 2;
-            npmDepsHash = "sha256-Toc+DUUK4UcO10j/HSmQ1pqIS2ADVO21A+nztHUVAaY=";
-            nativeBuildInputs = [ pkgs.bun ];
+            npmDepsHash = "sha256-1+sm6E04GqdhQ8jvwmg5LtfN7sDazMajBok1Gim50VI=";
+            nativeBuildInputs = [ pkgs.bun pkgs.git ];
             dontNpmBuild = true;
 
             buildPhase = ''
