@@ -10,6 +10,23 @@
         "x86_64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+      releaseRevision = self.rev or (throw "linear-axi release build requires an immutable source revision");
+      releaseSource = import ./nix/verified-release-source.nix {
+        revision = releaseRevision;
+        repository = "https://github.com/henrikkvamme/linear-axi.git";
+        sourceNarHash = self.narHash or (throw "linear-axi release build requires a source content hash");
+      };
+      releaseSourcePaths = [
+        "src"
+        ".agents/skills/linear-axi/COMMANDS.md"
+        ".agents/skills/linear-axi/SKILL.md"
+        "docs/linear-mcp-parity.json"
+        "package.json"
+        "package-lock.json"
+        "scripts/build.ts"
+        "scripts/package-revision.ts"
+        "scripts/release-provenance.ts"
+      ];
     in
     {
       packages = forAllSystems (
@@ -20,19 +37,19 @@
             pname = "linear-axi";
             version = "0.2.0";
 
-            src = pkgs.lib.fileset.toSource {
-              root = ./.;
-              fileset = pkgs.lib.fileset.unions [
-                ./src
-                ./.agents/skills/linear-axi/COMMANDS.md
-                ./.agents/skills/linear-axi/SKILL.md
-                ./docs/linear-mcp-parity.json
-                ./package.json
-                ./package-lock.json
-                ./scripts/build.ts
-                ./scripts/package-revision.ts
-                ./scripts/release-provenance.ts
-              ];
+            src = pkgs.lib.cleanSourceWith {
+              name = "linear-axi-source";
+              src = releaseSource.outPath;
+              filter = path: _type:
+                let
+                  relative = pkgs.lib.removePrefix "${releaseSource.outPath}/" (toString path);
+                in
+                pkgs.lib.any (
+                  sourcePath:
+                  relative == sourcePath
+                  || pkgs.lib.hasPrefix "${sourcePath}/" relative
+                  || pkgs.lib.hasPrefix "${relative}/" sourcePath
+                ) releaseSourcePaths;
             };
 
             npmDepsFetcherVersion = 2;
@@ -42,7 +59,7 @@
 
             buildPhase = ''
               runHook preBuild
-              bun scripts/build.ts --revision ${self.rev or (throw "linear-axi release build requires an immutable source revision")} --outfile linear-axi
+              bun scripts/build.ts --revision ${releaseRevision} --outfile linear-axi
               runHook postBuild
             '';
 

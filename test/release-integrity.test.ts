@@ -9,6 +9,7 @@ import type { LinearGateway } from "../src/linear"
 import { officialMutationTools } from "../src/official-commands"
 
 const repoRoot = process.cwd()
+const nixAvailable = Bun.which("nix") !== null
 
 const runCli = (...args: ReadonlyArray<string>) => Bun.spawnSync({
   cmd: ["bun", `${repoRoot}/src/main.ts`, ...args],
@@ -28,6 +29,46 @@ const runFixtureCommand = (cwd: string, cmd: ReadonlyArray<string>) => {
     throw new Error(`${cmd.join(" ")} failed: ${result.stderr.toString()}`)
   }
   return result.stdout.toString().trim()
+}
+
+const createNixProvenanceFixture = (): { cleanupRoot: string; root: string; revision: string } => {
+  const cleanupRoot = mkdtempSync(join(tmpdir(), "linear-axi-nix-source-"))
+  const root = join(cleanupRoot, "checkout")
+  const repository = join(cleanupRoot, "remote.git")
+  mkdirSync(join(root, "nix"), { recursive: true })
+  cpSync(
+    join(repoRoot, "nix", "verified-release-source.nix"),
+    join(root, "nix", "verified-release-source.nix")
+  )
+  writeFileSync(join(root, "payload"), "committed source\n")
+  writeFileSync(join(root, "flake.nix"), `{
+  outputs = { self, ... }:
+    let
+      revision = self.rev or (throw "fixture requires an immutable revision");
+      source = import ./nix/verified-release-source.nix {
+        inherit revision;
+        repository = ${JSON.stringify(`file://${repository}`)};
+        sourceNarHash = self.narHash;
+      };
+    in
+    {
+      packages.x86_64-linux.default = derivation {
+        name = "verified-release-source-fixture";
+        system = "x86_64-linux";
+        builder = "/bin/sh";
+        args = [ "-c" "while IFS= read -r line; do printf '%s\\\\n' \\"$line\\"; done < ${"${source.outPath}"}/payload > $out" ];
+      };
+    };
+}
+`)
+  runFixtureCommand(root, ["git", "init", "--quiet"])
+  runFixtureCommand(root, ["git", "config", "user.email", "release-test@example.com"])
+  runFixtureCommand(root, ["git", "config", "user.name", "Release Test"])
+  runFixtureCommand(root, ["git", "add", "."])
+  runFixtureCommand(root, ["git", "commit", "--quiet", "-m", "Nix source fixture"])
+  const revision = runFixtureCommand(root, ["git", "rev-parse", "HEAD"])
+  runFixtureCommand(cleanupRoot, ["git", "clone", "--quiet", "--bare", root, repository])
+  return { cleanupRoot, root, revision }
 }
 
 const createReleaseFixture = (): { root: string; revision: string } => {
@@ -374,6 +415,9 @@ describe("release integrity", () => {
     expect(officialMcp).toContain("version: PACKAGE_VERSION")
     expect(buildInfo).toContain("packageMetadata.version")
     expect(flake).toContain(`version = "${packageJson.version}";`)
+    expect(flake).toContain("src = releaseSource.outPath")
+    expect(flake).toContain("repository = \"https://github.com/henrikkvamme/linear-axi.git\"")
+    expect(flake).not.toContain("root = ./.;")
   })
 
   test("release builds reject an unknown revision", () => {
@@ -461,6 +505,46 @@ describe("release integrity", () => {
         expect(result.stderr.toString()).toContain("index exemptions")
       } finally {
         rmSync(root, { recursive: true, force: true })
+      }
+    })
+  }
+
+  test.skipIf(!nixAvailable)("Nix release source builds from the immutable Git revision", () => {
+    const { cleanupRoot, root } = createNixProvenanceFixture()
+
+    try {
+      const build = Bun.spawnSync({
+        cmd: ["nix", "build", "--no-link", "--print-out-paths", ".#default"],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(build.exitCode, build.stderr.toString()).toBe(0)
+      expect(readFileSync(build.stdout.toString().trim(), "utf8")).toBe("committed source\n")
+    } finally {
+      rmSync(cleanupRoot, { recursive: true, force: true })
+    }
+  })
+
+  for (const indexFlag of ["--assume-unchanged", "--skip-worktree"] as const) {
+    test.skipIf(!nixAvailable)(`Nix release source excludes hidden bytes marked ${indexFlag}`, () => {
+      const { cleanupRoot, root, revision } = createNixProvenanceFixture()
+
+      try {
+        runFixtureCommand(root, ["git", "update-index", indexFlag, "payload"])
+        writeFileSync(join(root, "payload"), "hidden working source\n")
+        expect(runFixtureCommand(root, ["git", "rev-parse", "HEAD"])).toBe(revision)
+
+        const hiddenBuild = Bun.spawnSync({
+          cmd: ["nix", "build", "--no-link", "--print-out-paths", ".#default"],
+          cwd: root,
+          stdout: "pipe",
+          stderr: "pipe"
+        })
+        expect(hiddenBuild.exitCode, hiddenBuild.stderr.toString()).toBe(0)
+        expect(readFileSync(hiddenBuild.stdout.toString().trim(), "utf8")).toBe("committed source\n")
+      } finally {
+        rmSync(cleanupRoot, { recursive: true, force: true })
       }
     })
   }
