@@ -4327,6 +4327,21 @@ describe("runCommand", () => {
     expect(calls).toBe(0)
   })
 
+  test("native mutations carry parsed identity expectations to dispatch", async () => {
+    const expectations: unknown[] = []
+    await run(["issues", "assign", "--id", "ENG-123", "--assignee", "me"], fakeGateway({
+      assignIssue: (_input, expectation) => {
+        expectations.push(expectation)
+        return Effect.succeed(mutation(baseIssue))
+      }
+    }))
+
+    expect(expectations).toEqual([{
+      expectedWorkspace: "engineering",
+      expectedTeam: "ENG"
+    }])
+  })
+
   test("assignment, release, close, and update pass conflict-aware inputs", async () => {
     const assignee = "55555555-5555-4555-8555-555555555555"
     const calls: unknown[] = []

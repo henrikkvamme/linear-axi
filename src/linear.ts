@@ -24,24 +24,24 @@ export interface LinearGateway {
   listWorkflowStates(input: ListWorkflowStatesInput): Effect.Effect<ReadonlyArray<WorkflowStateSummary>, GatewayError>
   listIssues(input: ListIssuesInput): Effect.Effect<PageResult<IssueSummary>, GatewayError>
   viewIssue(id: string): Effect.Effect<IssueDetail, GatewayError>
-  createIssue(input: CreateIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
-  assignIssue(input: AssignIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
-  unassignIssue(input: UnassignIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
-  closeIssue(input: CloseIssueInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
-  changeIssueState(input: ChangeIssueStateInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
-  setIssueParent(input: SetIssueParentInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
-  clearIssueFields(input: ClearIssueFieldsInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
-  updateIssueDescription(input: UpdateIssueDescriptionInput): Effect.Effect<MutationResult<IssueDetail>, GatewayError>
+  createIssue(input: CreateIssueInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  assignIssue(input: AssignIssueInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  unassignIssue(input: UnassignIssueInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  closeIssue(input: CloseIssueInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  changeIssueState(input: ChangeIssueStateInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  setIssueParent(input: SetIssueParentInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  clearIssueFields(input: ClearIssueFieldsInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  updateIssueDescription(input: UpdateIssueDescriptionInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<IssueDetail>, GatewayError>
   listLabels(input: ListLabelsInput): Effect.Effect<PageResult<LabelSummary>, GatewayError>
-  createLabel(input: CreateLabelInput): Effect.Effect<MutationResult<LabelSummary>, GatewayError>
-  applyLabel(input: ApplyLabelInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
-  removeLabel(input: ApplyLabelInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
-  replaceLabels(input: ReplaceLabelsInput): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  createLabel(input: CreateLabelInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<LabelSummary>, GatewayError>
+  applyLabel(input: ApplyLabelInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  removeLabel(input: ApplyLabelInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
+  replaceLabels(input: ReplaceLabelsInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<IssueSummary>, GatewayError>
   listRelations(input: ListRelationsInput): Effect.Effect<PageResult<RelationSummary>, GatewayError>
-  createRelation(input: CreateRelationInput): Effect.Effect<MutationResult<RelationSummary>, GatewayError>
-  removeRelation(input: RemoveRelationInput): Effect.Effect<MutationResult<RelationRemovalSummary>, GatewayError>
+  createRelation(input: CreateRelationInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<RelationSummary>, GatewayError>
+  removeRelation(input: RemoveRelationInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<RelationRemovalSummary>, GatewayError>
   listComments(input: ListCommentsInput): Effect.Effect<PageResult<CommentSummary>, GatewayError>
-  createComment(input: CreateCommentInput): Effect.Effect<MutationResult<CommentSummary>, GatewayError>
+  createComment(input: CreateCommentInput, expectation?: MutationExpectation): Effect.Effect<MutationResult<CommentSummary>, GatewayError>
   frontier(input: FrontierInput): Effect.Effect<FrontierResult, GatewayError>
 }
 
@@ -71,6 +71,11 @@ export interface MutationIdentityInput {
   readonly issue?: string
   readonly team?: string
   readonly relation?: string
+}
+
+export interface MutationExpectation {
+  readonly expectedWorkspace: string
+  readonly expectedTeam?: string
 }
 
 export interface TeamSummary {

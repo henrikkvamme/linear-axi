@@ -24,7 +24,7 @@ import type {
 } from "./linear"
 import { DESCRIPTION_CONCURRENCY_WARNING } from "./linear"
 import { labelGroupSelectionError } from "./label-validation"
-import { workspaceIdentityMatches, workspaceMismatchError } from "./mutation-identity"
+import { mutationIdentityMismatch } from "./mutation-identity"
 import { decodeLocalCursorOffset } from "./linear-pagination"
 import { connectOAuth, setupOAuth } from "./oauth"
 import { truncateDetail, truncateText, type OutputValue } from "./output"
@@ -228,33 +228,8 @@ const mutationIdentityGuard = Effect.fn("Commands.mutationIdentityGuard")(functi
         ? { expectedWorkspace, relation: target.value }
         : { expectedWorkspace }
   const actual = yield* gateway.mutationIdentity(identityInput)
-  if (!workspaceIdentityMatches(actual.workspace, expectedWorkspace)) {
-    return yield* Effect.fail(workspaceMismatchError(actual.workspace, expectedWorkspace))
-  }
-  if (expectedTeam && !actual.team) {
-    return yield* Effect.fail(new LinearDomainError({
-      message: "Resolved Linear mutation target did not provide a verifiable team identity",
-      code: "team_mismatch",
-      expected: { idOrKey: expectedTeam },
-      actual: null,
-      help: "Resolve the intended target team and credential; do not repeat the mutation."
-    }))
-  }
-  if (expectedTeam && actual.team) {
-    const expectedTeamLower = expectedTeam.toLowerCase()
-    if (
-      actual.team.id.toLowerCase() !== expectedTeamLower &&
-      actual.team.key.toLowerCase() !== expectedTeamLower
-    ) {
-      return yield* Effect.fail(new LinearDomainError({
-        message: "Resolved Linear target team does not match the mutation expectation",
-        code: "team_mismatch",
-        expected: { idOrKey: expectedTeam },
-        actual: actual.team,
-        help: "Resolve the intended target team and credential; do not repeat the mutation."
-      }))
-    }
-  }
+  const mismatch = mutationIdentityMismatch(actual, expectedWorkspace, expectedTeam)
+  if (mismatch) return yield* Effect.fail(mismatch)
 })
 
 const gatewayMethodSafety = {
@@ -288,13 +263,15 @@ const gatewayMethodSafety = {
   frontier: "read"
 } as const satisfies Readonly<Record<keyof LinearGateway, "local" | "identity" | "official" | "read" | "mutation">>
 
+const gatewayMethodSafetyFor = (property: PropertyKey) => typeof property === "string"
+  ? gatewayMethodSafety[property as keyof typeof gatewayMethodSafety]
+  : undefined
+
 const isGatewayMutationDispatch = (
   property: PropertyKey,
   args: ReadonlyArray<unknown>
 ): boolean => {
-  const safety = typeof property === "string"
-    ? gatewayMethodSafety[property as keyof typeof gatewayMethodSafety]
-    : undefined
+  const safety = gatewayMethodSafetyFor(property)
   if (safety === undefined || safety === "mutation") return true
   return safety === "official" &&
     typeof args[0] === "string" &&
@@ -317,8 +294,17 @@ const mutationGuardedGateway = (
       return (...args: ReadonlyArray<unknown>) => (
         isGatewayMutationDispatch(property, args) || !identityVerified ? guard() : Effect.succeed(undefined)
       ).pipe(
-        Effect.flatMap(() => Effect.suspend(() =>
-          (value as (...callArgs: ReadonlyArray<unknown>) => Effect.Effect<unknown, CliError>)(...args)))
+        Effect.flatMap(() => Effect.suspend(() => {
+          const callArgs = gatewayMethodSafetyFor(property) === "mutation"
+            ? [...args, {
+                expectedWorkspace: readStringFlag(parsed.flags, "expect-workspace")!,
+                ...(readStringFlag(parsed.flags, "expect-team") === undefined
+                  ? {}
+                  : { expectedTeam: readStringFlag(parsed.flags, "expect-team") })
+              }]
+            : args
+          return (value as (...methodArgs: ReadonlyArray<unknown>) => Effect.Effect<unknown, CliError>)(...callArgs)
+        }))
       )
     }
   })

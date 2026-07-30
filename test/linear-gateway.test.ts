@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { Comment, Issue, IssueLabel, IssueRelation, LinearClient, User } from "@linear/sdk"
 import { Effect } from "effect"
+import { commandSpecs, parseArgs } from "../src/args"
+import { runCommand } from "../src/commands"
 import { makeLinearGateway } from "../src/linear"
 import type { ConnectionLike } from "../src/linear-pagination"
 
@@ -171,6 +173,52 @@ describe("SDK LinearGateway conflict contracts", () => {
 
     expect(error.help).toContain("retry the original guarded command")
     expect(error.help).not.toContain("linear-axi mutation identity")
+  })
+
+  test("revalidates an immutable issue team after native mutation preflights", async () => {
+    const movedTeam = {
+      id: "66666666-6666-4666-8666-666666666666",
+      key: "OPS",
+      name: "Operations"
+    }
+    const before = issue()
+    const moved = issue({ teamId: movedTeam.id, team: Promise.resolve(movedTeam) })
+    const viewer = {
+      organization: Promise.resolve({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        urlKey: "bender",
+        name: "Bender"
+      })
+    }
+    let issueReads = 0
+    let updates = 0
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        viewer: Promise.resolve(viewer),
+        issues: async () => page([issueReads++ < 2 ? before : moved]),
+        users: async () => page([user()]),
+        updateIssue: async () => {
+          updates += 1
+          return { success: true }
+        }
+      })
+    })
+    const error = await Effect.runPromise(Effect.flip(runCommand(parseArgs([
+      "issues", "assign",
+      "--id", "BEN-1",
+      "--assignee", user().id,
+      "--expect-workspace", "bender",
+      "--expect-team", team.id
+    ], commandSpecs), gateway, "/repo/src/main.ts")))
+
+    expect(error).toMatchObject({
+      _tag: "LinearDomainError",
+      code: "team_mismatch",
+      expected: { idOrKey: team.id },
+      actual: movedTeam
+    })
+    expect(issueReads).toBe(3)
+    expect(updates).toBe(0)
   })
 
   test("resolves human issue identifiers by exact team key and issue number", async () => {
