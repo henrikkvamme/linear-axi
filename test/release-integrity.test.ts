@@ -23,6 +23,19 @@ const runCli = (...args: ReadonlyArray<string>) => Bun.spawnSync({
   stderr: "pipe"
 })
 
+const bundledSkillSha256 = (root: string): string => {
+  const hasher = new Bun.CryptoHasher("sha256")
+  for (const path of [
+    ".agents/skills/linear-axi/COMMANDS.md",
+    ".agents/skills/linear-axi/SKILL.md"
+  ]) {
+    hasher.update(`${path}\0`)
+    hasher.update(readFileSync(join(root, path)))
+    hasher.update("\0")
+  }
+  return hasher.digest("hex")
+}
+
 const runFixtureCommand = (cwd: string, cmd: ReadonlyArray<string>) => {
   const result = Bun.spawnSync({ cmd: [...cmd], cwd, stdout: "pipe", stderr: "pipe" })
   if (result.exitCode !== 0) {
@@ -69,6 +82,24 @@ const createNixProvenanceFixture = (): { cleanupRoot: string; root: string; revi
   const revision = runFixtureCommand(root, ["git", "rev-parse", "HEAD"])
   runFixtureCommand(cleanupRoot, ["git", "clone", "--quiet", "--bare", root, repository])
   return { cleanupRoot, root, revision }
+}
+
+const createGitRaceWrapper = (): string => {
+  const wrapperRoot = mkdtempSync(join(tmpdir(), "linear-axi-git-race-"))
+  const fakeGit = join(wrapperRoot, "git")
+  writeFileSync(fakeGit, `#!/bin/sh
+if [ "$1" = "status" ]; then
+  "$REAL_GIT" "$@"
+  result=$?
+  if [ "$result" -eq 0 ]; then
+    printf '%s\\n' "$RACE_CONTENT" > "$RACE_FILE"
+  fi
+  exit "$result"
+fi
+exec "$REAL_GIT" "$@"
+`)
+  chmodSync(fakeGit, 0o755)
+  return wrapperRoot
 }
 
 const createReleaseFixture = (): { root: string; revision: string } => {
@@ -270,7 +301,7 @@ describe("release integrity", () => {
 
       const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/tmp/linear-axi")))
 
-      expect(identityInput).toEqual({ issue: "SAM-1" })
+      expect(identityInput).toEqual({ expectedWorkspace: "bender", issue: "SAM-1" })
       expect(error).toMatchObject({ code: "team_mismatch", actual: { key: "SAM" } })
       expect(mutations).toBe(0)
     })
@@ -302,7 +333,10 @@ describe("release integrity", () => {
 
     const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/tmp/linear-axi")))
 
-    expect(identityInput).toEqual({ relation: "33333333-3333-4333-8333-333333333333" })
+    expect(identityInput).toEqual({
+      expectedWorkspace: "bender",
+      relation: "33333333-3333-4333-8333-333333333333"
+    })
     expect(error).toMatchObject({ code: "team_mismatch", actual: { key: "SAM" } })
     expect(mutations).toBe(0)
   })
@@ -409,6 +443,7 @@ describe("release integrity", () => {
 
     expect(packageJson.version).toBe("0.2.0")
     expect(packageJson.files).toContain("scripts/build.ts")
+    expect(packageJson.files).toContain("scripts/package-release.ts")
     expect(packageJson.files).toContain("scripts/package-revision.ts")
     expect(packageJson.files).toContain("scripts/release-provenance.ts")
     expect(packageJson.files).toContain("SOURCE_REVISION")
@@ -431,11 +466,11 @@ describe("release integrity", () => {
     expect(result.stderr.toString()).toContain("exact 40-hex immutable revision")
   })
 
-  test("published source builds with its packaged immutable revision", () => {
+  test("published source reports and builds with its packaged immutable revision", () => {
     const { root, revision } = createReleaseFixture()
 
     try {
-      const archiveName = runFixtureCommand(root, ["npm", "pack"])
+      const archiveName = runFixtureCommand(root, ["bun", "run", "package:release", "--pack-destination", root])
       const archive = join(root, archiveName.split("\n").at(-1)!)
       const unpacked = join(root, "unpacked")
       mkdirSync(unpacked)
@@ -447,6 +482,16 @@ describe("release integrity", () => {
       expect(existsSync(join(packagedRoot, "scripts", "package-revision.ts"))).toBe(true)
       expect(existsSync(join(packagedRoot, "scripts", "release-provenance.ts"))).toBe(true)
       expect(existsSync(join(root, "SOURCE_REVISION"))).toBe(false)
+
+      const sourceCapabilities = Bun.spawnSync({
+        cmd: ["bun", "src/main.ts", "capabilities"],
+        cwd: packagedRoot,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(sourceCapabilities.exitCode).toBe(0)
+      expect(sourceCapabilities.stdout.toString()).toContain(`revision: ${revision}`)
+      expect(sourceCapabilities.stdout.toString()).toContain(`contentSha256: ${bundledSkillSha256(packagedRoot)}`)
 
       const build = Bun.spawnSync({
         cmd: ["bun", "run", "build"],
@@ -464,6 +509,94 @@ describe("release integrity", () => {
       })
       expect(capabilities.exitCode).toBe(0)
       expect(capabilities.stdout.toString()).toContain(`revision: ${revision}`)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("release builds consume the verified immutable snapshot after checkout verification", () => {
+    const { root, revision } = createReleaseFixture()
+    const wrapperRoot = createGitRaceWrapper()
+    const expectedSkillHash = bundledSkillSha256(root)
+    const binary = join(root, "linear-axi")
+
+    try {
+      const result = Bun.spawnSync({
+        cmd: ["bun", "scripts/build.ts", "--revision", revision, "--outfile", binary],
+        cwd: root,
+        env: {
+          ...process.env,
+          PATH: [wrapperRoot, process.env.PATH ?? ""].join(delimiter),
+          REAL_GIT: Bun.which("git")!,
+          RACE_FILE: join(root, ".agents", "skills", "linear-axi", "SKILL.md"),
+          RACE_CONTENT: "concurrent uncommitted skill content"
+        },
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(result.exitCode, result.stderr.toString()).toBe(0)
+
+      const capabilities = Bun.spawnSync({
+        cmd: [binary, "capabilities"],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(capabilities.exitCode).toBe(0)
+      expect(capabilities.stdout.toString()).toContain(`revision: ${revision}`)
+      expect(capabilities.stdout.toString()).toContain(`contentSha256: ${expectedSkillHash}`)
+    } finally {
+      rmSync(wrapperRoot, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("release packaging consumes the verified immutable snapshot", () => {
+    const { root, revision } = createReleaseFixture()
+    const wrapperRoot = createGitRaceWrapper()
+    const committedReadme = readFileSync(join(root, "README.md"), "utf8")
+
+    try {
+      const result = Bun.spawnSync({
+        cmd: ["bun", "run", "package:release", "--pack-destination", root],
+        cwd: root,
+        env: {
+          ...process.env,
+          PATH: [wrapperRoot, process.env.PATH ?? ""].join(delimiter),
+          REAL_GIT: Bun.which("git")!,
+          RACE_FILE: join(root, "README.md"),
+          RACE_CONTENT: "concurrent uncommitted package content"
+        },
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(result.exitCode, result.stderr.toString()).toBe(0)
+
+      const archiveName = result.stdout.toString().trim().split("\n").at(-1)!
+      const unpacked = join(root, "race-unpacked")
+      mkdirSync(unpacked)
+      runFixtureCommand(root, ["tar", "-xzf", join(root, archiveName), "-C", unpacked])
+      const packagedRoot = join(unpacked, "package")
+      expect(readFileSync(join(packagedRoot, "SOURCE_REVISION"), "utf8").trim()).toBe(revision)
+      expect(readFileSync(join(packagedRoot, "README.md"), "utf8")).toBe(committedReadme)
+    } finally {
+      rmSync(wrapperRoot, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("direct npm packaging from a Git checkout fails closed", () => {
+    const { root } = createReleaseFixture()
+
+    try {
+      const result = Bun.spawnSync({
+        cmd: ["npm", "pack"],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr.toString()).toContain("package:release")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -593,7 +726,7 @@ describe("release integrity", () => {
     }
   })
 
-  for (const probe of ["worktree", "HEAD", "index", "status"] as const) {
+  for (const probe of ["worktree", "HEAD", "index", "status", "archive"] as const) {
     test(`release builds fail closed when the Git ${probe} probe fails`, () => {
       const fixture = mkdtempSync(join(tmpdir(), "linear-axi-git-probe-"))
       const fakeGit = join(fixture, "git")
@@ -605,12 +738,14 @@ describe("release integrity", () => {
       const script = `#!/bin/sh
 case "${probe}:$*" in
   "worktree:rev-parse --is-inside-work-tree") echo "worktree probe failed" >&2; exit 42 ;;
-  "HEAD:rev-parse --is-inside-work-tree"|"index:rev-parse --is-inside-work-tree"|"status:rev-parse --is-inside-work-tree") echo true ;;
+  "HEAD:rev-parse --is-inside-work-tree"|"index:rev-parse --is-inside-work-tree"|"status:rev-parse --is-inside-work-tree"|"archive:rev-parse --is-inside-work-tree") echo true ;;
   "HEAD:rev-parse HEAD") echo "HEAD probe failed" >&2; exit 42 ;;
-  "index:rev-parse HEAD"|"status:rev-parse HEAD") echo "${revision}" ;;
+  "index:rev-parse HEAD"|"status:rev-parse HEAD"|"archive:rev-parse HEAD") echo "${revision}" ;;
   "index:ls-files -v -z -- :/") echo "index probe failed" >&2; exit 42 ;;
-  "status:ls-files -v -z -- :/") exit 0 ;;
+  "status:ls-files -v -z -- :/"|"archive:ls-files -v -z -- :/") exit 0 ;;
   "status:status --porcelain --untracked-files=all --ignore-submodules=none") echo "status probe failed" >&2; exit 42 ;;
+  "archive:status --porcelain --untracked-files=all --ignore-submodules=none") exit 0 ;;
+  archive:archive*) echo "archive probe failed" >&2; exit 42 ;;
 esac
 `
       writeFileSync(fakeGit, script)

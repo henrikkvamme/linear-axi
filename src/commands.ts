@@ -24,6 +24,7 @@ import type {
 } from "./linear"
 import { DESCRIPTION_CONCURRENCY_WARNING } from "./linear"
 import { labelGroupSelectionError } from "./label-validation"
+import { workspaceIdentityMatches, workspaceMismatchError } from "./mutation-identity"
 import { decodeLocalCursorOffset } from "./linear-pagination"
 import { connectOAuth, setupOAuth } from "./oauth"
 import { truncateDetail, truncateText, type OutputValue } from "./output"
@@ -219,25 +220,15 @@ const mutationIdentityGuard = Effect.fn("Commands.mutationIdentityGuard")(functi
     value: readStringFlag(parsed.flags, candidate.flag)
   })).find((candidate) => candidate.value !== undefined)
   const identityInput = target?.kind === "issue"
-    ? { issue: target.value }
+    ? { expectedWorkspace, issue: target.value }
     : target?.kind === "team"
-      ? { team: target.value }
+      ? { expectedWorkspace, team: target.value }
       : target?.kind === "relation"
-        ? { relation: target.value }
-        : {}
+        ? { expectedWorkspace, relation: target.value }
+        : { expectedWorkspace }
   const actual = yield* gateway.mutationIdentity(identityInput)
-  const expectedWorkspaceLower = expectedWorkspace.toLowerCase()
-  if (
-    actual.workspace.id.toLowerCase() !== expectedWorkspaceLower &&
-    actual.workspace.urlKey.toLowerCase() !== expectedWorkspaceLower
-  ) {
-    return yield* Effect.fail(new LinearDomainError({
-      message: "Authenticated Linear workspace does not match the mutation expectation",
-      code: "workspace_mismatch",
-      expected: { idOrUrlKey: expectedWorkspace },
-      actual: actual.workspace,
-      help: "Re-run with the intended workspace credential; do not repeat the mutation."
-    }))
+  if (!workspaceIdentityMatches(actual.workspace, expectedWorkspace)) {
+    return yield* Effect.fail(workspaceMismatchError(actual.workspace, expectedWorkspace))
   }
   if (expectedTeam && !actual.team) {
     return yield* Effect.fail(new LinearDomainError({

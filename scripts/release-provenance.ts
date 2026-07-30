@@ -1,4 +1,5 @@
-import { existsSync, lstatSync, readFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { join } from "node:path"
 
 export const packagedRevisionPath = "SOURCE_REVISION"
 
@@ -16,7 +17,7 @@ export const hasGitMetadata = (): boolean => existsSync(".git")
 
 const probeGit = (
   subject: string,
-  probe: "worktree" | "HEAD" | "index" | "status",
+  probe: "worktree" | "HEAD" | "index" | "status" | "archive",
   args: ReadonlyArray<string>
 ): string => {
   const result = Bun.spawnSync({
@@ -59,6 +60,36 @@ export const verifyCleanCheckout = (subject: string): string => {
     throw new Error(`${subject} requires a clean checkout so the immutable revision identifies the source exactly.`)
   }
   return revision
+}
+
+export const exportImmutableRevision = (
+  subject: string,
+  revision: string
+): { readonly root: string; readonly cleanup: () => void } => {
+  const snapshot = mkdtempSync(join(process.cwd(), ".linear-axi-release-snapshot-"))
+  const archive = join(snapshot, "source.tar")
+  const root = join(snapshot, "source")
+  mkdirSync(root)
+  try {
+    probeGit(subject, "archive", ["archive", "--format=tar", `--output=${archive}`, revision])
+    const extracted = Bun.spawnSync({
+      cmd: ["tar", "-xf", archive, "-C", root],
+      stdout: "pipe",
+      stderr: "pipe"
+    })
+    if (extracted.exitCode !== 0) {
+      const diagnostic = extracted.stderr.toString().trim()
+      throw new Error(`${subject} could not extract immutable Git archive (exit ${extracted.exitCode})${diagnostic ? `: ${diagnostic}` : "."}`)
+    }
+    rmSync(archive)
+    return {
+      root,
+      cleanup: () => rmSync(snapshot, { recursive: true, force: true })
+    }
+  } catch (error) {
+    rmSync(snapshot, { recursive: true, force: true })
+    throw error
+  }
 }
 
 export const readPackagedRevision = (): string | undefined => {

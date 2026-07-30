@@ -67,6 +67,7 @@ export interface MutationIdentity {
 }
 
 export interface MutationIdentityInput {
+  readonly expectedWorkspace: string
   readonly issue?: string
   readonly team?: string
   readonly relation?: string

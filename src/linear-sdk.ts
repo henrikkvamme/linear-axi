@@ -53,6 +53,7 @@ import type {
 } from "./linear"
 import { decodeLocalCursorOffset, fetchAllPages, type ConnectionLike, type LocalCursorKind } from "./linear-pagination"
 import { labelGroupSelectionError } from "./label-validation"
+import { workspaceIdentityMatches, workspaceMismatchError } from "./mutation-identity"
 import { makeOfficialMcpToolCaller } from "./official-mcp"
 import { renderCandidateIds } from "./official-selector"
 import { normalizeRichText, richTextEqual } from "./rich-text"
@@ -208,6 +209,14 @@ const mutationIdentity = async (
 ): Promise<MutationIdentity> => {
   const viewer = await client.viewer
   const organization = await viewer.organization
+  const workspace = {
+    id: organization.id,
+    urlKey: organization.urlKey,
+    name: organization.name
+  }
+  if (!workspaceIdentityMatches(workspace, input.expectedWorkspace)) {
+    throw workspaceMismatchError(workspace, input.expectedWorkspace)
+  }
   let team: Team | undefined
   if (input.issue) {
     team = await (await resolveIssue(client, input.issue)).team
@@ -223,11 +232,7 @@ const mutationIdentity = async (
     }
   }
   return {
-    workspace: {
-      id: organization.id,
-      urlKey: organization.urlKey,
-      name: organization.name
-    },
+    workspace,
     ...(team ? { team: teamSummary(team) } : {})
   }
 }

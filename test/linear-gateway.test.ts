@@ -93,7 +93,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     })
 
     const auth = await Effect.runPromise(gateway.authStatus())
-    const identity = await Effect.runPromise(gateway.mutationIdentity({ issue: "BEN-1" }))
+    const identity = await Effect.runPromise(gateway.mutationIdentity({ expectedWorkspace: "bender", issue: "BEN-1" }))
 
     expect(auth.workspace).toEqual({
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -126,9 +126,40 @@ describe("SDK LinearGateway conflict contracts", () => {
       })
     })
 
-    const identity = await Effect.runPromise(gateway.mutationIdentity({ relation: relation.id }))
+    const identity = await Effect.runPromise(gateway.mutationIdentity({ expectedWorkspace: "bender", relation: relation.id }))
 
     expect(identity).toMatchObject({ workspace: { urlKey: "bender" }, team })
+  })
+
+  test("workspace expectations are checked before mutation target resolution", async () => {
+    let issueLookups = 0
+    const viewer = {
+      organization: Promise.resolve({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        urlKey: "sambu",
+        name: "Sambu"
+      })
+    }
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([], {
+        viewer: Promise.resolve(viewer),
+        issues: async () => {
+          issueLookups += 1
+          return page([])
+        }
+      })
+    })
+    const identityInput = { issue: "BEN-404", expectedWorkspace: "bender" }
+
+    const error = await Effect.runPromise(Effect.flip(gateway.mutationIdentity(identityInput)))
+
+    expect(error).toMatchObject({
+      _tag: "LinearDomainError",
+      code: "workspace_mismatch",
+      expected: { idOrUrlKey: "bender" },
+      actual: { urlKey: "sambu", name: "Sambu" }
+    })
+    expect(issueLookups).toBe(0)
   })
 
   test("mutation identity lookup failures retry the original guarded command", async () => {
@@ -136,7 +167,7 @@ describe("SDK LinearGateway conflict contracts", () => {
       client: clientWithIssues([], { viewer: Promise.reject(new Error("forbidden")) })
     })
 
-    const error = await Effect.runPromise(Effect.flip(gateway.mutationIdentity({ issue: "BEN-1" })))
+    const error = await Effect.runPromise(Effect.flip(gateway.mutationIdentity({ expectedWorkspace: "bender", issue: "BEN-1" })))
 
     expect(error.help).toContain("retry the original guarded command")
     expect(error.help).not.toContain("linear-axi mutation identity")

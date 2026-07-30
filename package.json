@@ -10,6 +10,7 @@
   "files": [
     "src",
     "scripts/build.ts",
+    "scripts/package-release.ts",
     "scripts/package-revision.ts",
     "scripts/release-provenance.ts",
     "SOURCE_REVISION",
@@ -41,6 +42,7 @@
   },
   "scripts": {
     "build": "bun scripts/build.ts",
+    "package:release": "bun scripts/package-release.ts",
     "prepack": "bun scripts/package-revision.ts prepare",
     "postpack": "bun scripts/package-revision.ts cleanup",
     "check": "bun run parity:check && bun run typecheck && bun run test && bun run build",
