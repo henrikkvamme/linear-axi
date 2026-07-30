@@ -159,7 +159,11 @@ const parseArgs: typeof parseProductionArgs = (argv, specs) => {
   const spec = specs.find((candidate) => candidate.path.join("\0") === path.join("\0"))
   return parseProductionArgs(
     spec?.operation === "mutation" && !argv.includes("--help") && !argv.includes("--expect-workspace")
-      ? [...argv, "--expect-workspace", "engineering", "--expect-team", "ENG"]
+      ? [
+          ...argv,
+          "--expect-workspace", "engineering",
+          ...(spec.flags.has("expect-team") ? ["--expect-team", "ENG"] : [])
+        ]
       : argv,
     specs
   )

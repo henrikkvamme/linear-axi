@@ -6,6 +6,7 @@ import { Effect } from "effect"
 import { commandSpecs, parseArgs, topLevelHelp } from "../src/args"
 import { runCommand } from "../src/commands"
 import type { LinearGateway } from "../src/linear"
+import { officialMutationTools } from "../src/official-commands"
 
 const repoRoot = process.cwd()
 
@@ -255,40 +256,36 @@ describe("release integrity", () => {
     expect(mutationCalls).toBe(0)
   })
 
-  test("an unresolved expected team makes zero official mutation calls", async () => {
-    let mutationCalls = 0
-    const gateway = {
-      close: () => Effect.void,
-      mutationIdentity: () => Effect.succeed({
-        workspace: { id: "11111111-1111-4111-8111-111111111111", urlKey: "bender", name: "Bender" }
-      }),
-      callOfficialTool: (name: string) => {
-        if (name === "save_project") mutationCalls += 1
-        return Effect.succeed({
-          id: "project-id",
-          name: "Project",
-          state: "planned",
-          archivedAt: null
-        })
-      },
-      resolveProjectUpdateAssociations: () => Effect.succeed({ teams: [], initiatives: [] })
-    } as unknown as LinearGateway
-    const parsed = parseArgs([
+  test("only team-resolvable official mutations accept a team expectation", () => {
+    const officialMutations = commandSpecs.filter((spec) =>
+      spec.operation === "mutation" && spec.officialTools?.some((tool) => officialMutationTools.has(tool)))
+    const documentUpdate = officialMutations.find((spec) => spec.path.join(" ") === "documents update")!
+
+    expect(documentUpdate.flags.has("expect-team")).toBe(true)
+    expect(documentUpdate.valueFlags?.has("expect-team")).toBe(true)
+    expect(documentUpdate.help).toContain("[--expect-team <team-key-or-uuid>]")
+    for (const spec of officialMutations.filter((candidate) => candidate !== documentUpdate)) {
+      expect(spec.flags.has("expect-team"), spec.path.join(" ")).toBe(false)
+      expect(spec.valueFlags?.has("expect-team"), spec.path.join(" ")).toBe(false)
+      expect(spec.help, spec.path.join(" ")).not.toContain("--expect-team")
+    }
+
+    expect(() => parseArgs([
       "projects", "update",
       "--id", "project-id",
       "--state", "started",
       "--expect-workspace", "bender",
       "--expect-team", "BEN"
-    ], commandSpecs)
+    ], commandSpecs)).toThrow("unknown flag --expect-team")
 
-    const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/tmp/linear-axi")))
-
-    expect(error).toMatchObject({
-      code: "team_mismatch",
-      expected: { idOrKey: "BEN" },
-      actual: null
-    })
-    expect(mutationCalls).toBe(0)
+    expect(parseArgs([
+      "documents", "update",
+      "--id", "document-id",
+      "--issue", "BEN-123",
+      "--title", "New title",
+      "--expect-workspace", "bender",
+      "--expect-team", "BEN"
+    ], commandSpecs).flags.get("expect-team")).toBe("BEN")
   })
 
   test("capability requirements are credential-free and structured", () => {
@@ -322,12 +319,13 @@ describe("release integrity", () => {
   })
 
   test("package, MCP client, flake, and build metadata share version 0.2.0", async () => {
-    const packageJson = await Bun.file("package.json").json() as { version: string }
+    const packageJson = await Bun.file("package.json").json() as { version: string; files: ReadonlyArray<string> }
     const officialMcp = await Bun.file("src/official-mcp.ts").text()
     const buildInfo = await Bun.file("src/build-info.ts").text()
     const flake = await Bun.file("flake.nix").text()
 
     expect(packageJson.version).toBe("0.2.0")
+    expect(packageJson.files).toContain("scripts/build.ts")
     expect(officialMcp).toContain("version: PACKAGE_VERSION")
     expect(buildInfo).toContain("packageMetadata.version")
     expect(flake).toContain(`version = "${packageJson.version}";`)

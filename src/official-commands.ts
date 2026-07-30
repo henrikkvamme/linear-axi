@@ -1,5 +1,5 @@
 import { Effect, Predicate, Schema } from "effect"
-import type { CommandSpec, ParsedArgs } from "./args"
+import type { CommandSpec, MutationTarget, ParsedArgs } from "./args"
 import { LinearDomainError, UsageError, type CliError } from "./errors"
 import { DESCRIPTION_CONCURRENCY_WARNING, type LinearGateway } from "./linear"
 import {
@@ -60,6 +60,7 @@ interface OfficialCommand {
   readonly examples: ReadonlyArray<string>
   readonly fixedArgs?: Readonly<Record<string, unknown>>
   readonly validate?: (flags: ReadonlyMap<string, string | boolean>) => string | undefined
+  readonly mutationTargets?: ReadonlyArray<MutationTarget>
 }
 
 const FULL_FLAG_DESCRIPTION = "Disable local projection and text truncation; associations still require explicit inclusion flags."
@@ -122,7 +123,7 @@ const commands: ReadonlyArray<OfficialCommand> = [
   command("cycles list", "list_cycles", { "team-id": requiredString("teamId"), type: stringFlag(undefined, ["current", "previous", "next"]), full: fullFlag() }, "cycles", "$", ["id", "number", "name", "startsAt", "endsAt"], ["linear-axi cycles list --team-id <team-id> --type current"]),
   command("documents list", "list_documents", { ...commonList, query: stringFlag(), "project-id": stringFlag("projectId"), "initiative-id": stringFlag("initiativeId"), "team-id": stringFlag("teamId"), "creator-id": stringFlag("creatorId"), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived", false) }, "documents", "documents", ["id", "title", "slugId", "updatedAt"], ["linear-axi documents list --query roadmap --limit 20"]),
   command("documents view", "get_document", { id: requiredString(), full: fullFlag() }, "document", undefined, undefined, ["linear-axi documents view --id <id-or-slug> --full"]),
-  command("documents update", "save_document", { id: requiredString(), title: stringFlag(), content: stringFlag(), "clear-content": emptyStringFlag("content", ["content"]), "if-updated-at": preconditionFlag(), project: stringFlag(), issue: stringFlag(), initiative: stringFlag(), cycle: stringFlag(), team: stringFlag(), icon: stringFlag(), color: formattedStringFlag("color"), full: fullFlag() }, "document", undefined, undefined, ["linear-axi documents update --id <document-id> --title \"New title\""], undefined, documentUpdateValidation),
+  command("documents update", "save_document", { id: requiredString(), title: stringFlag(), content: stringFlag(), "clear-content": emptyStringFlag("content", ["content"]), "if-updated-at": preconditionFlag(), project: stringFlag(), issue: stringFlag(), initiative: stringFlag(), cycle: stringFlag(), team: stringFlag(), icon: stringFlag(), color: formattedStringFlag("color"), full: fullFlag() }, "document", undefined, undefined, ["linear-axi documents update --id <document-id> --title \"New title\""], undefined, documentUpdateValidation, [{ kind: "issue", flag: "issue" }]),
   command("issues inspect", "get_issue", { id: requiredString(), relations: bool("includeRelations", false), "customer-needs": bool("includeCustomerNeeds", false), releases: bool("includeReleases", false), full: fullFlag() }, "issue", undefined, undefined, ["linear-axi issues inspect --id ENG-123 --relations --full"]),
   command("issues search", "list_issues", { ...commonList, query: stringFlag(), team: stringFlag(), state: stringFlag(), cycle: stringFlag(), label: stringFlag(), assignee: stringFlag(), delegate: stringFlag(), project: stringFlag(), release: stringFlag(), priority: constrainedNumber({ integer: true, minimum: 0, maximum: 4 }), "parent-id": stringFlag("parentId"), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), "include-archived": bool("includeArchived", true) }, "issues", "issues", ["id", "title", "status", "team"], ["linear-axi issues search --team ENG --query auth"]),
   command("projects list", "list_projects", { ...commonList, limit: { ...commonList.limit, maximum: 50 }, query: stringFlag(), state: stringFlag(), initiative: stringFlag(), team: stringFlag(), member: stringFlag(), label: stringFlag(), "created-at": stringFlag("createdAt"), "updated-at": stringFlag("updatedAt"), milestones: bool("includeMilestones", false), members: bool("includeMembers", false), "include-archived": bool("includeArchived", false) }, "projects", "projects", ["id", "name", "slugId", "state", "updatedAt"], ["linear-axi projects list --team ENG --limit 20"], undefined, maxLimit(50)),
@@ -198,15 +199,16 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
       ? "read"
       : undefined
   if (!operation) throw new Error(`Official command ${entry.path.join(" ")} has no explicit operation classification`)
-  const mutationTargets = entry.path.join(" ") === "documents update"
-    ? [{ kind: "issue" as const, flag: "issue" }]
-    : undefined
+  const mutationTargets = entry.mutationTargets ?? []
+  const expectationFlags = operation === "mutation"
+    ? ["expect-workspace", ...(mutationTargets.length > 0 ? ["expect-team"] : [])]
+    : []
   const flagNames = Object.entries(entry.flags).flatMap(([name, flag]) =>
     flag.kind === "boolean" && name !== "full" ? [name, `no-${name}`] : [name])
-  const flags = new Set(["help", ...flagNames, ...(operation === "mutation" ? ["expect-workspace", "expect-team"] : [])])
+  const flags = new Set(["help", ...flagNames, ...expectationFlags])
   const valueFlags = new Set([
     ...Object.entries(entry.flags).filter(([, flag]) => !["boolean", "null", "empty-string"].includes(flag.kind)).map(([name]) => name),
-    ...(operation === "mutation" ? ["expect-workspace", "expect-team"] : [])
+    ...expectationFlags
   ])
   const required = new Set([
     ...Object.entries(entry.flags).filter(([, flag]) => flag.required).map(([name]) => name),
@@ -223,7 +225,9 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
     ...(operation === "mutation"
       ? [
           "  --expect-workspace <workspace-uuid-or-url-key> (required) - Fail closed unless the authenticated workspace matches.",
-          "  --expect-team <team-key-or-uuid> - Fail closed unless the resolved target team matches."
+          ...(mutationTargets.length > 0
+            ? ["  --expect-team <team-key-or-uuid> - Fail closed unless the resolved target team matches."]
+            : [])
         ]
       : [])
   ]
@@ -238,10 +242,10 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
     required,
     repeatableFlags,
     officialTools: [entry.tool],
-    mutationTargets,
+    mutationTargets: mutationTargets.length > 0 ? mutationTargets : undefined,
     help: [
       operation === "mutation"
-        ? `${usage} --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]`
+        ? `${usage} --expect-workspace <workspace-uuid-or-url-key>${mutationTargets.length > 0 ? " [--expect-team <team-key-or-uuid>]" : ""}`
         : usage,
       "Options (single-use unless marked repeatable):",
       ...options,
@@ -255,7 +259,9 @@ export const officialCommandSpecs: ReadonlyArray<CommandSpec> = commands.map((en
 })
 
 export const officialTopLevelHelp: ReadonlyArray<string> = commands.map((entry) =>
-  `  linear-axi ${entry.path.join(" ")}${officialMutationTools.has(entry.tool) ? " --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]" : ""}`)
+  `  linear-axi ${entry.path.join(" ")}${officialMutationTools.has(entry.tool)
+    ? ` --expect-workspace <workspace-uuid-or-url-key>${entry.mutationTargets?.length ? " [--expect-team <team-key-or-uuid>]" : ""}`
+    : ""}`)
 
 export const runOfficialCommand = (
   parsed: ParsedArgs,
@@ -1132,9 +1138,10 @@ function command(
   defaultFields: ReadonlyArray<string> | undefined,
   examples: ReadonlyArray<string>,
   fixedArgs?: Readonly<Record<string, unknown>>,
-  validate?: (flags: ReadonlyMap<string, string | boolean>) => string | undefined
+  validate?: (flags: ReadonlyMap<string, string | boolean>) => string | undefined,
+  mutationTargets?: ReadonlyArray<MutationTarget>
 ): OfficialCommand {
-  return { path: path.split(" "), tool, flags, outputKey, listKey, defaultFields, examples, fixedArgs, validate }
+  return { path: path.split(" "), tool, flags, outputKey, listKey, defaultFields, examples, fixedArgs, validate, mutationTargets }
 }
 
 function stringFlag(arg?: string, values?: ReadonlyArray<string>, conflictsWith?: ReadonlyArray<string>): OfficialFlag {

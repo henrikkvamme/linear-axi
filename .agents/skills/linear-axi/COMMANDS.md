@@ -793,7 +793,7 @@ Example:
 ## projects update
 
 ```text
-Usage: linear-axi projects update --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
+Usage: linear-axi projects update --id <id> --expect-workspace <workspace-uuid-or-url-key>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
@@ -822,7 +822,6 @@ Options (single-use unless marked repeatable):
   --initiatives-json <JSON-string-array> (conflicts: --add-initiatives-json, --remove-initiatives-json) - Replace the complete initiatives set.
   --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --expect-workspace <workspace-uuid-or-url-key> (required) - Fail closed unless the authenticated workspace matches.
-  --expect-team <team-key-or-uuid> - Fail closed unless the resolved target team matches.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -907,7 +906,7 @@ Example:
 ## releases update
 
 ```text
-Usage: linear-axi releases update --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
+Usage: linear-axi releases update --id <id> --expect-workspace <workspace-uuid-or-url-key>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
@@ -930,7 +929,6 @@ Options (single-use unless marked repeatable):
   --commit-sha <SHA> - Set or filter by commit sha.
   --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --expect-workspace <workspace-uuid-or-url-key> (required) - Fail closed unless the authenticated workspace matches.
-  --expect-team <team-key-or-uuid> - Fail closed unless the resolved target team matches.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -975,7 +973,7 @@ Example:
 ## release-notes update
 
 ```text
-Usage: linear-axi release-notes update --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
+Usage: linear-axi release-notes update --id <id> --expect-workspace <workspace-uuid-or-url-key>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --id <id> (required) - Entity ID or documented stable selector.
@@ -989,7 +987,6 @@ Options (single-use unless marked repeatable):
   --range-to <selector> (conflicts: --releases-json) - Last release in the note range.
   --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --expect-workspace <workspace-uuid-or-url-key> (required) - Fail closed unless the authenticated workspace matches.
-  --expect-team <team-key-or-uuid> - Fail closed unless the resolved target team matches.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -1069,7 +1066,7 @@ Example:
 ## milestones update
 
 ```text
-Usage: linear-axi milestones update --project <selector> --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
+Usage: linear-axi milestones update --project <selector> --id <id> --expect-workspace <workspace-uuid-or-url-key>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --project <selector> (required) - Project name, slug, or ID.
@@ -1082,7 +1079,6 @@ Options (single-use unless marked repeatable):
   --clear-target-date (conflicts: --target-date) - Clear target date to null.
   --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --expect-workspace <workspace-uuid-or-url-key> (required) - Fail closed unless the authenticated workspace matches.
-  --expect-team <team-key-or-uuid> - Fail closed unless the resolved target team matches.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:
@@ -1196,7 +1192,7 @@ Example:
 ## status-updates update
 
 ```text
-Usage: linear-axi status-updates update --type <project|initiative> --id <id> --expect-workspace <workspace-uuid-or-url-key> [--expect-team <team-key-or-uuid>]
+Usage: linear-axi status-updates update --type <project|initiative> --id <id> --expect-workspace <workspace-uuid-or-url-key>
 Options (single-use unless marked repeatable):
   --help - Show command help.
   --type <project|initiative> (required) - Set or filter by type.
@@ -1209,7 +1205,6 @@ Options (single-use unless marked repeatable):
   --health <onTrack|atRisk|offTrack> - Set or filter by health.
   --full (default: false) - Disable local projection and text truncation; associations still require explicit inclusion flags.
   --expect-workspace <workspace-uuid-or-url-key> (required) - Fail closed unless the authenticated workspace matches.
-  --expect-team <team-key-or-uuid> - Fail closed unless the resolved target team matches.
 Safety:
   Rich-text replacements and clears require --if-updated-at from the latest full view. Linear has no atomic compare-and-swap, so a final read/write race remains.
 Example:

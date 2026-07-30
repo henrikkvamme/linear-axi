@@ -9,6 +9,7 @@
   },
   "files": [
     "src",
+    "scripts/build.ts",
     "docs/linear-mcp-parity.json",
     ".agents/skills/linear-axi",
     "assets/linear-axi-banner.png",
