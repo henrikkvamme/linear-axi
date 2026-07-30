@@ -35,6 +35,7 @@ test("standalone binary runs without a source checkout", () => {
     cpSync(join(repoRoot, "scripts", "release-provenance.ts"), join(source, "scripts", "release-provenance.ts"))
     cpSync(join(repoRoot, ".agents", "skills", "linear-axi"), join(source, ".agents", "skills", "linear-axi"), { recursive: true })
     cpSync(join(repoRoot, "package.json"), join(source, "package.json"))
+    writeFileSync(join(source, "SOURCE_REVISION"), `${revision}\n`)
     symlinkSync(join(repoRoot, "node_modules"), join(source, "node_modules"), "dir")
     const build = Bun.spawnSync({
       cmd: ["bun", "scripts/build.ts", "--revision", revision, "--outfile", binary],

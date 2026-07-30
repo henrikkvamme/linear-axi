@@ -40,14 +40,13 @@ try {
     cleanupSnapshot = snapshot.cleanup
   } else {
     const packagedRevision = readPackagedRevision()
-    if (explicitRevision && packagedRevision && explicitRevision !== packagedRevision) {
+    if (!packagedRevision) {
+      throw new Error("Release build outside a Git checkout requires packaged source revision metadata in SOURCE_REVISION.")
+    }
+    if (explicitRevision && explicitRevision !== packagedRevision) {
       throw new Error(`Release build revision ${explicitRevision} does not match packaged source revision ${packagedRevision}.`)
     }
-    const resolvedRevision = explicitRevision ?? packagedRevision
-    if (!resolvedRevision) {
-      throw new Error("Release build requires an exact 40-hex immutable revision. Pass --revision <commit> or build packaged source.")
-    }
-    gitRevision = resolvedRevision
+    gitRevision = packagedRevision
   }
 
   const bundledSkillFiles = [

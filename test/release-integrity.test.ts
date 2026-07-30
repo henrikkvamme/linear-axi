@@ -69,7 +69,7 @@ const createNixProvenanceFixture = (): { cleanupRoot: string; root: string; revi
         name = "verified-release-source-fixture";
         system = "x86_64-linux";
         builder = "/bin/sh";
-        args = [ "-c" "while IFS= read -r line; do printf '%s\\\\n' \\"$line\\"; done < ${"${source.outPath}"}/payload > $out" ];
+        args = [ "-c" "IFS= read -r metadata < ${"${source.revisionFile}"}; test \\"$metadata\\" = \\"${"${revision}"}\\"; while IFS= read -r line; do printf '%s\\\\n' \\"$line\\"; done < ${"${source.outPath}"}/payload > $out; printf '%s\\\\n' \\"$metadata\\" >> $out" ];
       };
     };
 }
@@ -452,6 +452,7 @@ describe("release integrity", () => {
     expect(flake).toContain(`version = "${packageJson.version}";`)
     expect(flake).toContain("src = releaseSource.outPath")
     expect(flake).toContain("repository = \"https://github.com/henrikkvamme/linear-axi.git\"")
+    expect(flake).toContain("cp ${releaseSource.revisionFile} SOURCE_REVISION")
     expect(flake).not.toContain("root = ./.;")
   })
 
@@ -464,6 +465,59 @@ describe("release integrity", () => {
     })
     expect(result.exitCode).toBe(1)
     expect(result.stderr.toString()).toContain("exact 40-hex immutable revision")
+  })
+
+  test("no-Git release builds reject an explicit revision without packaged metadata", () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-no-git-build-"))
+
+    try {
+      const result = Bun.spawnSync({
+        cmd: [
+          "bun",
+          join(repoRoot, "scripts", "build.ts"),
+          "--revision",
+          "0000000000000000000000000000000000000000",
+          "--outfile",
+          join(root, "linear-axi")
+        ],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr.toString()).toContain("requires packaged source revision metadata in SOURCE_REVISION")
+      expect(existsSync(join(root, "linear-axi"))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("no-Git release builds reject an explicit revision that differs from packaged metadata", () => {
+    const root = mkdtempSync(join(tmpdir(), "linear-axi-no-git-mismatch-"))
+    writeFileSync(join(root, "SOURCE_REVISION"), "1111111111111111111111111111111111111111\n")
+
+    try {
+      const result = Bun.spawnSync({
+        cmd: [
+          "bun",
+          join(repoRoot, "scripts", "build.ts"),
+          "--revision",
+          "0000000000000000000000000000000000000000",
+          "--outfile",
+          join(root, "linear-axi")
+        ],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr.toString()).toContain("does not match packaged source revision")
+      expect(existsSync(join(root, "linear-axi"))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   test("published source reports and builds with its packaged immutable revision", () => {
@@ -509,6 +563,24 @@ describe("release integrity", () => {
       })
       expect(capabilities.exitCode).toBe(0)
       expect(capabilities.stdout.toString()).toContain(`revision: ${revision}`)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("release packaging defaults to an ignored repeatable destination", () => {
+    const { root } = createReleaseFixture()
+
+    try {
+      const firstArchiveName = runFixtureCommand(root, ["bun", "run", "package:release"]).split("\n").at(-1)!
+      const secondArchiveName = runFixtureCommand(root, ["bun", "run", "package:release"]).split("\n").at(-1)!
+      const archive = join(root, "dist", secondArchiveName)
+
+      expect(secondArchiveName).toBe(firstArchiveName)
+      expect(existsSync(archive)).toBe(true)
+      expect(existsSync(join(root, secondArchiveName))).toBe(false)
+      expect(runFixtureCommand(root, ["git", "status", "--porcelain"])).toBe("")
+      expect(runFixtureCommand(root, ["tar", "-tzf", archive])).not.toMatch(/(?:^|\/)dist\/|\.tgz$/m)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -643,7 +715,7 @@ describe("release integrity", () => {
   }
 
   test.skipIf(!nixAvailable)("Nix release source builds from the immutable Git revision", () => {
-    const { cleanupRoot, root } = createNixProvenanceFixture()
+    const { cleanupRoot, root, revision } = createNixProvenanceFixture()
 
     try {
       const build = Bun.spawnSync({
@@ -653,7 +725,7 @@ describe("release integrity", () => {
         stderr: "pipe"
       })
       expect(build.exitCode, build.stderr.toString()).toBe(0)
-      expect(readFileSync(build.stdout.toString().trim(), "utf8")).toBe("committed source\n")
+      expect(readFileSync(build.stdout.toString().trim(), "utf8")).toBe(`committed source\n${revision}\n`)
     } finally {
       rmSync(cleanupRoot, { recursive: true, force: true })
     }
@@ -675,7 +747,7 @@ describe("release integrity", () => {
           stderr: "pipe"
         })
         expect(hiddenBuild.exitCode, hiddenBuild.stderr.toString()).toBe(0)
-        expect(readFileSync(hiddenBuild.stdout.toString().trim(), "utf8")).toBe("committed source\n")
+        expect(readFileSync(hiddenBuild.stdout.toString().trim(), "utf8")).toBe(`committed source\n${revision}\n`)
       } finally {
         rmSync(cleanupRoot, { recursive: true, force: true })
       }

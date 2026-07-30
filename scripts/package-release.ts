@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import {
   exportImmutableRevision,
@@ -9,7 +9,7 @@ import {
 
 const invocationRoot = process.cwd()
 const destinationFlag = Bun.argv.indexOf("--pack-destination")
-const destinationValue = destinationFlag >= 0 ? Bun.argv[destinationFlag + 1] : invocationRoot
+const destinationValue = destinationFlag >= 0 ? Bun.argv[destinationFlag + 1] : "dist"
 if (!destinationValue) {
   console.error("--pack-destination requires a path")
   process.exit(1)
@@ -27,6 +27,7 @@ try {
   sourceRoot = snapshot.root
   cleanupSnapshot = snapshot.cleanup
   writeFileSync(resolve(sourceRoot, packagedRevisionPath), `${revision}\n`)
+  mkdirSync(packDestination, { recursive: true })
 
   const result = Bun.spawnSync({
     cmd: ["npm", "pack", "--pack-destination", packDestination],

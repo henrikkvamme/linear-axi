@@ -59,6 +59,7 @@
 
             buildPhase = ''
               runHook preBuild
+              cp ${releaseSource.revisionFile} SOURCE_REVISION
               bun scripts/build.ts --revision ${releaseRevision} --outfile linear-axi
               runHook postBuild
             '';
