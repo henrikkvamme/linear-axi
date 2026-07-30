@@ -30,6 +30,8 @@
                 ./package.json
                 ./package-lock.json
                 ./scripts/build.ts
+                ./scripts/package-revision.ts
+                ./scripts/release-provenance.ts
               ];
             };
 

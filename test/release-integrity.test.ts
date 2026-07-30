@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { delimiter, dirname, join } from "node:path"
 import { Effect } from "effect"
@@ -21,6 +21,40 @@ const runCli = (...args: ReadonlyArray<string>) => Bun.spawnSync({
   stdout: "pipe",
   stderr: "pipe"
 })
+
+const runFixtureCommand = (cwd: string, cmd: ReadonlyArray<string>) => {
+  const result = Bun.spawnSync({ cmd: [...cmd], cwd, stdout: "pipe", stderr: "pipe" })
+  if (result.exitCode !== 0) {
+    throw new Error(`${cmd.join(" ")} failed: ${result.stderr.toString()}`)
+  }
+  return result.stdout.toString().trim()
+}
+
+const createReleaseFixture = (): { root: string; revision: string } => {
+  const root = mkdtempSync(join(tmpdir(), "linear-axi-release-source-"))
+  for (const path of [
+    ".agents",
+    ".env.example",
+    ".gitignore",
+    "assets",
+    "docs",
+    "LICENSE",
+    "package.json",
+    "README.md",
+    "scripts",
+    "src"
+  ]) {
+    cpSync(join(repoRoot, path), join(root, path), { recursive: true })
+  }
+  runFixtureCommand(root, ["git", "init", "--quiet"])
+  runFixtureCommand(root, ["git", "config", "user.email", "release-test@example.com"])
+  runFixtureCommand(root, ["git", "config", "user.name", "Release Test"])
+  runFixtureCommand(root, ["git", "add", "."])
+  runFixtureCommand(root, ["git", "commit", "--quiet", "-m", "release fixture"])
+  writeFileSync(join(root, ".git", "info", "exclude"), "node_modules\n", { flag: "a" })
+  symlinkSync(join(repoRoot, "node_modules"), join(root, "node_modules"), "dir")
+  return { root, revision: runFixtureCommand(root, ["git", "rev-parse", "HEAD"]) }
+}
 
 describe("release integrity", () => {
   test("source invocation reports build identity and named capabilities without credentials", () => {
@@ -326,6 +360,9 @@ describe("release integrity", () => {
 
     expect(packageJson.version).toBe("0.2.0")
     expect(packageJson.files).toContain("scripts/build.ts")
+    expect(packageJson.files).toContain("scripts/package-revision.ts")
+    expect(packageJson.files).toContain("scripts/release-provenance.ts")
+    expect(packageJson.files).toContain("SOURCE_REVISION")
     expect(officialMcp).toContain("version: PACKAGE_VERSION")
     expect(buildInfo).toContain("packageMetadata.version")
     expect(flake).toContain(`version = "${packageJson.version}";`)
@@ -342,20 +379,77 @@ describe("release integrity", () => {
     expect(result.stderr.toString()).toContain("exact 40-hex immutable revision")
   })
 
+  test("published source builds with its packaged immutable revision", () => {
+    const { root, revision } = createReleaseFixture()
+
+    try {
+      const archiveName = runFixtureCommand(root, ["npm", "pack"])
+      const archive = join(root, archiveName.split("\n").at(-1)!)
+      const unpacked = join(root, "unpacked")
+      mkdirSync(unpacked)
+      runFixtureCommand(root, ["tar", "-xzf", archive, "-C", unpacked])
+      const packagedRoot = join(unpacked, "package")
+
+      expect(readFileSync(join(packagedRoot, "SOURCE_REVISION"), "utf8").trim()).toBe(revision)
+      expect(existsSync(join(packagedRoot, "scripts", "build.ts"))).toBe(true)
+      expect(existsSync(join(packagedRoot, "scripts", "package-revision.ts"))).toBe(true)
+      expect(existsSync(join(packagedRoot, "scripts", "release-provenance.ts"))).toBe(true)
+      expect(existsSync(join(root, "SOURCE_REVISION"))).toBe(false)
+
+      const build = Bun.spawnSync({
+        cmd: ["bun", "run", "build"],
+        cwd: packagedRoot,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(build.exitCode).toBe(0)
+
+      const capabilities = Bun.spawnSync({
+        cmd: [join(packagedRoot, "dist", "linear-axi"), "capabilities"],
+        cwd: packagedRoot,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(capabilities.exitCode).toBe(0)
+      expect(capabilities.stdout.toString()).toContain(`revision: ${revision}`)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("release builds reject a dirty Git checkout", () => {
+    const { root, revision } = createReleaseFixture()
+
+    try {
+      writeFileSync(join(root, "README.md"), "dirty\n")
+      const result = Bun.spawnSync({
+        cmd: ["bun", "scripts/build.ts", "--revision", revision, "--outfile", join(root, "linear-axi")],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr.toString()).toContain("requires a clean checkout")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("release builds reject a revision that differs from the checkout", () => {
-    const parentRevision = Bun.spawnSync({
-      cmd: ["git", "rev-parse", "HEAD^"],
-      cwd: repoRoot,
-      stdout: "pipe"
-    }).stdout.toString().trim()
-    const result = Bun.spawnSync({
-      cmd: ["bun", "scripts/build.ts", "--revision", parentRevision, "--outfile", "/tmp/linear-axi-mismatched-revision"],
-      cwd: repoRoot,
-      stdout: "pipe",
-      stderr: "pipe"
-    })
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr.toString()).toContain("does not match checkout HEAD")
+    const { root } = createReleaseFixture()
+
+    try {
+      const result = Bun.spawnSync({
+        cmd: ["bun", "scripts/build.ts", "--revision", "0000000000000000000000000000000000000000", "--outfile", join(root, "linear-axi")],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr.toString()).toContain("does not match checkout HEAD")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   for (const probe of ["worktree", "HEAD", "status"] as const) {
@@ -373,7 +467,7 @@ case "${probe}:$*" in
   "HEAD:rev-parse --is-inside-work-tree"|"status:rev-parse --is-inside-work-tree") echo true ;;
   "HEAD:rev-parse HEAD") echo "HEAD probe failed" >&2; exit 42 ;;
   "status:rev-parse HEAD") echo "${revision}" ;;
-  "status:status --porcelain --untracked-files=normal") echo "status probe failed" >&2; exit 42 ;;
+  "status:status --porcelain --untracked-files=all --ignore-submodules=none") echo "status probe failed" >&2; exit 42 ;;
 esac
 `
       writeFileSync(fakeGit, script)
@@ -409,5 +503,7 @@ esac
     expect(skill).toContain("issues inspect")
     expect(skill).toContain("diffs list")
     expect(skill).toContain("If no GitHub linkage was intended")
+    expect(skill).toContain("Never use `issues assign --replace` to steal a claim")
+    expect(skill).toContain("release work only with `issues unassign --if-assignee me`")
   })
 })

@@ -68,6 +68,7 @@ Read `COMMANDS.md` when you need exact flags, examples, retry mechanics, or comm
 - Preserve AXI output authority. Read TOON once, use its help after exit `2`, and do not rerun merely to confirm an empty result.
 - Preserve retry safety. Reuse caller-retained UUIDs only for the same intent. Treat unknown mutation outcomes as inspection work and never blindly repeat an official or attachment mutation.
 - Preserve directed relation semantics. In the `--blocked-by` shorthand, `--issue` is blocked and `--blocked-by` is the blocker.
+- Preserve Wayfinder claim ownership. Never use `issues assign --replace` to steal a claim, and release work only with `issues unassign --if-assignee me`.
 - Preserve attachment file boundaries. Read only bounded supported text, inspect downloaded binary files locally, and resume uploads only with the same issue and unchanged file metadata.
 - Preserve current-state pagination. Replay returned cursors exactly and restart without a cursor when membership or ordering may have changed.
 

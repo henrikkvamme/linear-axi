@@ -32,6 +32,7 @@ test("standalone binary runs without a source checkout", () => {
     cpSync(join(repoRoot, "src"), join(source, "src"), { recursive: true })
     cpSync(join(repoRoot, "docs", "linear-mcp-parity.json"), join(source, "docs", "linear-mcp-parity.json"))
     cpSync(join(repoRoot, "scripts", "build.ts"), join(source, "scripts", "build.ts"))
+    cpSync(join(repoRoot, "scripts", "release-provenance.ts"), join(source, "scripts", "release-provenance.ts"))
     cpSync(join(repoRoot, ".agents", "skills", "linear-axi"), join(source, ".agents", "skills", "linear-axi"), { recursive: true })
     cpSync(join(repoRoot, "package.json"), join(source, "package.json"))
     symlinkSync(join(repoRoot, "node_modules"), join(source, "node_modules"), "dir")
