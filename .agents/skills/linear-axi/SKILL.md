@@ -51,7 +51,7 @@ Read `COMMANDS.md` when you need exact flags, examples, retry mechanics, or comm
      --expect-team BEN
    ```
 
-   A `workspace_mismatch` or `team_mismatch` means no mutation was sent. Correct the credential or target and re-evaluate intent. Do not substitute a workspace name for its stable ID or URL key.
+   A `workspace_mismatch` or `team_mismatch` means no mutation was sent. Correct the credential or target and re-evaluate intent. Do not substitute a workspace name for its stable ID or URL key. For `relations remove --id`, `--expect-team` checks the relation's source issue team, including for cross-team relations.
 
 6. Verify completion in Linear and verify intended GitHub linkage.
    Completion criterion:

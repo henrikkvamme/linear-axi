@@ -44,9 +44,9 @@ linear-axi capabilities require \
   --capability attachment-files-v1
 ```
 
-The output includes package version, exact immutable build revision, API level, bundled official-inventory date and SHA-256, named capabilities, and bundled-skill convergence metadata. `--version` is an alias for the same structured output. Compiled and Nix release builds fail when an exact revision is unavailable. Direct `bun src/main.ts` development invocation identifies its revision as `development`.
+The output includes package version, exact immutable build revision, API level, bundled official-inventory date and SHA-256, named capabilities, and bundled-skill convergence metadata. `--version` is an alias for the same structured output. `package.json` is the runtime package-version source; the official MCP client uses that value, while release checks keep the Nix package version equal to it. Source release builds require a clean checkout, and an explicit `--revision` must be an exact 40-hex revision equal to checkout `HEAD`. Nix release builds likewise fail when an immutable source revision is unavailable. Direct `bun src/main.ts` development invocation identifies its revision as `development`.
 
-`capabilities require` exits `0` when satisfied. Missing API levels or capabilities exit `1` with current and missing values plus the managed update command. It never loads credentials or calls Linear.
+`capabilities require` exits `0` when satisfied. Missing API levels or capabilities exit `1` with current and missing values plus the managed update command. It does not require valid credentials or call Linear, although normal CLI startup still reads the configured environment sources, including a repo-local `.env`.
 
 ## Login
 
@@ -108,6 +108,7 @@ linear-axi relations list --issue <blocked-issue> --blocked-by
 linear-axi relations create --issue <blocker> --related-issue <blocked> --type blocks --expect-workspace <workspace> --expect-team <team>
 linear-axi relations list --issue <issue> --type blocks --direction both
 linear-axi relations remove --issue <blocked> --blocked-by <blocker> --expect-workspace <workspace> --expect-team <team>
+linear-axi relations remove --id <relation-id> --expect-workspace <workspace> --expect-team <source-team>
 linear-axi comments list --issue <issue> --limit 50
 linear-axi comments create --issue <issue> --body-file <path> --id <retained-uuid-v4> --expect-workspace <workspace> --expect-team <team>
 linear-axi attachments list --issue <issue> --limit 100
@@ -161,7 +162,7 @@ Team keys, issue identifiers, and label names are matched exactly without case s
 
 ### Mutation safety
 
-Every native, official-backed, and attachment mutation requires `--expect-workspace <workspace-uuid-or-url-key>`. Team-scoped mutations accept `--expect-team <team-key-or-uuid>` and verify the resolved target team. Missing expectations are usage exit `2`. A live `workspace_mismatch` or `team_mismatch` is exit `1`, emits expected and actual stable identities, and makes zero mutation calls. Identity lookup itself is read-only.
+Every native, official-backed, and attachment mutation requires `--expect-workspace <workspace-uuid-or-url-key>`. Team-scoped mutations accept `--expect-team <team-key-or-uuid>` and verify the resolved target team. For `relations remove --id`, the team is resolved from the relation's source issue, so a cross-team relation matches the source team rather than the target team. Missing expectations are usage exit `2`. A live `workspace_mismatch` or `team_mismatch` is exit `1`, emits expected and actual stable identities, and makes zero mutation calls. Identity lookup itself is read-only.
 
 Issue, label, relation, and comment creation accept a caller-retained UUID v4 with `--id`. Repeating the same request with the same UUID is a no-op, while reuse for different content or scope is a conflict. Rich-text retry comparisons tolerate normalized line endings, trailing newlines, and Linear's angle-bracket form for HTTP(S) Markdown links. `labels create --if-absent` also treats a case-insensitive same-name label with matching properties in the requested scope as a no-op. `labels create --group` creates a top-level group; `--parent` creates an ordinary child under a top-level group in the same scope, and the two flags cannot be combined. Attaching or replacing issue labels accepts ordinary labels only and at most one child from each label group. `labels replace --labels-json '[]'` clears all labels. A directed relation is a no-op when its source, target, and type already exist, even without `--id`.
 
@@ -207,6 +208,8 @@ Only `linear-axi` is intended to be installable from this repo.
 bun run check
 ```
 
-After changing command specs or help, run `bun run skill:generate` to refresh the bundled command reference. To refresh the frozen official inventory, authenticate locally and run `bun run parity:capture --date YYYY-MM-DD`, then update the parity manifest's observation date, inventory hash, mappings, and rationales. Do not hand-edit the generated inventory. `bun run parity:check` verifies the inventory, manifest, command capabilities, and generated reference agree.
+After changing command specs or help, run `bun run skill:generate` to refresh the bundled command reference. Do not hand-edit `COMMANDS.md`. The command registry explicitly classifies every command as local, read, or mutation; native mutations also declare any issue, team, or relation identity target. Mutation classification adds the identity flags and fail-closed guard, and release-integrity tests reject unclassified commands or mutations that omit the workspace expectation.
+
+To refresh the frozen official inventory, authenticate locally and run `bun run parity:capture --date YYYY-MM-DD`, then update the parity manifest's observation date, inventory hash, mappings, and rationales. Do not hand-edit the generated inventory. `bun run parity:check` verifies the inventory, manifest, command capabilities, and generated reference agree. `bun run build`, and therefore the build phase of `bun run check`, requires a clean checkout; while changes are uncommitted, run the parity check, typecheck, and tests separately.
 
 Effect source is vendored under `repos/effect` as read-only reference material. Application code imports package dependencies, not the vendored source.
