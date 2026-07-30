@@ -1,37 +1,51 @@
+import { existsSync } from "node:fs"
+
 const revisionFlag = Bun.argv.indexOf("--revision")
 const explicitRevision = revisionFlag >= 0 ? Bun.argv[revisionFlag + 1] : undefined
 const outputFlag = Bun.argv.indexOf("--outfile")
 const outfile = outputFlag >= 0 ? Bun.argv[outputFlag + 1] : "dist/linear-axi"
 
-const insideWorktree = Bun.spawnSync({
-  cmd: ["git", "rev-parse", "--is-inside-work-tree"],
-  stdout: "pipe",
-  stderr: "pipe"
-}).stdout.toString().trim() === "true"
-const checkoutRevision = insideWorktree ? Bun.spawnSync({
-  cmd: ["git", "rev-parse", "HEAD"],
-  stdout: "pipe",
-  stderr: "pipe"
-}).stdout.toString().trim() : undefined
+const fail = (message: string): never => {
+  console.error(message)
+  process.exit(1)
+}
+
+const probeGit = (probe: "worktree" | "HEAD" | "status", args: ReadonlyArray<string>): string => {
+  const result = Bun.spawnSync({
+    cmd: ["git", ...args],
+    stdout: "pipe",
+    stderr: "pipe"
+  })
+  if (result.exitCode !== 0) {
+    const diagnostic = result.stderr.toString().trim()
+    fail(`Release build could not verify Git ${probe} (exit ${result.exitCode})${diagnostic ? `: ${diagnostic}` : "."}`)
+  }
+  return result.stdout.toString().trim()
+}
+
+let checkoutRevision: string | undefined
+if (existsSync(".git")) {
+  const worktree = probeGit("worktree", ["rev-parse", "--is-inside-work-tree"])
+  if (worktree !== "true") {
+    fail(`Release build could not verify Git worktree: expected true, received ${JSON.stringify(worktree)}.`)
+  }
+  checkoutRevision = probeGit("HEAD", ["rev-parse", "HEAD"])
+  if (!/^[0-9a-f]{40}$/i.test(checkoutRevision)) {
+    fail(`Release build could not verify Git HEAD: expected an exact 40-hex revision, received ${JSON.stringify(checkoutRevision)}.`)
+  }
+}
 const gitRevision = explicitRevision ?? checkoutRevision
 
 if (!gitRevision || !/^[0-9a-f]{40}$/i.test(gitRevision)) {
-  console.error("Release build requires an exact 40-hex immutable revision. Pass --revision <commit>.")
-  process.exit(1)
+  fail("Release build requires an exact 40-hex immutable revision. Pass --revision <commit>.")
 }
 if (checkoutRevision && explicitRevision && explicitRevision.toLowerCase() !== checkoutRevision.toLowerCase()) {
-  console.error(`Release build revision ${explicitRevision} does not match checkout HEAD ${checkoutRevision}.`)
-  process.exit(1)
+  fail(`Release build revision ${explicitRevision} does not match checkout HEAD ${checkoutRevision}.`)
 }
-if (insideWorktree) {
-  const dirty = Bun.spawnSync({
-    cmd: ["git", "status", "--porcelain", "--untracked-files=normal"],
-    stdout: "pipe",
-    stderr: "pipe"
-  }).stdout.toString().trim()
+if (checkoutRevision !== undefined) {
+  const dirty = probeGit("status", ["status", "--porcelain", "--untracked-files=normal"])
   if (dirty.length > 0) {
-    console.error("Release build requires a clean checkout so the immutable revision identifies the compiled source exactly.")
-    process.exit(1)
+    fail("Release build requires a clean checkout so the immutable revision identifies the compiled source exactly.")
   }
 }
 if (!outfile) {

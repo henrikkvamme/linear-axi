@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { delimiter, dirname, join } from "node:path"
 import { Effect } from "effect"
 import { commandSpecs, parseArgs, topLevelHelp } from "../src/args"
 import { runCommand } from "../src/commands"
@@ -135,6 +138,60 @@ describe("release integrity", () => {
     })
     expect(mutations).toBe(0)
   })
+
+  for (const relation of [
+    {
+      name: "blocked-by creation",
+      args: ["relations", "create", "--issue", "BEN-2", "--blocked-by", "SAM-1"],
+      method: "createRelation"
+    },
+    {
+      name: "blocked-by removal",
+      args: ["relations", "remove", "--issue", "BEN-2", "--blocked-by", "SAM-1"],
+      method: "removeRelation"
+    },
+    {
+      name: "generic creation",
+      args: ["relations", "create", "--issue", "SAM-1", "--related-issue", "BEN-2", "--type", "blocks"],
+      method: "createRelation"
+    },
+    {
+      name: "generic removal",
+      args: ["relations", "remove", "--issue", "SAM-1", "--related-issue", "BEN-2", "--type", "blocks"],
+      method: "removeRelation"
+    }
+  ] as const) {
+    test(`${relation.name} verifies the source issue team`, async () => {
+      let mutations = 0
+      let identityInput: unknown
+      const gateway = {
+        close: () => Effect.void,
+        mutationIdentity: (input: unknown) => {
+          identityInput = input
+          const key = (input as { issue?: string }).issue?.split("-")[0] ?? "BEN"
+          return Effect.succeed({
+            workspace: { id: "11111111-1111-4111-8111-111111111111", urlKey: "bender", name: "Bender" },
+            team: { id: `${key === "BEN" ? "2" : "3"}2222222-2222-4222-8222-222222222222`, key, name: key }
+          })
+        },
+        [relation.method]: () => {
+          mutations += 1
+          return Effect.die("mutation must not run")
+        }
+      } as unknown as LinearGateway
+      const parsed = parseArgs([
+        ...relation.args,
+        "--expect-workspace", "bender",
+        "--expect-team", "BEN"
+      ], commandSpecs)
+
+      const error = await Effect.runPromise(Effect.flip(runCommand(parsed, gateway, "/tmp/linear-axi")))
+
+      expect(identityInput).toEqual({ issue: "SAM-1" })
+      expect(error).toMatchObject({ code: "team_mismatch", actual: { key: "SAM" } })
+      expect(mutations).toBe(0)
+    })
+  }
 
   test("relation removal by immutable id verifies its resolved team before mutation", async () => {
     let mutations = 0
@@ -302,6 +359,47 @@ describe("release integrity", () => {
     expect(result.exitCode).toBe(1)
     expect(result.stderr.toString()).toContain("does not match checkout HEAD")
   })
+
+  for (const probe of ["worktree", "HEAD", "status"] as const) {
+    test(`release builds fail closed when the Git ${probe} probe fails`, () => {
+      const fixture = mkdtempSync(join(tmpdir(), "linear-axi-git-probe-"))
+      const fakeGit = join(fixture, "git")
+      const revision = Bun.spawnSync({
+        cmd: ["git", "rev-parse", "HEAD"],
+        cwd: repoRoot,
+        stdout: "pipe"
+      }).stdout.toString().trim()
+      const script = `#!/bin/sh
+case "${probe}:$*" in
+  "worktree:rev-parse --is-inside-work-tree") echo "worktree probe failed" >&2; exit 42 ;;
+  "HEAD:rev-parse --is-inside-work-tree"|"status:rev-parse --is-inside-work-tree") echo true ;;
+  "HEAD:rev-parse HEAD") echo "HEAD probe failed" >&2; exit 42 ;;
+  "status:rev-parse HEAD") echo "${revision}" ;;
+  "status:status --porcelain --untracked-files=normal") echo "status probe failed" >&2; exit 42 ;;
+esac
+`
+      writeFileSync(fakeGit, script)
+      chmodSync(fakeGit, 0o755)
+
+      try {
+        const result = Bun.spawnSync({
+          cmd: [process.execPath, "scripts/build.ts", "--revision", revision, "--outfile", join(fixture, "linear-axi")],
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            PATH: [fixture, dirname(process.execPath), process.env.PATH ?? ""].join(delimiter)
+          },
+          stdout: "pipe",
+          stderr: "pipe"
+        })
+
+        expect(result.exitCode).toBe(1)
+        expect(result.stderr.toString()).toContain(`could not verify Git ${probe}`)
+      } finally {
+        rmSync(fixture, { recursive: true, force: true })
+      }
+    })
+  }
 
   test("bundled skill preflights capabilities and verifies issue completion and GitHub linkage", async () => {
     const skill = await Bun.file(".agents/skills/linear-axi/SKILL.md").text()

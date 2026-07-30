@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -22,12 +22,22 @@ test("standalone binary runs without a source checkout", () => {
   const root = mkdtempSync(join(tmpdir(), "linear-axi-compiled-test-"))
   const binary = join(root, "linear-axi")
   const home = join(root, "empty-home")
+  const source = join(root, "source")
   const revision = Bun.spawnSync({ cmd: ["git", "rev-parse", "HEAD"], cwd: repoRoot, stdout: "pipe" }).stdout.toString().trim()
 
   try {
+    mkdirSync(join(source, "scripts"), { recursive: true })
+    mkdirSync(join(source, "docs"), { recursive: true })
+    mkdirSync(join(source, ".agents", "skills"), { recursive: true })
+    cpSync(join(repoRoot, "src"), join(source, "src"), { recursive: true })
+    cpSync(join(repoRoot, "docs", "linear-mcp-parity.json"), join(source, "docs", "linear-mcp-parity.json"))
+    cpSync(join(repoRoot, "scripts", "build.ts"), join(source, "scripts", "build.ts"))
+    cpSync(join(repoRoot, ".agents", "skills", "linear-axi"), join(source, ".agents", "skills", "linear-axi"), { recursive: true })
+    cpSync(join(repoRoot, "package.json"), join(source, "package.json"))
+    symlinkSync(join(repoRoot, "node_modules"), join(source, "node_modules"), "dir")
     const build = Bun.spawnSync({
       cmd: ["bun", "scripts/build.ts", "--revision", revision, "--outfile", binary],
-      cwd: repoRoot,
+      cwd: source,
       stdout: "pipe",
       stderr: "pipe"
     })

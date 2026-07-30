@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, watch, writeFileSync } from "node:fs"
+import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHash } from "node:crypto"
@@ -32,6 +32,22 @@ const run = (argv: ReadonlyArray<string>, result: unknown, runtime?: Partial<Att
   const effect = runAttachmentCommand(parsed, gateway(result), runtime)
   if (!effect) throw new Error("attachment command was not dispatched")
   return Effect.runPromise(effect)
+}
+
+const spawnConcurrentFsMutation = async (script: string) => {
+  const child = Bun.spawn({
+    cmd: [process.execPath, "-e", script],
+    stdout: "pipe",
+    stderr: "pipe"
+  })
+  const reader = child.stdout.getReader()
+  const ready = await reader.read()
+  reader.releaseLock()
+  if (new TextDecoder().decode(ready.value) !== "ready\n") {
+    child.kill()
+    throw new Error("concurrent filesystem mutation did not become ready")
+  }
+  return child
 }
 
 const detail = (overrides: Readonly<Record<string, unknown>> = {}) => ({
@@ -346,14 +362,15 @@ describe("attachment content boundary", () => {
     mkdirSync(outputDir)
     const outputPath = join(outputDir, "trace.txt")
     const bytes = new TextEncoder().encode("hello world\n")
-    let swapped = false
-    const watcher = watch(outputDir, (_event, filename) => {
-      if (!swapped && filename === "trace.txt") {
-        swapped = true
-        renameSync(outputDir, moved)
-        mkdirSync(outputDir)
-      }
-    })
+    const mover = await spawnConcurrentFsMutation(`
+      import { existsSync, mkdirSync, renameSync } from "node:fs";
+      const deadline = Date.now() + 5000;
+      console.log("ready");
+      while (!existsSync(${JSON.stringify(outputPath)}) && Date.now() < deadline) {}
+      if (!existsSync(${JSON.stringify(outputPath)})) process.exit(2);
+      renameSync(${JSON.stringify(outputDir)}, ${JSON.stringify(moved)});
+      mkdirSync(${JSON.stringify(outputDir)});
+    `)
 
     try {
       const error = await Effect.runPromise(Effect.flip(runEffect(
@@ -361,11 +378,12 @@ describe("attachment content boundary", () => {
         detail({ size: bytes.length }),
         { fetcher: async () => new Response(bytes) }
       )))
+      expect(await mover.exited).toBe(0)
       expect(error.message).toContain("directory changed")
       expect(existsSync(outputPath)).toBe(false)
       expect(existsSync(join(moved, "trace.txt"))).toBe(true)
     } finally {
-      watcher.close()
+      mover.kill()
     }
   })
 
@@ -375,14 +393,15 @@ describe("attachment content boundary", () => {
     const outputPath = join(root, "trace.txt")
     const displacedPath = join(root, "verified.txt")
     const bytes = new TextEncoder().encode("hello world\n")
-    let replaced = false
-    const watcher = watch(root, (_event, filename) => {
-      if (!replaced && filename === "trace.txt" && existsSync(outputPath)) {
-        replaced = true
-        renameSync(outputPath, displacedPath)
-        writeFileSync(outputPath, "concurrent replacement")
-      }
-    })
+    const replacer = await spawnConcurrentFsMutation(`
+      import { existsSync, renameSync, writeFileSync } from "node:fs";
+      const deadline = Date.now() + 5000;
+      console.log("ready");
+      while (!existsSync(${JSON.stringify(outputPath)}) && Date.now() < deadline) {}
+      if (!existsSync(${JSON.stringify(outputPath)})) process.exit(2);
+      renameSync(${JSON.stringify(outputPath)}, ${JSON.stringify(displacedPath)});
+      writeFileSync(${JSON.stringify(outputPath)}, "concurrent replacement");
+    `)
 
     try {
       const error = await Effect.runPromise(Effect.flip(runEffect(
@@ -390,12 +409,12 @@ describe("attachment content boundary", () => {
         detail({ size: bytes.length }),
         { fetcher: async () => new Response(bytes) }
       )))
-      expect(replaced).toBe(true)
+      expect(await replacer.exited).toBe(0)
       expect(error.message).toContain("destination changed")
       expect(readFileSync(displacedPath)).toEqual(Buffer.from(bytes))
       expect(readFileSync(outputPath, "utf8")).toBe("concurrent replacement")
     } finally {
-      watcher.close()
+      replacer.kill()
     }
   })
 

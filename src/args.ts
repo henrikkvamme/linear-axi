@@ -711,10 +711,17 @@ const nativeCommandSafety = {
   "labels remove": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
   "labels replace": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
   "relations list": { operation: "read" },
-  "relations create": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
+  "relations create": {
+    operation: "mutation",
+    mutationTargets: [{ kind: "issue", flag: "blocked-by" }, { kind: "issue", flag: "issue" }]
+  },
   "relations remove": {
     operation: "mutation",
-    mutationTargets: [{ kind: "relation", flag: "id" }, { kind: "issue", flag: "issue" }]
+    mutationTargets: [
+      { kind: "relation", flag: "id" },
+      { kind: "issue", flag: "blocked-by" },
+      { kind: "issue", flag: "issue" }
+    ]
   },
   "comments list": { operation: "read" },
   "comments create": { operation: "mutation", mutationTargets: [{ kind: "issue", flag: "issue" }] },
