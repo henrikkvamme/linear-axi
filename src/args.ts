@@ -114,46 +114,47 @@ export const parseArgs = (argv: ReadonlyArray<string>, specs: ReadonlyArray<Comm
     }
 
     const expectsValue = spec.valueFlags?.has(flag) ?? false
-    const value = flags.get(flag)
-    if (expectsValue && value === true) {
-      throw new UsageError({
-        message: `--${flag} requires a value`,
-        help: spec.help
-      })
-    }
-    if (expectsValue && value === "") {
-      throw new UsageError({
-        message: flag === "after" ? "invalid --after cursor: value cannot be empty" : `--${flag} cannot be empty`,
-        help: spec.help
-      })
-    }
-    if (!expectsValue && value !== true) {
-      throw new UsageError({
-        message: `--${flag} does not take a value`,
-        help: spec.help
-      })
-    }
-    if (flag === "limit" || flag === "first") {
-      validatePageSize(flag, value, spec.help)
-    }
-    if (flag === "expect-workspace" && typeof value === "string") {
-      try {
-        decodeWorkspaceExpectation(value)
-      } catch {
+    for (const value of repeatedFlags.get(flag) ?? []) {
+      if (expectsValue && value === true) {
         throw new UsageError({
-          message: "--expect-workspace must be a workspace UUID or URL key",
+          message: `--${flag} requires a value`,
           help: spec.help
         })
       }
-    }
-    if (flag === "expect-team" && typeof value === "string") {
-      try {
-        decodeTeamExpectation(value)
-      } catch {
+      if (expectsValue && value === "") {
         throw new UsageError({
-          message: "--expect-team must be a team key or UUID",
+          message: flag === "after" ? "invalid --after cursor: value cannot be empty" : `--${flag} cannot be empty`,
           help: spec.help
         })
+      }
+      if (!expectsValue && value !== true) {
+        throw new UsageError({
+          message: `--${flag} does not take a value`,
+          help: spec.help
+        })
+      }
+      if (flag === "limit" || flag === "first") {
+        validatePageSize(flag, value, spec.help)
+      }
+      if (flag === "expect-workspace" && typeof value === "string") {
+        try {
+          decodeWorkspaceExpectation(value)
+        } catch {
+          throw new UsageError({
+            message: "--expect-workspace must be a workspace UUID or URL key",
+            help: spec.help
+          })
+        }
+      }
+      if (flag === "expect-team" && typeof value === "string") {
+        try {
+          decodeTeamExpectation(value)
+        } catch {
+          throw new UsageError({
+            message: "--expect-team must be a team key or UUID",
+            help: spec.help
+          })
+        }
       }
     }
   }

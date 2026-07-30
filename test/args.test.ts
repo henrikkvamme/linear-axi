@@ -92,6 +92,12 @@ describe("parseArgs", () => {
     ], commandSpecs)).toThrow("--state may only be specified once")
   })
 
+  test("rejects a missing value in any repeatable flag occurrence", () => {
+    expect(() => parseArgs([
+      "capabilities", "require", "--capability", "--capability", "mutation-identity-v1"
+    ], commandSpecs)).toThrow("--capability requires a value")
+  })
+
   test("rejects missing required flags", () => {
     expect(() => parseArgs(["issues", "view"], commandSpecs)).toThrow(UsageError)
   })

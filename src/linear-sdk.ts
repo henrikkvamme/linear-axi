@@ -110,7 +110,11 @@ export const makeSdkLinearGateway = (
     )
   }
 
-  const call = <Value>(name: string, run: (client: LinearClient) => Promise<Value>): Effect.Effect<Value, GatewayError> =>
+  const call = <Value>(
+    name: string,
+    run: (client: LinearClient) => Promise<Value>,
+    failureHelp = `Retry \`linear-axi ${name}\` after checking Linear access.`
+  ): Effect.Effect<Value, GatewayError> =>
     Effect.gen(function*() {
       const client = yield* getClient()
       return yield* Effect.tryPromise({
@@ -121,7 +125,7 @@ export const makeSdkLinearGateway = (
           }
           return new LinearApiError({
             message: readableError(cause),
-            help: `Retry \`linear-axi ${name}\` after checking Linear access.`
+            help: failureHelp
           })
         }
       })
@@ -129,7 +133,11 @@ export const makeSdkLinearGateway = (
 
   return {
     close: () => callOfficialTool?.close() ?? Effect.void,
-    mutationIdentity: (input) => call("mutation identity", (client) => mutationIdentity(client, input)),
+    mutationIdentity: (input) => call(
+      "mutation identity",
+      (client) => mutationIdentity(client, input),
+      "Check Linear access, then retry the original guarded command."
+    ),
     callOfficialTool: (name, args) => callOfficialTool
       ? callOfficialTool(name, args)
       : Effect.fail(new AuthError({
@@ -976,10 +984,11 @@ const removeRelation = async (
     const relations = await fetchAllPages(await source.relations({ first: 100, includeArchived: true }))
     const matches = relations.filter((candidate) => !candidate.archivedAt && relationMatches(candidate, source.id, target.id, type))
     if (matches.length > 1) {
-      throw conflict(
-        "Ambiguous directed relation",
-        `${renderCandidateIds(matches.map((candidate) => ({ id: candidate.id })))} Retry with \`relations remove --id <relation-id>\`.`
-      )
+      throw new LinearDomainError({
+        message: "Ambiguous directed relation",
+        code: "ambiguous_relation",
+        help: `${renderCandidateIds(matches.map((candidate) => ({ id: candidate.id })))} Retry with \`linear-axi relations remove --id <relation-id>\`.`
+      })
     }
     relation = matches[0]
     desired = { id: relation?.id ?? null, type, sourceId: source.id, targetId: target.id }

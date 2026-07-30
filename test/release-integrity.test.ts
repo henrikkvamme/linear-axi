@@ -435,6 +435,55 @@ describe("release integrity", () => {
     }
   })
 
+  for (const indexFlag of ["--assume-unchanged", "--skip-worktree"] as const) {
+    test(`release builds reject tracked files marked ${indexFlag}`, () => {
+      const { root, revision } = createReleaseFixture()
+
+      try {
+        runFixtureCommand(root, ["git", "update-index", indexFlag, "README.md"])
+        writeFileSync(join(root, "README.md"), "hidden dirty source\n")
+        const result = Bun.spawnSync({
+          cmd: ["bun", "scripts/build.ts", "--revision", revision, "--outfile", join(root, "linear-axi")],
+          cwd: root,
+          stdout: "pipe",
+          stderr: "pipe"
+        })
+
+        expect(result.exitCode).toBe(1)
+        expect(result.stderr.toString()).toContain("index exemptions")
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+  }
+
+  test("release provenance finds index exemptions from a subdirectory", () => {
+    const { root } = createReleaseFixture()
+    const nested = join(root, "nested")
+    mkdirSync(nested)
+
+    try {
+      runFixtureCommand(root, ["git", "update-index", "--assume-unchanged", "README.md"])
+      writeFileSync(join(root, "README.md"), "hidden dirty source\n")
+      const modulePath = join(repoRoot, "scripts", "release-provenance.ts")
+      const result = Bun.spawnSync({
+        cmd: [
+          "bun",
+          "-e",
+          `import { verifyCleanCheckout } from ${JSON.stringify(modulePath)}; verifyCleanCheckout("Release build")`
+        ],
+        cwd: nested,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr.toString()).toContain("index exemptions")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("release builds reject a revision that differs from the checkout", () => {
     const { root } = createReleaseFixture()
 
@@ -452,7 +501,7 @@ describe("release integrity", () => {
     }
   })
 
-  for (const probe of ["worktree", "HEAD", "status"] as const) {
+  for (const probe of ["worktree", "HEAD", "index", "status"] as const) {
     test(`release builds fail closed when the Git ${probe} probe fails`, () => {
       const fixture = mkdtempSync(join(tmpdir(), "linear-axi-git-probe-"))
       const fakeGit = join(fixture, "git")
@@ -464,9 +513,11 @@ describe("release integrity", () => {
       const script = `#!/bin/sh
 case "${probe}:$*" in
   "worktree:rev-parse --is-inside-work-tree") echo "worktree probe failed" >&2; exit 42 ;;
-  "HEAD:rev-parse --is-inside-work-tree"|"status:rev-parse --is-inside-work-tree") echo true ;;
+  "HEAD:rev-parse --is-inside-work-tree"|"index:rev-parse --is-inside-work-tree"|"status:rev-parse --is-inside-work-tree") echo true ;;
   "HEAD:rev-parse HEAD") echo "HEAD probe failed" >&2; exit 42 ;;
-  "status:rev-parse HEAD") echo "${revision}" ;;
+  "index:rev-parse HEAD"|"status:rev-parse HEAD") echo "${revision}" ;;
+  "index:ls-files -v -z -- :/") echo "index probe failed" >&2; exit 42 ;;
+  "status:ls-files -v -z -- :/") exit 0 ;;
   "status:status --porcelain --untracked-files=all --ignore-submodules=none") echo "status probe failed" >&2; exit 42 ;;
 esac
 `
@@ -505,5 +556,7 @@ esac
     expect(skill).toContain("If no GitHub linkage was intended")
     expect(skill).toContain("Never use `issues assign --replace` to steal a claim")
     expect(skill).toContain("release work only with `issues unassign --if-assignee me`")
+    expect(skill).toContain("paste the full callback URL into the waiting CLI")
+    expect(skill).toContain("Do not restart auth blindly")
   })
 })

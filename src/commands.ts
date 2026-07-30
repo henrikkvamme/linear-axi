@@ -1356,18 +1356,27 @@ const relationsRemove = (parsed: ParsedArgs, gateway: LinearGateway) => {
     if (!isUuidV4(id)) {
       return usage("--id must be a UUID v4", parsed.command)
     }
-    return gateway.removeRelation({ id }).pipe(Effect.map(relationRemovalOutput))
+    return gateway.removeRelation({ id }).pipe(
+      Effect.map(relationRemovalOutput),
+      Effect.mapError((error) => relationRemovalError(parsed, error))
+    )
   }
   if (blockedBy) {
     if (!issue || relatedIssue || type) {
       return usage("--blocked-by requires --issue and must not combine with --related-issue or --type", parsed.command)
     }
-    return gateway.removeRelation({ issue: blockedBy, relatedIssue: issue, type: "blocks" }).pipe(Effect.map(relationRemovalOutput))
+    return gateway.removeRelation({ issue: blockedBy, relatedIssue: issue, type: "blocks" }).pipe(
+      Effect.map(relationRemovalOutput),
+      Effect.mapError((error) => relationRemovalError(parsed, error))
+    )
   }
   if (!issue || !relatedIssue || !type || !RELATION_TYPES.has(type as RelationType)) {
     return usage("pass --id, or pass --issue, --related-issue, and a valid --type", parsed.command)
   }
-  return gateway.removeRelation({ issue, relatedIssue, type: type as RelationType }).pipe(Effect.map(relationRemovalOutput))
+  return gateway.removeRelation({ issue, relatedIssue, type: type as RelationType }).pipe(
+    Effect.map(relationRemovalOutput),
+    Effect.mapError((error) => relationRemovalError(parsed, error))
+  )
 }
 
 const relationRemovalOutput = (result: { value: unknown; changed: boolean; result: string }): OutputValue => ({
@@ -1375,6 +1384,32 @@ const relationRemovalOutput = (result: { value: unknown; changed: boolean; resul
   changed: result.changed,
   result: result.result
 })
+
+const relationRemovalError = (parsed: ParsedArgs, error: CliError): CliError => {
+  const expectations = parsed.mutationExpectations
+  if (
+    !(error instanceof LinearDomainError) ||
+    error.code !== "ambiguous_relation" ||
+    error.help === undefined ||
+    expectations === undefined
+  ) {
+    return error
+  }
+  const retry = [
+    "linear-axi relations remove --id <relation-id>",
+    `--expect-workspace ${shellQuote(expectations.workspace)}`,
+    ...(expectations.team === undefined ? [] : [`--expect-team ${shellQuote(expectations.team)}`])
+  ].join(" ")
+  return new LinearDomainError({
+    message: error.message,
+    code: error.code,
+    expected: error.expected,
+    actual: error.actual,
+    missing: error.missing,
+    current: error.current,
+    help: error.help.replace("linear-axi relations remove --id <relation-id>", retry)
+  })
+}
 
 const commentsList = (parsed: ParsedArgs, gateway: LinearGateway) => {
   const full = readBooleanFlag(parsed.flags, "full")

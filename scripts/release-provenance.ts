@@ -16,7 +16,7 @@ export const hasGitMetadata = (): boolean => existsSync(".git")
 
 const probeGit = (
   subject: string,
-  probe: "worktree" | "HEAD" | "status",
+  probe: "worktree" | "HEAD" | "index" | "status",
   args: ReadonlyArray<string>
 ): string => {
   const result = Bun.spawnSync({
@@ -38,6 +38,17 @@ export const verifyCleanCheckout = (subject: string): string => {
   }
 
   const revision = validateRevision(probeGit(subject, "HEAD", ["rev-parse", "HEAD"]), `${subject} Git HEAD`)
+  const indexEntries = probeGit(subject, "index", ["ls-files", "-v", "-z", "--", ":/"])
+    .split("\0")
+    .filter((entry) => entry.length > 0)
+  const exemptEntries = indexEntries.filter((entry) => {
+    const tag = entry[0]
+    return tag === "S" || (tag !== undefined && tag >= "a" && tag <= "z")
+  })
+  if (exemptEntries.length > 0) {
+    throw new Error(`${subject} rejects Git index exemptions so the immutable revision identifies the source exactly.`)
+  }
+
   const dirty = probeGit(subject, "status", [
     "status",
     "--porcelain",

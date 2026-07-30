@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { Effect } from "effect"
 import { commandSpecs, parseArgs as parseProductionArgs } from "../src/args"
 import { runCommand } from "../src/commands"
-import { LinearApiError, UsageError } from "../src/errors"
+import { LinearApiError, LinearDomainError, UsageError } from "../src/errors"
 import type { IssueDetail, IssueSummary, LinearGateway } from "../src/linear"
 import { encodeFrontierCursor } from "../src/wayfinder"
 
@@ -4536,6 +4536,29 @@ describe("runCommand", () => {
     )))
     expect(error._tag).toBe("UsageError")
     expect(calls).toHaveLength(2)
+  })
+
+  test("ambiguous relation removal retries preserve mutation expectations", async () => {
+    const gateway = fakeGateway({
+      removeRelation: () => Effect.fail(new LinearDomainError({
+        message: "Ambiguous directed relation",
+        code: "ambiguous_relation",
+        help: "candidate IDs: relation-1, relation-2. Retry with `linear-axi relations remove --id <relation-id>`."
+      }))
+    })
+
+    const error = await Effect.runPromise(Effect.flip(runCommand(
+      parseArgs([
+        "relations", "remove",
+        "--issue", "ENG-124",
+        "--blocked-by", "ENG-123"
+      ], commandSpecs),
+      gateway,
+      "/repo/src/main.ts"
+    )))
+
+    expect(error.help).toContain("candidate IDs: relation-1, relation-2")
+    expect(error.help).toContain("linear-axi relations remove --id <relation-id> --expect-workspace 'engineering' --expect-team 'ENG'")
   })
 
   test("blocked-by list normalizes to incoming blocks centered on the blocked issue", async () => {

@@ -131,6 +131,17 @@ describe("SDK LinearGateway conflict contracts", () => {
     expect(identity).toMatchObject({ workspace: { urlKey: "bender" }, team })
   })
 
+  test("mutation identity lookup failures retry the original guarded command", async () => {
+    const gateway = makeLinearGateway({}, {
+      client: clientWithIssues([], { viewer: Promise.reject(new Error("forbidden")) })
+    })
+
+    const error = await Effect.runPromise(Effect.flip(gateway.mutationIdentity({ issue: "BEN-1" })))
+
+    expect(error.help).toContain("retry the original guarded command")
+    expect(error.help).not.toContain("linear-axi mutation identity")
+  })
+
   test("resolves human issue identifiers by exact team key and issue number", async () => {
     const filters: unknown[] = []
     const client = clientWithIssues([], {
@@ -2245,6 +2256,7 @@ describe("SDK LinearGateway conflict contracts", () => {
     })))
 
     expect(error.message).toContain("Ambiguous directed relation")
+    expect(error).toMatchObject({ code: "ambiguous_relation" })
     expect(error.help).toContain("showing 10 of 15")
     expect(error.help).not.toContain("relation-11")
   })
