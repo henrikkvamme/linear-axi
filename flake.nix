@@ -16,6 +16,12 @@
         repository = "https://github.com/henrikkvamme/linear-axi.git";
         sourceNarHash = self.narHash or (throw "linear-axi release build requires a source content hash");
       };
+      rootedReleaseSource = import ./nix/verified-release-source.nix {
+        revision = releaseRevision;
+        repository = "https://github.com/henrikkvamme/linear-axi.git";
+        sourceNarHash = self.narHash or (throw "linear-axi release build requires a source content hash");
+        rootedSource = self.outPath;
+      };
       releaseSourcePaths = [
         "src"
         ".agents/skills/linear-axi/COMMANDS.md"
@@ -33,16 +39,16 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          linear-axi = pkgs.buildNpmPackage {
+          mkLinearAxi = source: pkgs.buildNpmPackage {
             pname = "linear-axi";
             version = "0.2.0";
 
             src = pkgs.lib.cleanSourceWith {
               name = "linear-axi-source";
-              src = releaseSource.outPath;
+              src = source.outPath;
               filter = path: _type:
                 let
-                  relative = pkgs.lib.removePrefix "${releaseSource.outPath}/" (toString path);
+                  relative = pkgs.lib.removePrefix "${source.outPath}/" (toString path);
                 in
                 pkgs.lib.any (
                   sourcePath:
@@ -59,7 +65,7 @@
 
             buildPhase = ''
               runHook preBuild
-              cp ${releaseSource.revisionFile} SOURCE_REVISION
+              cp ${source.revisionFile} SOURCE_REVISION
               bun scripts/build.ts --revision ${releaseRevision} --outfile linear-axi
               runHook postBuild
             '';
@@ -78,10 +84,13 @@
               platforms = systems;
             };
           };
+          linear-axi = mkLinearAxi releaseSource;
+          linear-axi-rooted = mkLinearAxi rootedReleaseSource;
         in
         {
           inherit linear-axi;
           default = linear-axi;
+          rooted = linear-axi-rooted;
         }
       );
     };

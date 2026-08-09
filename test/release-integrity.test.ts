@@ -48,6 +48,9 @@ const createNixProvenanceFixture = (): { cleanupRoot: string; root: string; revi
   const cleanupRoot = mkdtempSync(join(tmpdir(), "linear-axi-nix-source-"))
   const root = join(cleanupRoot, "checkout")
   const repository = join(cleanupRoot, "remote.git")
+  const system = process.platform === "darwin"
+    ? (process.arch === "arm64" ? "aarch64-darwin" : "x86_64-darwin")
+    : (process.arch === "arm64" ? "aarch64-linux" : "x86_64-linux")
   mkdirSync(join(root, "nix"), { recursive: true })
   cpSync(
     join(repoRoot, "nix", "verified-release-source.nix"),
@@ -58,19 +61,22 @@ const createNixProvenanceFixture = (): { cleanupRoot: string; root: string; revi
   outputs = { self, ... }:
     let
       revision = self.rev or (throw "fixture requires an immutable revision");
-      source = import ./nix/verified-release-source.nix {
+      mkSource = rootedSource: import ./nix/verified-release-source.nix {
         inherit revision;
         repository = ${JSON.stringify(`file://${repository}`)};
         sourceNarHash = self.narHash;
+        inherit rootedSource;
       };
-    in
-    {
-      packages.x86_64-linux.default = derivation {
+      mkPackage = source: derivation {
         name = "verified-release-source-fixture";
-        system = "x86_64-linux";
+        system = ${JSON.stringify(system)};
         builder = "/bin/sh";
         args = [ "-c" "IFS= read -r metadata < ${"${source.revisionFile}"}; test \\"$metadata\\" = \\"${"${revision}"}\\"; while IFS= read -r line; do printf '%s\\\\n' \\"$line\\"; done < ${"${source.outPath}"}/payload > $out; printf '%s\\\\n' \\"$metadata\\" >> $out" ];
       };
+    in
+    {
+      packages.${system}.default = mkPackage (mkSource null);
+      packages.${system}.rooted = mkPackage (mkSource self.outPath);
     };
 }
 `)
@@ -492,9 +498,11 @@ describe("release integrity", () => {
     expect(officialMcp).toContain("version: PACKAGE_VERSION")
     expect(buildInfo).toContain("packageMetadata.version")
     expect(flake).toContain(`version = "${packageJson.version}";`)
-    expect(flake).toContain("src = releaseSource.outPath")
+    expect(flake).toContain("src = source.outPath")
     expect(flake).toContain("repository = \"https://github.com/henrikkvamme/linear-axi.git\"")
-    expect(flake).toContain("cp ${releaseSource.revisionFile} SOURCE_REVISION")
+    expect(flake).toContain("rootedSource = self.outPath")
+    expect(flake).toContain("rooted = linear-axi-rooted")
+    expect(flake).toContain("cp ${source.revisionFile} SOURCE_REVISION")
     expect(flake).not.toContain("root = ./.;")
   })
 
@@ -783,6 +791,29 @@ describe("release integrity", () => {
     try {
       const build = Bun.spawnSync({
         cmd: ["nix", "build", "--no-link", "--print-out-paths", ".#default"],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe"
+      })
+      expect(build.exitCode, build.stderr.toString()).toBe(0)
+      expect(readFileSync(build.stdout.toString().trim(), "utf8")).toBe(`committed source\n${revision}\n`)
+    } finally {
+      rmSync(cleanupRoot, { recursive: true, force: true })
+    }
+  })
+
+  test.skipIf(!nixAvailable)("Nix release source evaluates from a rooted locked flake without repository access", () => {
+    const { cleanupRoot, root, revision } = createNixProvenanceFixture()
+
+    try {
+      const archive = JSON.parse(runFixtureCommand(root, ["nix", "flake", "archive", "--json"])) as { path: string }
+      const build = Bun.spawnSync({
+        cmd: [
+          "nix", "build", "--no-link", "--print-out-paths", "--offline",
+          "--option", "restrict-eval", "true",
+          "--option", "allowed-uris", "path:/nix/store",
+          `path:${archive.path}?rev=${revision}#rooted`
+        ],
         cwd: root,
         stdout: "pipe",
         stderr: "pipe"

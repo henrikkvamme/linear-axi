@@ -2,14 +2,22 @@
   revision,
   repository,
   sourceNarHash,
+  rootedSource ? null,
 }:
 let
   exactRevision = builtins.match "[0-9a-fA-F]{40}" revision != null;
-  committedSource = builtins.fetchTree {
-    type = "git";
-    url = repository;
-    rev = revision;
-  };
+  committedSource =
+    if rootedSource != null then
+      {
+        outPath = rootedSource;
+        narHash = sourceNarHash;
+      }
+    else
+      builtins.fetchTree {
+        type = "git";
+        url = repository;
+        rev = revision;
+      };
   revisionFile = builtins.toFile "linear-axi-SOURCE_REVISION" "${revision}\n";
 in
 if !exactRevision then
